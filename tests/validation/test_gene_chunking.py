@@ -65,8 +65,8 @@ def test_fit_all_genes_agrees_across_chunk_sizes(budget_gb):
     tolerance, not bit-for-bit. Measured spread is ~1e-15.
     """
     resp, gene_ids, cov, _, _ = _inputs()
-    reference = fit_all_genes(resp, gene_ids, cov, max_fit_memory_gb=100.0)
-    other = fit_all_genes(resp, gene_ids, cov, max_fit_memory_gb=budget_gb)
+    reference = fit_all_genes(resp, gene_ids, cov, max_memory_gb=100.0)
+    other = fit_all_genes(resp, gene_ids, cov, max_memory_gb=budget_gb)
 
     assert list(reference) == list(other)
     for gid in gene_ids:
@@ -93,8 +93,8 @@ def test_end_to_end_results_agree_across_gene_chunk_budgets():
         side="left",
         seed=11,
     )
-    reference = run_discovery_analysis(**common, max_fit_memory_gb=100.0)
-    chunked = run_discovery_analysis(**common, max_fit_memory_gb=1e-9)
+    reference = run_discovery_analysis(**common, max_memory_gb=100.0)
+    chunked = run_discovery_analysis(**common, max_memory_gb=1e-9)
 
     # p-values and stages must match exactly: they are rank-based, so the
     # ~1e-15 coefficient spread cannot move them unless a pair sits precisely
@@ -110,8 +110,8 @@ def test_chunking_works_with_a_sparse_response_matrix():
     sparse = pytest.importorskip("scipy.sparse")
     resp, gene_ids, cov, _, _ = _inputs()
     csr = sparse.csr_matrix(resp)
-    dense_fit = fit_all_genes(resp, gene_ids, cov, max_fit_memory_gb=100.0)
-    sparse_fit = fit_all_genes(csr, gene_ids, cov, max_fit_memory_gb=1e-9)
+    dense_fit = fit_all_genes(resp, gene_ids, cov, max_memory_gb=100.0)
+    sparse_fit = fit_all_genes(csr, gene_ids, cov, max_memory_gb=1e-9)
     for gid in gene_ids:
         np.testing.assert_allclose(
             dense_fit[gid].fitted_coefs, sparse_fit[gid].fitted_coefs, rtol=1e-12

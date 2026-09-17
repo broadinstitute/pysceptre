@@ -16,8 +16,7 @@ import numpy as np
 import pandas as pd
 
 from .discovery import (
-    _DEFAULT_MAX_DRAW_MEMORY_GB,
-    _DEFAULT_MAX_FIT_MEMORY_GB,
+    _DEFAULT_MAX_MEMORY_GB,
     _DEFAULT_TARGET_CHUNK_SIZE,
     run_discovery_ntcells_complement,
 )
@@ -38,8 +37,7 @@ def run_discovery_analysis(
     multiple_testing_alpha: float = 0.1,
     seed: int | None = None,
     target_chunk_size: int = _DEFAULT_TARGET_CHUNK_SIZE,
-    max_draw_memory_gb: float = _DEFAULT_MAX_DRAW_MEMORY_GB,
-    max_fit_memory_gb: float = _DEFAULT_MAX_FIT_MEMORY_GB,
+    max_memory_gb: float = _DEFAULT_MAX_MEMORY_GB,
 ) -> pd.DataFrame:
     """response_matrix: (n_genes, n_cells) dense ndarray or scipy.sparse matrix.
     gene_ids: row labels for response_matrix, in order.
@@ -53,13 +51,10 @@ def run_discovery_analysis(
         batch/hold in memory at once (see pipeline/discovery.py) -- lower this
         if you hit memory pressure, raise it for a modest speed gain if you
         have memory to spare.
-    max_draw_memory_gb: cap on the CRT draws held in memory at once.
-        `target_chunk_size` is reduced automatically (with a warning) to stay
-        under it, which does not change results. Mainly a guard for
-        `no_approximation`, whose draw count grows with the pair count.
-    max_fit_memory_gb: cap on the transient dense arrays used while fitting
-        genes. Genes are fit in chunks that respect it, which does not change
-        results.
+    max_memory_gb: ceiling on the working arrays pysceptre holds at once.
+        Both stages size their chunks to stay under it, so `target_chunk_size`
+        is an upper bound rather than a mandate and no value passed for it can
+        exhaust memory. Reductions are warned about and do not change results.
 
     Targets sceptre's complement-control-group + CRT discovery-analysis path
     (the only valid combination for high-MOI data -- see pipeline/discovery.py).
@@ -90,8 +85,7 @@ def run_discovery_analysis(
         side_code=side_code,
         seed=seed,
         target_chunk_size=target_chunk_size,
-        max_draw_memory_gb=max_draw_memory_gb,
-        max_fit_memory_gb=max_fit_memory_gb,
+        max_memory_gb=max_memory_gb,
     )
 
 

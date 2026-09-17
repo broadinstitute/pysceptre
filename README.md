@@ -61,7 +61,7 @@ result = run_discovery_analysis(
 
 See [TUTORIAL.md](TUTORIAL.md) for a complete, runnable walkthrough
 (including how to build each input from scratch) and for guidance on
-picking `target_chunk_size` for your dataset's memory budget.
+picking `target_chunk_size` and `max_memory_gb` for your dataset.
 
 ## API reference
 
@@ -81,6 +81,7 @@ run_discovery_analysis(
     resampling_approximation: str = "skew_normal",
     seed: int | None = None,
     target_chunk_size: int = 200,
+    max_memory_gb: float = 4.0,
 ) -> pd.DataFrame
 ```
 
@@ -94,7 +95,8 @@ run_discovery_analysis(
 | `side` | `"left"` \| `"both"` \| `"right"` | Test sidedness, matching sceptre's own convention. Use `"left"` for expected-repression screens (e.g. CRISPRi enhancer knockdown), `"both"` for a two-sided test. |
 | `resampling_approximation` | `"skew_normal"` \| `"no_approximation"` | `"skew_normal"` (default, matching sceptre): pairs whose initial empirical p-value (`B1=499` draws) is `<= 0.02` get a skew-normal tail fit from a further `B2=4999` draws, giving p-values far smaller than `1/(B1+1)` could resolve. `"no_approximation"` fits no curve and instead draws a third, larger empirical batch, sized by R's own rule: `B3 = ceil(mult * n_pairs / multiple_testing_alpha)`, `mult = 10` two-sided and `5` one-sided. That grows linearly in the number of pairs and is much slower -- see [Scope and limitations](#scope-and-limitations). Any other value raises `ValueError`. |
 | `seed` | `int \| None` | Seeds the `numpy.random.Generator` used for all CRT draws in the run. Note this does **not** reproduce sceptre's own R/C++ RNG stream bit-for-bit (different algorithm and seeding scheme) -- see [Scope and limitations](#scope-and-limitations). |
-| `target_chunk_size` | `int` | How many gRNA targets' logistic fits + CRT draws to batch and hold in memory at once. Each target's CRT draw needs `O(B * n_treated_cells)` memory; holding *every* target's draws in memory at once does not scale to real target counts (measured: OOM-killed the process at ~3,000 targets). Lower this if you hit memory pressure; raise it for a modest speed gain if you have memory to spare. Default `200`. |
+| `target_chunk_size` | `int` | How many gRNA targets to fit and CRT-draw at once. This is an **upper bound, not a mandate** -- it is reduced automatically to respect `max_memory_gb`, so no value here can exhaust memory. Lower it to trade batching width for memory; raise it for a modest speed gain if the budget allows. Default `200`. |
+| `max_memory_gb` | `float` | Ceiling on the working arrays pysceptre holds at once, and the single number that answers "how much memory will this run need?". Both stages size their chunks to stay under it. Two costs are linear in chunk size and both count against it: the dense `(n_cells, k)` arrays IRLS needs (the response plus `mu`, weights and working response -- unavoidable, since IRLS is defined on a dense working response) and the CRT draws a chunk holds. Reductions emit a warning naming which part is expensive, and never change results. Default `4.0`. |
 
 **Returns** a `pd.DataFrame`, one row per input pair, with columns:
 
@@ -158,7 +160,8 @@ importable and unit-tested, for anyone extending or debugging the pipeline:
   three directly if you need to override them.
 - **`no_approximation` is expensive, and can be coarser at small scale.** Its
   `B3` grows linearly in pair count: a 33,066-pair one-sided run needs
-  1,653,300 draws *per target*, so `target_chunk_size` must be very small.
+  1,653,300 draws *per target* (5.2 GB), so the chunk collapses to a
+  single target and the run warns that it may still exhaust memory.
   Conversely, at 4 pairs one-sided `B3 = 200`, *below* `B1 = 499`. Both are
   R's behavior, reproduced rather than corrected.
 - **gRNA integration strategy: "union" only.** `grna_target_cells` is keyed
