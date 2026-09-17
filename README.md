@@ -31,7 +31,8 @@ instead of one per gene or target.
 pip install -e ".[dev,fast]"
 ```
 
-- `dev` installs `pytest`, needed for the test suite.
+- `dev` installs `pytest` (needed for the test suite) plus `ruff` and
+  `pre-commit` for linting and formatting.
 - `fast` installs [`numba`](https://numba.readthedocs.io/), which JIT-compiles
   the CRT sampler's cell-grouping step (a counting sort). Without it,
   `pysceptre` falls back to a slower pure-numpy `argsort`-based version
@@ -220,7 +221,15 @@ R package (pinned upstream commit), not just internal self-consistency:
 
 ## License and attribution
 
-This package ports specific algorithms and formulas from
-[`sceptre`](https://github.com/Katsevich-Lab/sceptre) (GPL-3 licensed). It
-is intended for internal research use; if this code is ever distributed
-outside that context, GPL-3's terms apply to the ported portions.
+`pysceptre` is licensed under the GNU General Public License v3.0 only
+(SPDX: `GPL-3.0-only`) -- full text in [LICENSE](LICENSE). That is inherited,
+not chosen: this package ports algorithms and formulas from
+[`sceptre`](https://github.com/Katsevich-Lab/sceptre), which is `GPL-3` --
+version 3 exactly, not "or later". Each module's docstring names what it
+ports and from which upstream file.
+
+The original SCEPTRE is by Timothy Barry and Eugene Katsevich. The
+statistical method is theirs, not ours -- if you use this in published work,
+cite `sceptre`: Barry et al. (2021), *SCEPTRE improves calibration and
+sensitivity in single-cell CRISPR screen analysis*, Genome Biology 22(1),
+[doi:10.1186/s13059-021-02545-2](https://doi.org/10.1186/s13059-021-02545-2).

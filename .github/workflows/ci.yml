@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      # Pinned to the same version as .pre-commit-config.yaml -- bump both together.
+      - run: uvx ruff@0.16.8 check .
+      - run: uvx ruff@0.16.8 format --check .
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          # Sets UV_PYTHON, so the `uv venv` below builds on this interpreter.
+          python-version: ${{ matrix.python-version }}
+      - run: uv venv
+      # tests/validation/ground_truth.json is committed, so the suite runs
+      # without R/sceptre installed -- conftest only shells out to Rscript
+      # when that cached fixture is missing.
+      - run: uv pip install -e ".[dev,fast]"
+      # --no-sync: this is a setuptools project with no uv.lock to sync against.
+      - run: uv run --no-sync pytest -q
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv build
+      - run: uvx twine check dist/*

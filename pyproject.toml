@@ -1,5 +1,6 @@
 [build-system]
-requires = ["setuptools>=64", "wheel"]
+# setuptools>=77 is required for the PEP 639 SPDX `license` expression below.
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,6 +9,35 @@ version = "0.1.0"
 description = "Standalone Python port of sceptre's CRT discovery-analysis statistical engine (complement control group)"
 readme = "README.md"
 requires-python = ">=3.10"
+# GPL-3.0-only, not -or-later: upstream sceptre's DESCRIPTION says
+# `License: GPL-3`, which in R packaging means version 3 exactly
+# (`GPL (>= 3)` is the or-later form). Don't grant more than we received.
+license = "GPL-3.0-only"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Siddarth Wekhande" },
+    { name = "Eugenio Mattei" },
+    { name = "Broad Institute of MIT and Harvard" },
+]
+keywords = [
+    "crispr",
+    "single-cell",
+    "sceptre",
+    "conditional-randomization-test",
+    "differential-expression",
+    "bioinformatics",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
 dependencies = [
     "numpy>=1.24",
     "scipy>=1.10",
@@ -16,8 +46,35 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0"]
+dev = ["pytest>=7.0", "ruff>=0.6", "pre-commit>=3.0"]
 fast = ["numba>=0.58"]
+
+[project.urls]
+Homepage = "https://github.com/broadinstitute/pysceptre"
+Repository = "https://github.com/broadinstitute/pysceptre"
+Issues = "https://github.com/broadinstitute/pysceptre/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+indent-width = 4
+
+
+[tool.ruff.lint]
+# E501 is off: the formatter owns line length, and leaving it on flags prose in
+# docstrings it cannot rewrap -- this package's docstrings carry the porting
+# rationale and are deliberately long.
+select = ["E4", "E7", "E9", "F", "I", "UP", "B"]
+ignore = ["E501"]
+
+# Markdown code blocks are excluded: recent ruff versions format embedded
+# Python inside .md, which would rewrite the hand-aligned snippets in
+# README.md / TUTORIAL.md.
+[tool.ruff.format]
+indent-style = "space"
+exclude = ["*.md"]
