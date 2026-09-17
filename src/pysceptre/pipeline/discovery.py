@@ -17,6 +17,7 @@ per-gene loop; likewise all targets share it for the logistic fit.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 
 import numpy as np
@@ -111,6 +112,71 @@ def fit_all_targets(
 
 _DEFAULT_TARGET_CHUNK_SIZE = 200
 
+# Budget for the CRT draws held in memory at once. Chosen so the skew_normal
+# path at real scale is never auto-shrunk (moi5: B_total=5498 x ~400 treated
+# cells x 8 B x 200 targets ~= 3.5 GB), while still catching the
+# no_approximation blow-up, which is three orders of magnitude larger.
+_DEFAULT_MAX_DRAW_MEMORY_GB = 8.0
+
+_BYTES_PER_INDEX = 8  # int64 cell index
+
+
+def estimate_draw_memory_bytes(B_total: int, n_trt_values, chunk_size: int) -> float:
+    """Bytes of CRT draws held at once: one chunk of targets, each holding
+    B_total ragged index arrays of about n_trt entries.
+
+    Uses the *median* treated-cell count as the per-target size, matching how
+    `crt_index_sampler_fast` draws (expected inclusions per draw equals the
+    observed treated-cell count, by the intercept property of the logistic
+    MLE -- see crt/sampler.py).
+    """
+    if B_total <= 0 or len(n_trt_values) == 0:
+        return 0.0
+    median_n_trt = float(np.median(np.asarray(n_trt_values, dtype=float)))
+    return B_total * median_n_trt * _BYTES_PER_INDEX * chunk_size
+
+
+def _fit_chunk_size_to_budget(
+    B_total: int, n_trt_values, chunk_size: int, max_memory_gb: float
+) -> int:
+    """Shrink `chunk_size` until the estimated draw memory fits the budget.
+
+    Chunk size affects only peak memory and batching width, never which draws
+    are taken: `fit_all_targets` draws per target in a fixed order, so the RNG
+    stream is identical regardless of where chunk boundaries fall
+    (`test_memory_guard.py` pins this).
+    """
+    budget = max_memory_gb * 1e9
+    if estimate_draw_memory_bytes(B_total, n_trt_values, chunk_size) <= budget:
+        return chunk_size
+
+    per_target = estimate_draw_memory_bytes(B_total, n_trt_values, 1)
+    if per_target <= 0:
+        return chunk_size
+    fitted = min(chunk_size, max(1, int(budget // per_target)))
+
+    message = (
+        f"reducing target_chunk_size from {chunk_size} to {fitted}: CRT draws "
+        f"need about {per_target / 1e9:.2f} GB per target "
+        f"(B1+B2+B3 = {B_total:,} draws), against "
+        f"max_draw_memory_gb={max_memory_gb}. Chunk size affects only peak "
+        f"memory and batching width, not results."
+    )
+    if fitted == 1:
+        # Either a single target already blows the budget, or it only just
+        # fits -- both mean every target is processed alone, and both are
+        # overwhelmingly likely to be the no_approximation blow-up.
+        message += (
+            " At target_chunk_size=1 each target is drawn on its own, which is"
+            " slow, and peak memory runs several times the figure above while"
+            " a draw is being built, so this run may still exhaust memory."
+            " This is usually resampling_approximation='no_approximation',"
+            " whose B3 grows as n_pairs / multiple_testing_alpha;"
+            " 'skew_normal' needs a few MB per target instead."
+        )
+    warnings.warn(message, stacklevel=3)
+    return fitted
+
 
 def run_discovery_ntcells_complement(
     response_matrix,
@@ -126,6 +192,7 @@ def run_discovery_ntcells_complement(
     side_code: int = 0,
     seed: int | None = None,
     target_chunk_size: int = _DEFAULT_TARGET_CHUNK_SIZE,
+    max_draw_memory_gb: float = _DEFAULT_MAX_DRAW_MEMORY_GB,
 ) -> pd.DataFrame:
     """pairs: DataFrame with columns 'response_id', 'grna_target' -- the
     QC-passed pairs to test. Returns a DataFrame with one row per pair:
@@ -139,6 +206,13 @@ def run_discovery_ntcells_complement(
     bounded to O(chunk_size) while still batching the (bulk of the) per-target
     logistic fit and CRT draw across many targets at once for speed, not
     falling back to a slow one-target-at-a-time loop.
+
+    `target_chunk_size` is automatically reduced if the resulting draws would
+    exceed `max_draw_memory_gb`, which matters for
+    `resampling_approximation="no_approximation"`: its B3 grows as
+    `n_pairs / multiple_testing_alpha`, reaching 1.65M draws (5.2 GB) per
+    target at moi5 scale, or ~1 TB at the default chunk size. Shrinking the
+    chunk does not change results -- see `_fit_chunk_size_to_budget`.
     """
     rng = np.random.default_rng(seed)
 
@@ -146,6 +220,13 @@ def run_discovery_ntcells_complement(
 
     pairs_by_target = {target_id: group for target_id, group in pairs.groupby("grna_target")}
     target_ids_needed = [t for t in grna_target_cells if t in pairs_by_target]
+
+    target_chunk_size = _fit_chunk_size_to_budget(
+        B1 + B2 + B3,
+        [len(grna_target_cells[t]) for t in target_ids_needed],
+        target_chunk_size,
+        max_draw_memory_gb,
+    )
 
     rows = []
     for chunk_start in range(0, len(target_ids_needed), target_chunk_size):
