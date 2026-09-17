@@ -26,7 +26,7 @@ import pandas as pd
 from ..crt.sampler import crt_index_sampler_fast
 from ..glm.irls import fit_binomial_glm_batch, fit_poisson_glm_batch
 from ..glm.nb_theta import estimate_theta
-from ..precompute.pieces import PrecomputationPieces, compute_precomputation_pieces
+from ..precompute.pieces import compute_precomputation_pieces
 from ..test_statistic.resampling import run_low_level_test_full
 
 # Budget for the transient dense arrays the gene IRLS needs. 2 GB holds
@@ -43,15 +43,31 @@ _THETA_BOUNDS = (0.01, 1000.0)
 
 @dataclass
 class GenePrecomputation:
-    y: np.ndarray
+    """What is retained per gene for the whole run.
+
+    Deliberately just the fitted coefficients and theta -- the same two things
+    upstream sceptre's `perform_response_precomputation` returns. `mu`, `w`,
+    `a` and `D` are all recoverable from these plus the response vector, and
+    recomputing them costs less than reading them back from anywhere:
+    measured at 131k cells and p=6, `compute_precomputation_pieces` takes
+    1.59 ms, while memory-mapping `D` alone off local disk takes 1.04 ms. So
+    there is nothing to be gained by spilling them to parquet, zarr or a
+    memmap -- recomputation wins outright, and holding them cost 10.5 MB per
+    gene (2.56 GB for a 244-gene analysis, 405 GB genome-wide).
+    """
+
     fitted_coefs: np.ndarray
     theta: float
-    pieces: PrecomputationPieces
     # Diagnostics, so a run can tell when a fit was degenerate rather than
     # silently returning a statistic built on it.
     theta_method: int = 1
     theta_clamped: bool = False
     glm_converged: bool = True
+    # Conditioning of Zt_wZ, kept from the fit so degeneracy can still be
+    # reported without retaining D itself.
+    min_eigenvalue: float = float("nan")
+    max_eigenvalue: float = float("nan")
+    n_covariates: int = 0
 
 
 @dataclass
@@ -124,22 +140,26 @@ def fit_all_genes(
             theta_est, method = estimate_theta(y=y_j, mu=fit.fitted_values[:, j], dfr=dfr)
             lo, hi = _THETA_BOUNDS
             theta = max(min(theta_est, hi), lo)
+            # Built here only to read off the conditioning diagnostics, then
+            # dropped -- see GenePrecomputation. It is rebuilt per gene per
+            # target chunk in run_discovery_ntcells_complement.
             pieces = compute_precomputation_pieces(y_j, covariate_matrix, fit.coefs[:, j], theta)
             out[gene_id] = GenePrecomputation(
-                y=y_j,
                 fitted_coefs=fit.coefs[:, j],
                 theta=theta,
-                pieces=pieces,
                 theta_method=method,
                 theta_clamped=not (lo <= theta_est <= hi),
                 glm_converged=bool(fit.converged[j]),
+                min_eigenvalue=pieces.min_eigenvalue,
+                max_eigenvalue=pieces.max_eigenvalue,
+                n_covariates=pieces.D.shape[0],
             )
 
     _warn_about_degenerate_gene_fits(out)
     return out
 
 
-def _design_is_rank_deficient(pieces: PrecomputationPieces) -> bool:
+def _design_is_rank_deficient(pieces) -> bool:
     """Whether Zt_wZ is numerically rank deficient.
 
     Uses the same relative tolerance convention as `np.linalg.matrix_rank`:
@@ -153,7 +173,10 @@ def _design_is_rank_deficient(pieces: PrecomputationPieces) -> bool:
         return True
     if max_eig <= 0.0:
         return True
-    p = pieces.D.shape[0]
+    # Accepts anything carrying min_eigenvalue/max_eigenvalue plus a covariate
+    # count: a PrecomputationPieces (which exposes p as D.shape[0]) or a
+    # GenePrecomputation (which keeps n_covariates so D need not be retained).
+    p = getattr(pieces, "n_covariates", 0) or pieces.D.shape[0]
     # bool(), not the numpy scalar the comparison yields -- callers should get
     # a plain Python bool.
     return bool(min_eig <= max_eig * p * np.finfo(float).eps)
@@ -179,7 +202,7 @@ def summarize_gene_fits(gene_precomps: dict[str, GenePrecomputation]) -> dict[st
             summary["theta_fallback"].append(gene_id)
         if gp.theta_clamped:
             summary["theta_clamped"].append(gene_id)
-        if _design_is_rank_deficient(gp.pieces):
+        if _design_is_rank_deficient(gp):
             summary["singular_design"].append(gene_id)
     return summary
 
@@ -390,7 +413,12 @@ def run_discovery_ntcells_complement(
         max_draw_memory_gb,
     )
 
-    rows = []
+    gene_row_index = {gene_id: i for i, gene_id in enumerate(gene_ids)}
+    pairs_by_gene: dict[str, list[str]] = {}
+    for gene_id, group in pairs.groupby("response_id"):
+        pairs_by_gene[str(gene_id)] = list(group["grna_target"])
+
+    rows: dict[tuple[str, str], dict] = {}
     for chunk_start in range(0, len(target_ids_needed), target_chunk_size):
         chunk_ids = target_ids_needed[chunk_start : chunk_start + target_chunk_size]
         chunk_cells = {t: grna_target_cells[t] for t in chunk_ids}
@@ -398,17 +426,31 @@ def run_discovery_ntcells_complement(
             chunk_cells, covariate_matrix, B1=B1, B2=B2, B3=B3, rng=rng
         )
 
-        for target_id in chunk_ids:
-            target = target_precomps[target_id]
-            for row in pairs_by_target[target_id].itertuples(index=False):
-                gene = gene_precomps[row.response_id]
+        # Gene-outer inside the chunk so each gene's pieces are rebuilt once
+        # per chunk rather than once per pair: 244 genes x ~15 chunks is ~3,660
+        # rebuilds (~0.1 min) against 33,066 for sceptre's per-pair approach
+        # (~0.9 min), while holding one gene's pieces (10.5 MB) instead of
+        # every gene's (2.56 GB).
+        chunk_target_set = set(chunk_ids)
+        for gene_id, gene_pairs in pairs_by_gene.items():
+            targets_here = [t for t in gene_pairs if t in chunk_target_set]
+            if not targets_here:
+                continue
 
+            gene = gene_precomps[gene_id]
+            y = _get_row(response_matrix, gene_row_index[gene_id])
+            pieces = compute_precomputation_pieces(
+                y, covariate_matrix, gene.fitted_coefs, gene.theta
+            )
+
+            for target_id in targets_here:
+                target = target_precomps[target_id]
                 result = run_low_level_test_full(
-                    y=gene.y,
-                    mu=gene.pieces.mu,
-                    a=gene.pieces.a,
-                    w=gene.pieces.w,
-                    D=gene.pieces.D,
+                    y=y,
+                    mu=pieces.mu,
+                    a=pieces.a,
+                    w=pieces.w,
+                    D=pieces.D,
                     trt_idxs=target.trt_idxs,
                     synthetic_idxs=target.synthetic_idxs,
                     B1=B1,
@@ -417,17 +459,24 @@ def run_discovery_ntcells_complement(
                     fit_parametric_curve=fit_parametric_curve,
                     side_code=side_code,
                 )
-                rows.append(
-                    {
-                        "response_id": row.response_id,
-                        "grna_target": target_id,
-                        "p_value": result.p_value,
-                        "fold_change": result.fold_change,
-                        "log_2_fold_change": np.log2(result.fold_change),
-                        "z_orig": result.z_orig,
-                        "stage": result.stage,
-                    }
-                )
+                rows[(gene_id, target_id)] = {
+                    "response_id": gene_id,
+                    "grna_target": target_id,
+                    "p_value": result.p_value,
+                    "fold_change": result.fold_change,
+                    "log_2_fold_change": np.log2(result.fold_change),
+                    "z_orig": result.z_orig,
+                    "stage": result.stage,
+                }
+            del pieces, y  # one gene's arrays at a time
+
         del target_precomps  # free this chunk's synthetic_idxs before the next one
 
-    return pd.DataFrame(rows)
+    # Emit in the original target-major order, so inverting the loops above is
+    # not observable in the output.
+    ordered = [
+        rows[(row.response_id, target_id)]
+        for target_id in target_ids_needed
+        for row in pairs_by_target[target_id].itertuples(index=False)
+    ]
+    return pd.DataFrame(ordered)

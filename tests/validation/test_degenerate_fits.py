@@ -19,7 +19,6 @@ from pysceptre.pipeline.discovery import (
     summarize_gene_fits,
 )
 from pysceptre.precompute.pieces import (
-    PrecomputationPieces,
     compute_precomputation_pieces,
 )
 
@@ -87,15 +86,14 @@ def test_exactly_collinear_covariates_fail_fast_in_the_glm():
         fit_all_genes(resp, ["g0", "g1"], cov)
 
 
-def _pieces_with_eigenvalues(min_eig, max_eig, p=3, n=10):
-    """A PrecomputationPieces carrying only what the rank check reads."""
-    return PrecomputationPieces(
-        mu=np.ones(n),
-        w=np.ones(n),
-        a=np.ones(n),
-        D=np.zeros((p, n)),
+def _gene_with_eigenvalues(min_eig, max_eig, p=3):
+    """A GenePrecomputation carrying only what the rank check reads."""
+    return GenePrecomputation(
+        fitted_coefs=np.ones(p),
+        theta=8.0,
         min_eigenvalue=min_eig,
         max_eigenvalue=max_eig,
+        n_covariates=p,
     )
 
 
@@ -121,22 +119,17 @@ def test_rank_deficiency_check_on_exact_eigenvalues(min_eig, max_eig, expected):
     version of this test across the threshold between macOS and Linux CI.
     The threshold logic is what matters, so test it directly.
     """
-    assert _design_is_rank_deficient(_pieces_with_eigenvalues(min_eig, max_eig)) is expected
+    assert _design_is_rank_deficient(_gene_with_eigenvalues(min_eig, max_eig)) is expected
 
 
 def test_summarize_groups_each_degeneracy_independently():
-    healthy = GenePrecomputation(
-        y=np.ones(4),
-        fitted_coefs=np.ones(2),
-        theta=8.0,
-        pieces=_pieces_with_eigenvalues(1.0, 10.0),
-    )
+    healthy = _gene_with_eigenvalues(1.0, 10.0)
     precomps = {
         "ok": healthy,
         "not_converged": replace(healthy, glm_converged=False),
         "theta_fell_back": replace(healthy, theta_method=2),
         "theta_at_bound": replace(healthy, theta_clamped=True),
-        "singular": replace(healthy, pieces=_pieces_with_eigenvalues(0.0, 10.0)),
+        "singular": replace(healthy, min_eigenvalue=0.0),
     }
     assert summarize_gene_fits(precomps) == {
         "glm_not_converged": ["not_converged"],

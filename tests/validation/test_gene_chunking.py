@@ -71,11 +71,15 @@ def test_fit_all_genes_agrees_across_chunk_sizes(budget_gb):
     assert list(reference) == list(other)
     for gid in gene_ids:
         r, o = reference[gid], other[gid]
-        np.testing.assert_array_equal(r.y, o.y)  # responses are just copied
         np.testing.assert_allclose(r.fitted_coefs, o.fitted_coefs, rtol=1e-10)
         np.testing.assert_allclose(r.theta, o.theta, rtol=1e-8)
-        for attr in ("mu", "w", "a", "D"):
-            np.testing.assert_allclose(getattr(r.pieces, attr), getattr(o.pieces, attr), rtol=1e-10)
+        assert (r.theta_method, r.theta_clamped, r.glm_converged) == (
+            o.theta_method,
+            o.theta_clamped,
+            o.glm_converged,
+        )
+        np.testing.assert_allclose(r.min_eigenvalue, o.min_eigenvalue, rtol=1e-8)
+        np.testing.assert_allclose(r.max_eigenvalue, o.max_eigenvalue, rtol=1e-8)
 
 
 def test_end_to_end_results_agree_across_gene_chunk_budgets():

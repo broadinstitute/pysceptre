@@ -80,36 +80,42 @@ larger prize, but it is unmeasured and interacts with the deliberate
 pre-filter genes. The no-densify constraint promotes it: `fit_all_genes`
 builds a dense `(n_cells, n_genes)` `Y` regardless of what the caller passed.
 
-### T2.5 Retained gene precomputation
+### T2.5 Retained gene precomputation — DONE
 
-Separate from T2.4, which bounded only the *transient* fitting peak.
-`fit_all_genes` returns `y`, `mu`, `w`, `a` and `D` per gene and they are held
-for the whole run: about `(4 + p) * n_cells * 8` bytes per gene.
+Resolved by storing what upstream stores. `perform_response_precomputation`
+in sceptre returns only `fitted_coefs` and `theta`; `mu`, `w`, `a` and `D` are
+rebuilt inside its per-pair loop. pysceptre now keeps the same two things.
 
-| genes | retained |
+| | retained per gene | 244 genes | genome-wide |
+|---|---|---|---|
+| before | 10.5 MB | 2.56 GB | 405 GB |
+| after | 80 B | 0.02 MB | 3.1 MB |
+
+Measured (131k cells, p=6) settling how to hold the pieces:
+
+| | cost |
 |---|---|
-| 244 (the real moi5 analysis) | 2.6 GB |
-| 2,000 | 21 GB |
-| 38,606 (genome-wide) | 405 GB |
+| recompute all four arrays | 1.59 ms |
+| memory-map `D` alone from local disk | 1.04 ms |
 
-At moi5 scale this now exceeds the transient cost it replaced, so it is the
-binding memory constraint on the gene side.
+Reading back just the largest array costs about as much as recomputing
+everything from `p+1` numbers, so **parquet, zarr and memmap are all the wrong
+answer here** -- there is nothing to spill. Parquet would be doubly wrong: it
+is columnar and compressed, so each access decompresses a 6.3 MB array, and it
+is built for analytical scans of tabular data rather than random access to
+numeric arrays in a hot loop. (Parquet/zarr remain right for the moi5 *export*
+files -- T3.4.)
 
-This is inherent to the design that makes the package fast — fit each gene
-once, reuse across every target it is paired with — so it is a tradeoff, not
-a bug, and it needs a decision rather than a patch:
+pysceptre recomputes once per gene per target chunk rather than once per pair,
+by iterating gene-outer inside each chunk. That is ~3,660 rebuilds at moi5
+scale against sceptre's 33,066:
 
-- `w` and `a` are recoverable from `y`, `mu` and `theta`, saving ~2/9 of the
-  total. `D` (p x n) is the largest single piece and is genuinely needed.
-- Bounding it properly means chunking genes at the *outer* level, which forces
-  either redrawing each target's CRT samples per gene chunk (the draws are the
-  48-minute stage — likely much worse) or recomputing gene pieces per target
-  chunk (~5 minutes x the number of chunks).
-- Doing nothing is defensible: `README.md` already tells callers to pass only
-  the genes appearing in `pairs`, which is what keeps real runs at 2.6 GB.
+| | rebuilds | cost |
+|---|---|---|
+| sceptre, per pair | 33,066 | ~0.9 min |
+| pysceptre, per gene per chunk | 3,660 | ~0.1 min |
 
-Recommend measuring the recompute-per-target-chunk option before assuming it
-is too slow, since it is the only one that scales genome-wide.
+Output is bit-for-bit identical, row order included.
 
 ## Tier 3 — release
 
