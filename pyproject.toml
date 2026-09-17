@@ -48,6 +48,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "ruff>=0.6", "pre-commit>=3.0"]
 fast = ["numba>=0.58"]
+# Reading the parquet bundle written by scripts/export_sceptre_to_parquet.R.
+io = ["pyarrow>=14"]
 
 [project.urls]
 Homepage = "https://github.com/broadinstitute/pysceptre"

@@ -19,3 +19,7 @@ tests/validation/*.log
 
 # scratch/output (real discovery-result exports, benchmark output, etc.)
 *.csv
+
+# Local copies of real screen data pulled from GCS for validation/benchmarking.
+# Never commit these -- see the note above.
+test_data/
