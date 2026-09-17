@@ -14,6 +14,7 @@ from pysceptre.pipeline.api import run_discovery_analysis
 from pysceptre.pipeline.discovery import (
     _fit_chunk_size_to_budget,
     estimate_draw_memory_bytes,
+    target_fit_chunk_size_for_budget,
 )
 
 MOI5_N_TRT = [396] * 100  # median treated-cell count at moi5 scale
@@ -100,3 +101,41 @@ def test_results_are_identical_across_chunk_sizes(chunk_size):
     reference = run_discovery_analysis(**common, target_chunk_size=3)
     other = run_discovery_analysis(**common, target_chunk_size=chunk_size)
     pd.testing.assert_frame_equal(reference, other)
+
+
+def test_target_fit_chunk_size_matches_hand_calculation():
+    # 4 arrays x 586,309 cells x 8 bytes = 18.76 MB per target; 2 GB / that = 106
+    assert target_fit_chunk_size_for_budget(586_309, 10_000, 2.0) == 106
+
+
+def test_target_fit_chunk_size_never_exceeds_the_target_count():
+    assert target_fit_chunk_size_for_budget(1_000, 5, 100.0) == 5
+
+
+def test_target_fit_chunk_size_is_at_least_one():
+    assert target_fit_chunk_size_for_budget(586_309, 100, 1e-9) == 1
+
+
+def test_moi5_cell_count_leaves_a_workable_target_chunk():
+    """The real moi5 dataset is 131k cells; the default budget should leave a
+    chunk large enough that batching still pays."""
+    assert target_fit_chunk_size_for_budget(131_000, 2_875, 2.0) == 477
+
+
+def test_fit_budget_tightens_the_target_chunk_end_to_end():
+    """586k cells at target_chunk_size=200 was measured at 13.1 GB peak, which
+    the draw budget alone never caught -- it only counts the CRT draws."""
+    resp, gene_ids, cov, cells, pairs = _inputs(n_cells=600, n_targets=40)
+    common = dict(
+        response_matrix=resp,
+        gene_ids=gene_ids,
+        covariate_matrix=cov,
+        grna_target_cells=cells,
+        pairs=pairs,
+        side="left",
+        seed=5,
+    )
+    reference = run_discovery_analysis(**common, target_chunk_size=40)
+    with pytest.warns(UserWarning, match="binomial fit needs dense"):
+        bounded = run_discovery_analysis(**common, target_chunk_size=40, max_fit_memory_gb=1e-7)
+    pd.testing.assert_frame_equal(reference, bounded)

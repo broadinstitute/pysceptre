@@ -312,6 +312,26 @@ def estimate_draw_memory_bytes(B_total: int, n_trt_values, chunk_size: int) -> f
     return B_total * median_n_trt * _BYTES_PER_INDEX * chunk_size
 
 
+def target_fit_chunk_size_for_budget(n_cells: int, n_targets: int, max_memory_gb: float) -> int:
+    """How many targets to densify and fit at once.
+
+    `fit_all_targets` builds a dense `(n_cells, k)` indicator matrix and the
+    binomial IRLS then needs mu, weights and working response at the same
+    shape, so k targets cost about `4 * n_cells * k * 8` bytes -- the same
+    arithmetic as `gene_chunk_size_for_budget`.
+
+    This is the wasteful one: the responses are indicators with roughly
+    `n_trt` ones per column (396 of 586,309 in the moi5 benchmark, 0.07%
+    dense), yet they are held as float64. Until the IRLS can consume them
+    sparsely, bounding k is what keeps the peak finite -- measured 13.1 GB at
+    `target_chunk_size=200` over 586k cells, against 1.2 GB at 10.
+    """
+    per_target = 4 * n_cells * 8
+    if per_target <= 0:
+        return n_targets
+    return max(1, min(n_targets, int(max_memory_gb * 1e9 // per_target)))
+
+
 def _fit_chunk_size_to_budget(
     B_total: int, n_trt_values, chunk_size: int, max_memory_gb: float
 ) -> int:
@@ -406,12 +426,27 @@ def run_discovery_ntcells_complement(
     pairs_by_target = {target_id: group for target_id, group in pairs.groupby("grna_target")}
     target_ids_needed = [t for t in grna_target_cells if t in pairs_by_target]
 
+    # Two independent caps on how many targets a chunk may hold: the CRT draws
+    # it keeps, and the dense arrays its binomial fit needs. Take the tighter.
     target_chunk_size = _fit_chunk_size_to_budget(
         B1 + B2 + B3,
         [len(grna_target_cells[t]) for t in target_ids_needed],
         target_chunk_size,
         max_draw_memory_gb,
     )
+    fit_bound = target_fit_chunk_size_for_budget(
+        covariate_matrix.shape[0], len(target_ids_needed), max_fit_memory_gb
+    )
+    if fit_bound < target_chunk_size:
+        warnings.warn(
+            f"reducing target_chunk_size from {target_chunk_size} to {fit_bound}: "
+            f"the binomial fit needs dense ({covariate_matrix.shape[0]}, k) arrays, "
+            f"about {4 * covariate_matrix.shape[0] * 8 / 1e6:.0f} MB per target, "
+            f"against max_fit_memory_gb={max_fit_memory_gb}. Chunk size affects "
+            f"only peak memory and batching width, not results.",
+            stacklevel=3,
+        )
+        target_chunk_size = fit_bound
 
     gene_row_index = {gene_id: i for i, gene_id in enumerate(gene_ids)}
     pairs_by_gene: dict[str, list[str]] = {}
