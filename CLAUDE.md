@@ -124,11 +124,17 @@ Python 3.10+ (`requires-python`). Verified passing on 3.10, 3.11, 3.12, 3.13.
   `boost::mt19937`; this uses `numpy.random.Generator`. Validation matches
   *distributions*, not draws. Don't chase exact agreement.
 
-- **`B1=499, B2=4999, B3=0` are fixed** as defaults on
-  `run_discovery_ntcells_complement` (`pipeline/discovery.py`) and not exposed
-  on the public API. Because
-  `B3=0`, `stage == 3` in the output is unreachable through
-  `run_discovery_analysis`. `run_low_level_test_full` takes them directly.
+- **`B1`/`B2`/`B3` are derived in `api.py::_resampling_budget`, porting R's
+  own sizing** (`s4_analysis_functs_1.R`: set in `run_discovery_analysis`,
+  then B3 recomputed in `run_qc_pt_2`). `B1=499` always; `skew_normal` gives
+  `(4999, 0)`; `no_approximation` gives `(0, ceil(mult * n_pairs / alpha))`.
+  `B3=0` on the `skew_normal` path is **parity with R**, not a stub — R only
+  uses `B3=24999` for `permutations`, which is out of scope. Don't "fix" it.
+
+- **`stage == 3` is reachable on the default path.** It is entered whenever
+  the skew-normal fit is *rejected* (`sn_fit_used=False`), regardless of `B3`,
+  and the p-value then comes from the already-drawn `B2=4999` statistics. Only
+  `stage == 2` implies a skew-normal fit was actually used.
 
 - **`tests/validation/ground_truth.json` is a committed cache.**
   `tests/validation/conftest.py` regenerates it via `Rscript` *only if the file

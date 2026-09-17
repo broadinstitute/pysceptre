@@ -92,7 +92,7 @@ run_discovery_analysis(
 | `grna_target_cells` | `dict[str, np.ndarray]` | Maps each gRNA target to the **0-based** indices (into `covariate_matrix`'s cell axis) of cells treated with that target. This is the "union" grna-integration-strategy convention: one entry per target, not per individual gRNA. |
 | `pairs` | `pd.DataFrame` with columns `response_id`, `grna_target` | The QC-passed (gene, target) pairs to test. `pysceptre` does not run `assign_grnas()`/`run_qc()` itself -- feed it pairs that have already passed QC upstream. |
 | `side` | `"left"` \| `"both"` \| `"right"` | Test sidedness, matching sceptre's own convention. Use `"left"` for expected-repression screens (e.g. CRISPRi enhancer knockdown), `"both"` for a two-sided test. |
-| `resampling_approximation` | `"skew_normal"` \| anything else | `"skew_normal"` (default, matches sceptre's default): pairs whose initial empirical p-value (`B1=499` draws) is `<= 0.02` get a skew-normal tail fit from a further `B2=4999` draws, giving usable p-values far smaller than `1/B1` could otherwise resolve. Any other value skips the skew-normal escalation and reports the raw `B1`-draw empirical p-value for those pairs instead -- **note this currently has no additional-empirical-batch fallback wired up in the public API** (see [Scope and limitations](#scope-and-limitations)), so it is coarser-resolution than sceptre's own `"no_approximation"` mode for very significant pairs. |
+| `resampling_approximation` | `"skew_normal"` \| `"no_approximation"` | `"skew_normal"` (default, matching sceptre): pairs whose initial empirical p-value (`B1=499` draws) is `<= 0.02` get a skew-normal tail fit from a further `B2=4999` draws, giving p-values far smaller than `1/(B1+1)` could resolve. `"no_approximation"` fits no curve and instead draws a third, larger empirical batch, sized by R's own rule: `B3 = ceil(mult * n_pairs / multiple_testing_alpha)`, `mult = 10` two-sided and `5` one-sided. That grows linearly in the number of pairs and is much slower -- see [Scope and limitations](#scope-and-limitations). Any other value raises `ValueError`. |
 | `seed` | `int \| None` | Seeds the `numpy.random.Generator` used for all CRT draws in the run. Note this does **not** reproduce sceptre's own R/C++ RNG stream bit-for-bit (different algorithm and seeding scheme) -- see [Scope and limitations](#scope-and-limitations). |
 | `target_chunk_size` | `int` | How many gRNA targets' logistic fits + CRT draws to batch and hold in memory at once. Each target's CRT draw needs `O(B * n_treated_cells)` memory; holding *every* target's draws in memory at once does not scale to real target counts (measured: OOM-killed the process at ~3,000 targets). Lower this if you hit memory pressure; raise it for a modest speed gain if you have memory to spare. Default `200`. |
 
@@ -105,7 +105,7 @@ run_discovery_analysis(
 | `fold_change` | Estimated fold change of the treated group vs. complement control (deterministic given the data -- no resampling randomness). |
 | `log_2_fold_change` | `log2(fold_change)`. |
 | `z_orig` | The observed test statistic (before resampling). |
-| `stage` | `1` = reported from the initial `B1=499`-draw empirical p-value (not significant enough to escalate). `2` = escalated to a skew-normal tail fit on `B2=4999` further draws. `3` = skew-normal fit was attempted but rejected (see `check_sn_tail`/`check_for_outliers` in `test_statistic/skew_normal.py`) and a further empirical batch was used instead -- only reachable if a `B3 > 0` is wired up (currently fixed at `0` internally; see below). |
+| `stage` | `1` = reported from the initial `B1=499`-draw empirical p-value (not significant enough to escalate). `2` = escalated to a skew-normal tail fit on `B2=4999` further draws. `3` = an empirical p-value from a further batch, reached either because `resampling_approximation="no_approximation"` (so no curve is fit, and the `B3` draws are used) or because a skew-normal fit was attempted and *rejected* (see `check_sn_tail`/`check_for_outliers` in `test_statistic/skew_normal.py`), in which case the already-drawn `B2=4999` statistics are used. |
 
 ### Lower-level building blocks
 
@@ -147,11 +147,20 @@ importable and unit-tested, for anyone extending or debugging the pipeline:
   seeding scheme. Validated against R by matching *distributions* (the
   resulting null-statistic and p-value distributions), not exact draws --
   see [Validation](#validation).
-- **`B1`/`B2`/`B3` are not exposed at the top-level API** -- fixed at
-  `B1=499, B2=4999, B3=0` (matching sceptre's own defaults), inside
-  `run_discovery_ntcells_complement`. `run_low_level_test_full` (the
-  per-pair building block) does accept them directly if you need to change
-  this.
+- **`B1`/`B2`/`B3` are not exposed at the top-level API**, but they are no
+  longer fixed: `run_discovery_analysis` derives them from
+  `resampling_approximation` exactly as R does -- `B1=499` always, then
+  `(B2, B3) = (4999, 0)` for `skew_normal` and `(0, ceil(mult * n_pairs /
+  multiple_testing_alpha))` for `no_approximation`. `B3=0` on the
+  `skew_normal` path is parity with R, which only uses `B3=24999` for the
+  `permutations` mechanism this package doesn't implement.
+  `run_discovery_ntcells_complement` and `run_low_level_test_full` accept all
+  three directly if you need to override them.
+- **`no_approximation` is expensive, and can be coarser at small scale.** Its
+  `B3` grows linearly in pair count: a 33,066-pair one-sided run needs
+  1,653,300 draws *per target*, so `target_chunk_size` must be very small.
+  Conversely, at 4 pairs one-sided `B3 = 200`, *below* `B1 = 499`. Both are
+  R's behavior, reproduced rather than corrected.
 - **gRNA integration strategy: "union" only.** `grna_target_cells` is keyed
   by target, not by individual gRNA -- matches sceptre's `"union"` strategy;
   `"singleton"` is not supported.
