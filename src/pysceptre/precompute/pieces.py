@@ -25,6 +25,17 @@ class PrecomputationPieces:
     w: np.ndarray
     a: np.ndarray
     D: np.ndarray
+    # Extreme eigenvalues of Zt_wZ. `compute_D_matrix` divides by the square
+    # root of each, so a near-zero smallest eigenvalue means the corresponding
+    # row of D is amplified roundoff rather than signal.
+    #
+    # The test has to be *relative*: exactly collinear covariates give a
+    # smallest eigenvalue around 1e-14 rather than 0, and D stays finite, so
+    # checking for non-positive values or non-finite D both miss it. Compare
+    # against `max_eigenvalue` instead -- see
+    # `pipeline/discovery.py::summarize_gene_fits`.
+    min_eigenvalue: float = float("nan")
+    max_eigenvalue: float = float("nan")
 
 
 def compute_D_matrix(Zt_wZ: np.ndarray, wZ: np.ndarray) -> np.ndarray:
@@ -54,5 +65,15 @@ def compute_precomputation_pieces(
     a = (expression_vector - mu) / denom
     wZ = w[:, None] * covariate_matrix
     Zt_wZ = covariate_matrix.T @ wZ
+    # Cheap (Zt_wZ is p x p, p a handful of covariates) and worth knowing:
+    # see PrecomputationPieces.min_eigenvalue.
+    eigvals = np.linalg.eigvalsh(Zt_wZ)
     D = compute_D_matrix(Zt_wZ, wZ)
-    return PrecomputationPieces(mu=mu, w=w, a=a, D=D)
+    return PrecomputationPieces(
+        mu=mu,
+        w=w,
+        a=a,
+        D=D,
+        min_eigenvalue=float(eigvals[0]),
+        max_eigenvalue=float(eigvals[-1]),
+    )

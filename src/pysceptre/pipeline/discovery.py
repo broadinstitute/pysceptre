@@ -35,12 +35,23 @@ from ..test_statistic.resampling import run_low_level_test_full
 _DEFAULT_MAX_FIT_MEMORY_GB = 2.0
 
 
+# theta estimation methods reported by glm/nb_theta.py::estimate_theta.
+# Anything other than MLE means the MLE failed and a fallback was used.
+_THETA_METHOD_NAMES = {1: "MLE", 2: "method of moments", 3: "pilot estimate"}
+_THETA_BOUNDS = (0.01, 1000.0)
+
+
 @dataclass
 class GenePrecomputation:
     y: np.ndarray
     fitted_coefs: np.ndarray
     theta: float
     pieces: PrecomputationPieces
+    # Diagnostics, so a run can tell when a fit was degenerate rather than
+    # silently returning a statistic built on it.
+    theta_method: int = 1
+    theta_clamped: bool = False
+    glm_converged: bool = True
 
 
 @dataclass
@@ -110,13 +121,111 @@ def fit_all_genes(
 
         for j, gene_id in enumerate(chunk_ids):
             y_j = Y[:, j]
-            theta_est, _method = estimate_theta(y=y_j, mu=fit.fitted_values[:, j], dfr=dfr)
-            theta = max(min(theta_est, 1000.0), 0.01)
+            theta_est, method = estimate_theta(y=y_j, mu=fit.fitted_values[:, j], dfr=dfr)
+            lo, hi = _THETA_BOUNDS
+            theta = max(min(theta_est, hi), lo)
             pieces = compute_precomputation_pieces(y_j, covariate_matrix, fit.coefs[:, j], theta)
             out[gene_id] = GenePrecomputation(
-                y=y_j, fitted_coefs=fit.coefs[:, j], theta=theta, pieces=pieces
+                y=y_j,
+                fitted_coefs=fit.coefs[:, j],
+                theta=theta,
+                pieces=pieces,
+                theta_method=method,
+                theta_clamped=not (lo <= theta_est <= hi),
+                glm_converged=bool(fit.converged[j]),
             )
+
+    _warn_about_degenerate_gene_fits(out)
     return out
+
+
+def _design_is_rank_deficient(pieces: PrecomputationPieces) -> bool:
+    """Whether Zt_wZ is numerically rank deficient.
+
+    Uses the same relative tolerance convention as `np.linalg.matrix_rank`:
+    an eigenvalue counts as zero below `max_eigenvalue * p * eps`. The test
+    must be relative -- exactly collinear covariates produce a smallest
+    eigenvalue near 1e-14, not 0, and leave D finite, so an absolute
+    `<= 0` check or an `isfinite(D)` check both miss them.
+    """
+    min_eig, max_eig = pieces.min_eigenvalue, pieces.max_eigenvalue
+    if not np.isfinite(min_eig) or not np.isfinite(max_eig):
+        return True
+    if max_eig <= 0.0:
+        return True
+    p = pieces.D.shape[0]
+    return min_eig <= max_eig * p * np.finfo(float).eps
+
+
+def summarize_gene_fits(gene_precomps: dict[str, GenePrecomputation]) -> dict[str, list[str]]:
+    """Group gene ids by the ways their fit was degenerate.
+
+    Returns a dict with keys `glm_not_converged`, `theta_fallback`,
+    `theta_clamped` and `singular_design`, each holding the ids affected.
+    All are empty for a healthy fit.
+    """
+    summary: dict[str, list[str]] = {
+        "glm_not_converged": [],
+        "theta_fallback": [],
+        "theta_clamped": [],
+        "singular_design": [],
+    }
+    for gene_id, gp in gene_precomps.items():
+        if not gp.glm_converged:
+            summary["glm_not_converged"].append(gene_id)
+        if gp.theta_method != 1:
+            summary["theta_fallback"].append(gene_id)
+        if gp.theta_clamped:
+            summary["theta_clamped"].append(gene_id)
+        if _design_is_rank_deficient(gp.pieces):
+            summary["singular_design"].append(gene_id)
+    return summary
+
+
+def _warn_about_degenerate_gene_fits(gene_precomps: dict[str, GenePrecomputation]) -> None:
+    """One summary warning for the whole gene set rather than per-gene spam.
+
+    These conditions were previously computed and thrown away -- `estimate_theta`
+    returns a method code that says whether the MLE succeeded, and the smallest
+    eigenvalue of Zt_wZ says whether D is meaningful -- so a run could report a
+    statistic built on a degenerate fit with no indication.
+    """
+    summary = summarize_gene_fits(gene_precomps)
+    n = len(gene_precomps)
+    parts = []
+    if summary["singular_design"]:
+        parts.append(
+            f"{len(summary['singular_design'])} with a numerically rank-deficient "
+            f"design, usually collinear covariates (rows of their D matrix are "
+            f"amplified roundoff, so statistics built from it are unreliable)"
+        )
+    if summary["glm_not_converged"]:
+        parts.append(f"{len(summary['glm_not_converged'])} whose Poisson GLM did not converge")
+    if summary["theta_clamped"]:
+        lo, hi = _THETA_BOUNDS
+        parts.append(
+            f"{len(summary['theta_clamped'])} with the dispersion estimate "
+            f"clamped to [{lo}, {hi}], which usually means counts close to "
+            f"equidispersed, leaving theta unidentifiable"
+        )
+    if summary["theta_fallback"]:
+        methods = sorted(
+            {
+                _THETA_METHOD_NAMES.get(gene_precomps[g].theta_method, "unknown")
+                for g in summary["theta_fallback"]
+            }
+        )
+        parts.append(
+            f"{len(summary['theta_fallback'])} where the dispersion MLE failed "
+            f"and fell back to {' / '.join(methods)}"
+        )
+    if parts:
+        warnings.warn(
+            f"degenerate gene fits out of {n}: " + "; ".join(parts) + ". "
+            "Call pysceptre.pipeline.discovery.summarize_gene_fits for the "
+            "affected gene ids.",
+            stacklevel=3,
+        )
 
 
 def fit_all_targets(
