@@ -75,6 +75,21 @@ Python 3.10+ (`requires-python`). Verified passing on 3.10, 3.11, 3.12, 3.13.
 - **Never commit real screen data.** `.gitignore` covers
   `tests/validation/moi5_real/`, `*.rds`, `*.csv`. Only synthetic, fixed-seed
   fixtures belong in the repo.
+- **Plots must be colorblind-safe.** Categorical/discrete series use the
+  Okabe-Ito palette; continuous scales use `cividis`. Okabe-Ito in order:
+
+  | | hex | | hex |
+  |---|---|---|---|
+  | black          | `#000000` | yellow         | `#F0E442` |
+  | orange         | `#E69F00` | blue           | `#0072B2` |
+  | sky blue       | `#56B4E9` | vermillion     | `#D55E00` |
+  | bluish green   | `#009E73` | reddish purple | `#CC79A7` |
+
+  `cividis` ships with matplotlib (`cmap="cividis"`), so no extra
+  dependency. Don't use `viridis` for gradients here, and never `jet`/
+  `rainbow`. Nothing in the repo plots yet — this applies to whatever
+  does first.
+
 - Docstrings here carry the *why* of each port decision (what R does, why the
   Python differs, what was measured). Preserve that when editing — it is the
   main defense against someone "simplifying" a deliberate choice.
