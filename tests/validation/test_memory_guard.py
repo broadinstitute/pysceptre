@@ -80,8 +80,13 @@ def _inputs(n_cells=500, n_genes=2, n_targets=6, seed=0):
 @pytest.mark.parametrize("chunk_size", [1, 2, 100])
 def test_results_are_identical_across_chunk_sizes(chunk_size):
     """The guard's correctness argument: chunking changes peak memory and
-    batching width, never which draws are taken. If this ever fails, the
-    auto-shrink is not safe."""
+    batching width, not which draws are taken. If this ever fails, the
+    auto-shrink is not safe.
+
+    Exact frame equality holds here because target chunking does not touch
+    gene fitting at all, and the ~1e-15 spread in the batched logistic solve
+    is far too small to move an integer binomial draw count.
+    """
     resp, gene_ids, cov, cells, pairs = _inputs()
     common = dict(
         response_matrix=resp,

@@ -80,6 +80,37 @@ larger prize, but it is unmeasured and interacts with the deliberate
 pre-filter genes. The no-densify constraint promotes it: `fit_all_genes`
 builds a dense `(n_cells, n_genes)` `Y` regardless of what the caller passed.
 
+### T2.5 Retained gene precomputation
+
+Separate from T2.4, which bounded only the *transient* fitting peak.
+`fit_all_genes` returns `y`, `mu`, `w`, `a` and `D` per gene and they are held
+for the whole run: about `(4 + p) * n_cells * 8` bytes per gene.
+
+| genes | retained |
+|---|---|
+| 244 (the real moi5 analysis) | 2.6 GB |
+| 2,000 | 21 GB |
+| 38,606 (genome-wide) | 405 GB |
+
+At moi5 scale this now exceeds the transient cost it replaced, so it is the
+binding memory constraint on the gene side.
+
+This is inherent to the design that makes the package fast — fit each gene
+once, reuse across every target it is paired with — so it is a tradeoff, not
+a bug, and it needs a decision rather than a patch:
+
+- `w` and `a` are recoverable from `y`, `mu` and `theta`, saving ~2/9 of the
+  total. `D` (p x n) is the largest single piece and is genuinely needed.
+- Bounding it properly means chunking genes at the *outer* level, which forces
+  either redrawing each target's CRT samples per gene chunk (the draws are the
+  48-minute stage — likely much worse) or recomputing gene pieces per target
+  chunk (~5 minutes x the number of chunks).
+- Doing nothing is defensible: `README.md` already tells callers to pass only
+  the genes appearing in `pairs`, which is what keeps real runs at 2.6 GB.
+
+Recommend measuring the recompute-per-target-chunk option before assuming it
+is too slow, since it is the only one that scales genome-wide.
+
 ## Tier 3 — release
 
 - **T3.1 PyPI publish.** Blocked on account/token and on whether `0.1.0` is the

@@ -17,6 +17,7 @@ import pandas as pd
 
 from .discovery import (
     _DEFAULT_MAX_DRAW_MEMORY_GB,
+    _DEFAULT_MAX_FIT_MEMORY_GB,
     _DEFAULT_TARGET_CHUNK_SIZE,
     run_discovery_ntcells_complement,
 )
@@ -38,6 +39,7 @@ def run_discovery_analysis(
     seed: int | None = None,
     target_chunk_size: int = _DEFAULT_TARGET_CHUNK_SIZE,
     max_draw_memory_gb: float = _DEFAULT_MAX_DRAW_MEMORY_GB,
+    max_fit_memory_gb: float = _DEFAULT_MAX_FIT_MEMORY_GB,
 ) -> pd.DataFrame:
     """response_matrix: (n_genes, n_cells) dense ndarray or scipy.sparse matrix.
     gene_ids: row labels for response_matrix, in order.
@@ -55,6 +57,9 @@ def run_discovery_analysis(
         `target_chunk_size` is reduced automatically (with a warning) to stay
         under it, which does not change results. Mainly a guard for
         `no_approximation`, whose draw count grows with the pair count.
+    max_fit_memory_gb: cap on the transient dense arrays used while fitting
+        genes. Genes are fit in chunks that respect it, which does not change
+        results.
 
     Targets sceptre's complement-control-group + CRT discovery-analysis path
     (the only valid combination for high-MOI data -- see pipeline/discovery.py).
@@ -86,6 +91,7 @@ def run_discovery_analysis(
         seed=seed,
         target_chunk_size=target_chunk_size,
         max_draw_memory_gb=max_draw_memory_gb,
+        max_fit_memory_gb=max_fit_memory_gb,
     )
 
 

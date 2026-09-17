@@ -29,6 +29,11 @@ from ..glm.nb_theta import estimate_theta
 from ..precompute.pieces import PrecomputationPieces, compute_precomputation_pieces
 from ..test_statistic.resampling import run_low_level_test_full
 
+# Budget for the transient dense arrays the gene IRLS needs. 2 GB holds
+# ~480 genes at 131k cells, well above the few hundred a real analysis
+# tests, so normal runs are a single chunk as before.
+_DEFAULT_MAX_FIT_MEMORY_GB = 2.0
+
 
 @dataclass
 class GenePrecomputation:
@@ -53,28 +58,64 @@ def _get_row(response_matrix, i: int) -> np.ndarray:
     return np.asarray(response_matrix[i], dtype=float)
 
 
-def fit_all_genes(
-    response_matrix, gene_ids: list[str], covariate_matrix: np.ndarray
-) -> dict[str, GenePrecomputation]:
-    """One batched Poisson IRLS call across all genes (they share the full
-    covariate matrix), then per-gene theta estimation and precomputation pieces."""
-    n_cells = covariate_matrix.shape[0]
-    Y = np.empty((n_cells, len(gene_ids)))
-    for k, _gene_id in enumerate(gene_ids):
-        Y[:, k] = _get_row(response_matrix, k)
+def gene_chunk_size_for_budget(n_cells: int, n_genes: int, max_memory_gb: float) -> int:
+    """How many genes to densify and fit at once.
 
-    fit = fit_poisson_glm_batch(covariate_matrix, Y)
+    The Poisson IRLS needs dense `(n_cells, k)` arrays -- the responses plus
+    mu, weights and working response -- so the transient cost of fitting k
+    genes together is about `4 * n_cells * k * 8` bytes. Densifying every gene
+    at once is what made a genome-wide run unaffordable: 38,606 genes over
+    131k cells is a 40 GB response array and ~162 GB peak.
+
+    Chunking does not change which genes get which fit: each column's normal
+    equations are solved independently. Agreement is to floating-point
+    tolerance rather than bit-for-bit, because the solve is one batched
+    `np.linalg.solve` whose blocking depends on the batch width -- measured
+    spread ~1e-15, which cannot move a rank-based p-value.
+    """
+    per_gene = 4 * n_cells * 8
+    if per_gene <= 0:
+        return n_genes
+    return max(1, min(n_genes, int(max_memory_gb * 1e9 // per_gene)))
+
+
+def fit_all_genes(
+    response_matrix,
+    gene_ids: list[str],
+    covariate_matrix: np.ndarray,
+    *,
+    max_fit_memory_gb: float = _DEFAULT_MAX_FIT_MEMORY_GB,
+) -> dict[str, GenePrecomputation]:
+    """Batched Poisson IRLS across genes (they share the full covariate
+    matrix), then per-gene theta estimation and precomputation pieces.
+
+    Genes are fit in chunks sized by `max_fit_memory_gb` rather than all at
+    once; see `gene_chunk_size_for_budget`. Note this bounds only the
+    *transient* fitting cost -- the returned precomputations are retained for
+    the whole run at about `(4 + p) * n_cells * 8` bytes per gene, which is
+    why callers should pass only the genes that appear in `pairs`.
+    """
+    n_cells = covariate_matrix.shape[0]
     dfr = covariate_matrix.shape[0] - covariate_matrix.shape[1]
+    chunk = gene_chunk_size_for_budget(n_cells, len(gene_ids), max_fit_memory_gb)
 
     out: dict[str, GenePrecomputation] = {}
-    for k, gene_id in enumerate(gene_ids):
-        y_k = Y[:, k]
-        theta_est, _method = estimate_theta(y=y_k, mu=fit.fitted_values[:, k], dfr=dfr)
-        theta = max(min(theta_est, 1000.0), 0.01)
-        pieces = compute_precomputation_pieces(y_k, covariate_matrix, fit.coefs[:, k], theta)
-        out[gene_id] = GenePrecomputation(
-            y=y_k, fitted_coefs=fit.coefs[:, k], theta=theta, pieces=pieces
-        )
+    for start in range(0, len(gene_ids), chunk):
+        chunk_ids = gene_ids[start : start + chunk]
+        Y = np.empty((n_cells, len(chunk_ids)))
+        for j in range(len(chunk_ids)):
+            Y[:, j] = _get_row(response_matrix, start + j)
+
+        fit = fit_poisson_glm_batch(covariate_matrix, Y)
+
+        for j, gene_id in enumerate(chunk_ids):
+            y_j = Y[:, j]
+            theta_est, _method = estimate_theta(y=y_j, mu=fit.fitted_values[:, j], dfr=dfr)
+            theta = max(min(theta_est, 1000.0), 0.01)
+            pieces = compute_precomputation_pieces(y_j, covariate_matrix, fit.coefs[:, j], theta)
+            out[gene_id] = GenePrecomputation(
+                y=y_j, fitted_coefs=fit.coefs[:, j], theta=theta, pieces=pieces
+            )
     return out
 
 
@@ -118,6 +159,7 @@ _DEFAULT_TARGET_CHUNK_SIZE = 200
 # no_approximation blow-up, which is three orders of magnitude larger.
 _DEFAULT_MAX_DRAW_MEMORY_GB = 8.0
 
+
 _BYTES_PER_INDEX = 8  # int64 cell index
 
 
@@ -141,10 +183,16 @@ def _fit_chunk_size_to_budget(
 ) -> int:
     """Shrink `chunk_size` until the estimated draw memory fits the budget.
 
-    Chunk size affects only peak memory and batching width, never which draws
+    Chunk size affects only peak memory and batching width, not which draws
     are taken: `fit_all_targets` draws per target in a fixed order, so the RNG
-    stream is identical regardless of where chunk boundaries fall
+    stream is unchanged by where chunk boundaries fall
     (`test_memory_guard.py` pins this).
+
+    As with gene chunking, the batched logistic solve is not bit-for-bit
+    across batch widths (~1e-15), so fitted probabilities can differ in their
+    last bits. That is far too small to change a binomial draw count in
+    practice, but "identical" here means to floating-point tolerance, not
+    exactly.
     """
     budget = max_memory_gb * 1e9
     if estimate_draw_memory_bytes(B_total, n_trt_values, chunk_size) <= budget:
@@ -193,6 +241,7 @@ def run_discovery_ntcells_complement(
     seed: int | None = None,
     target_chunk_size: int = _DEFAULT_TARGET_CHUNK_SIZE,
     max_draw_memory_gb: float = _DEFAULT_MAX_DRAW_MEMORY_GB,
+    max_fit_memory_gb: float = _DEFAULT_MAX_FIT_MEMORY_GB,
 ) -> pd.DataFrame:
     """pairs: DataFrame with columns 'response_id', 'grna_target' -- the
     QC-passed pairs to test. Returns a DataFrame with one row per pair:
@@ -216,7 +265,9 @@ def run_discovery_ntcells_complement(
     """
     rng = np.random.default_rng(seed)
 
-    gene_precomps = fit_all_genes(response_matrix, gene_ids, covariate_matrix)
+    gene_precomps = fit_all_genes(
+        response_matrix, gene_ids, covariate_matrix, max_fit_memory_gb=max_fit_memory_gb
+    )
 
     pairs_by_target = {target_id: group for target_id, group in pairs.groupby("grna_target")}
     target_ids_needed = [t for t in grna_target_cells if t in pairs_by_target]
