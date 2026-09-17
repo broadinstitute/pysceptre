@@ -25,9 +25,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
         with:
-          # Sets UV_PYTHON, so the `uv venv` below builds on this interpreter.
+          # Also creates and activates .venv on this interpreter, so there is
+          # deliberately no `uv venv` step -- adding one fails with
+          # "a virtual environment already exists at: .venv".
           python-version: ${{ matrix.python-version }}
-      - run: uv venv
       # tests/validation/ground_truth.json is committed, so the suite runs
       # without R/sceptre installed -- conftest only shells out to Rscript
       # when that cached fixture is missing.
