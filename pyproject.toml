@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pysceptre"
+version = "0.1.0"
+description = "Standalone Python port of sceptre's CRT discovery-analysis statistical engine (complement control group)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "pandas>=2.0",
+    "threadpoolctl>=3.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+fast = ["numba>=0.58"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

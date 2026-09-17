@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+build/
+dist/
+
+# Real experimental data and anything derived from it -- never commit real
+# single-cell / CRISPR screen data or objects built from it. Only synthetic
+# fixtures (tests/validation/ground_truth.json, built from hand-constructed
+# rnorm() matrices with a fixed seed -- see scripts/dump_r_ground_truth.R)
+# belong in this repo.
+tests/validation/moi5_real/
+tests/validation/*.log
+*.rds
+
+# scratch/output (real discovery-result exports, benchmark output, etc.)
+*.csv
