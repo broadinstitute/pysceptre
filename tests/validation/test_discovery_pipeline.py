@@ -6,7 +6,6 @@ from pysceptre.pipeline.api import run_discovery_analysis
 
 def _build_inputs(ground_truth, include_signal_gene: bool = False):
     X = np.array(ground_truth["X"])
-    n_cells = X.shape[0]
 
     gene_ids = [g["gene_id"] for g in ground_truth["genes"]]
     ys = [np.array(g["y"], dtype=float) for g in ground_truth["genes"]]
@@ -52,7 +51,9 @@ def test_orchestration_matches_r_deterministic_fields_for_null_pairs(ground_trut
 
 
 def test_orchestration_detects_strong_signal_end_to_end(ground_truth):
-    response_matrix, gene_ids, X, grna_target_cells, pairs = _build_inputs(ground_truth, include_signal_gene=True)
+    response_matrix, gene_ids, X, grna_target_cells, pairs = _build_inputs(
+        ground_truth, include_signal_gene=True
+    )
     sp = ground_truth["signal_pair"]
 
     result = run_discovery_analysis(

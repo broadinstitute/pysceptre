@@ -1,6 +1,6 @@
 import numpy as np
 
-from pysceptre.test_statistic.skew_normal import fit_skew_normal_funct, fit_and_evaluate_skew_normal
+from pysceptre.test_statistic.skew_normal import fit_and_evaluate_skew_normal, fit_skew_normal_funct
 
 
 def test_fit_skew_normal_funct_matches_r(ground_truth):

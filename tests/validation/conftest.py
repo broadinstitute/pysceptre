@@ -13,7 +13,8 @@ def _r_sceptre_available() -> bool:
     try:
         result = subprocess.run(
             ["Rscript", "-e", "library(sceptre)"],
-            capture_output=True, timeout=30,
+            capture_output=True,
+            timeout=30,
         )
         return result.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired):

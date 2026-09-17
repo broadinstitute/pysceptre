@@ -38,7 +38,9 @@ def nb_theta_pilot_est(y: np.ndarray, mu: np.ndarray) -> float:
     return n / denom
 
 
-def _nb_score(theta: float, mu: np.ndarray, y: np.ndarray, unique_y: np.ndarray, y_inverse: np.ndarray) -> float:
+def _nb_score(
+    theta: float, mu: np.ndarray, y: np.ndarray, unique_y: np.ndarray, y_inverse: np.ndarray
+) -> float:
     # Gather the deduplicated digamma values back to full per-cell shape (via
     # `y_inverse`) *before* summing, rather than summing the weighted unique
     # values directly -- this preserves the exact same floating-point
@@ -49,21 +51,46 @@ def _nb_score(theta: float, mu: np.ndarray, y: np.ndarray, unique_y: np.ndarray,
     # merely mathematically-equivalent but differently-ordered sum can send
     # it down a different, divergent path.
     digamma_full = digamma(theta + unique_y)[y_inverse]
-    mu_plus_theta = mu + theta  # computed once, reused below (IEEE754 addition is commutative/order-exact, so this is bit-identical to recomputing)
+    mu_plus_theta = (
+        mu + theta
+    )  # computed once, reused below (IEEE754 addition is commutative/order-exact, so this is bit-identical to recomputing)
     return float(
-        np.sum(digamma_full - digamma(theta) + np.log(theta) + 1 - np.log(mu_plus_theta) - (y + theta) / mu_plus_theta)
+        np.sum(
+            digamma_full
+            - digamma(theta)
+            + np.log(theta)
+            + 1
+            - np.log(mu_plus_theta)
+            - (y + theta) / mu_plus_theta
+        )
     )
 
 
-def _nb_info(theta: float, mu: np.ndarray, y: np.ndarray, unique_y: np.ndarray, y_inverse: np.ndarray) -> float:
+def _nb_info(
+    theta: float, mu: np.ndarray, y: np.ndarray, unique_y: np.ndarray, y_inverse: np.ndarray
+) -> float:
     trigamma_full = _trigamma(theta + unique_y)[y_inverse]
     mu_plus_theta = mu + theta
     return float(
-        np.sum(_trigamma(theta) - trigamma_full - 1 / theta + 2 / mu_plus_theta - (y + theta) / mu_plus_theta**2)
+        np.sum(
+            _trigamma(theta)
+            - trigamma_full
+            - 1 / theta
+            + 2 / mu_plus_theta
+            - (y + theta) / mu_plus_theta**2
+        )
     )
 
 
-def nb_theta_mle(t0: float, y: np.ndarray, mu: np.ndarray, limit: int, eps: float, unique_y: np.ndarray, y_inverse: np.ndarray) -> tuple[float, bool]:
+def nb_theta_mle(
+    t0: float,
+    y: np.ndarray,
+    mu: np.ndarray,
+    limit: int,
+    eps: float,
+    unique_y: np.ndarray,
+    y_inverse: np.ndarray,
+) -> tuple[float, bool]:
     # Mirrors C++'s `while (++it < limit && fabs(del) > eps)`: `it` is
     # incremented as part of the loop condition itself (before the body
     # runs), so the post-loop value of `it` is exactly `limit` iff the loop
@@ -81,7 +108,9 @@ def nb_theta_mle(t0: float, y: np.ndarray, mu: np.ndarray, limit: int, eps: floa
     return t0, warning
 
 
-def nb_theta_mm(t0: float, y: np.ndarray, mu: np.ndarray, dfr: float, limit: int, eps: float) -> tuple[float, bool]:
+def nb_theta_mm(
+    t0: float, y: np.ndarray, mu: np.ndarray, dfr: float, limit: int, eps: float
+) -> tuple[float, bool]:
     it = 0
     delta = 1.0
     while True:
@@ -102,7 +131,13 @@ def nb_theta_mm(t0: float, y: np.ndarray, mu: np.ndarray, dfr: float, limit: int
     return t0, warning
 
 
-def estimate_theta(y: np.ndarray, mu: np.ndarray, dfr: float, limit: int = 50, eps: float = np.finfo(float).eps ** 0.25) -> tuple[float, int]:
+def estimate_theta(
+    y: np.ndarray,
+    mu: np.ndarray,
+    dfr: float,
+    limit: int = 50,
+    eps: float = np.finfo(float).eps ** 0.25,
+) -> tuple[float, int]:
     """Returns (theta_estimate, method) with method in {1: MLE, 2: MM, 3: pilot}."""
     unique_y, y_inverse = np.unique(y, return_inverse=True)
     t0 = nb_theta_pilot_est(y, mu)
@@ -124,7 +159,9 @@ def estimate_theta(y: np.ndarray, mu: np.ndarray, dfr: float, limit: int = 50, e
     return estimate, method
 
 
-def perform_response_precomputation(expressions: np.ndarray, covariate_matrix: np.ndarray) -> tuple[np.ndarray, float]:
+def perform_response_precomputation(
+    expressions: np.ndarray, covariate_matrix: np.ndarray
+) -> tuple[np.ndarray, float]:
     """Port of `perform_response_precomputation`: Poisson IRLS fit for the mean,
     then NB dispersion (theta) estimated from the Poisson-fitted mu, clamped to
     [0.01, 1000]. Returns (fitted_coefs, theta)."""
@@ -132,8 +169,11 @@ def perform_response_precomputation(expressions: np.ndarray, covariate_matrix: n
 
     fit = fit_poisson_glm_batch(covariate_matrix, expressions)
     theta_est, _method = estimate_theta(
-        y=expressions, mu=fit.fitted_values, dfr=covariate_matrix.shape[0] - covariate_matrix.shape[1],
-        limit=50, eps=np.finfo(float).eps ** 0.25,
+        y=expressions,
+        mu=fit.fitted_values,
+        dfr=covariate_matrix.shape[0] - covariate_matrix.shape[1],
+        limit=50,
+        eps=np.finfo(float).eps ** 0.25,
     )
     theta = max(min(theta_est, 1000.0), 0.01)
     return fit.coefs, theta

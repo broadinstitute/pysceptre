@@ -5,7 +5,9 @@ from __future__ import annotations
 import numpy as np
 
 
-def estimate_log_fold_change(y: np.ndarray, mu: np.ndarray, trt_idxs: np.ndarray) -> tuple[float, float]:
+def estimate_log_fold_change(
+    y: np.ndarray, mu: np.ndarray, trt_idxs: np.ndarray
+) -> tuple[float, float]:
     """trt_idxs: 0-based indices of treated cells. Returns (fold_change, se_fold_change)."""
     y_trt = y[trt_idxs]
     mu_trt = mu[trt_idxs]

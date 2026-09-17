@@ -52,7 +52,9 @@ def _get_row(response_matrix, i: int) -> np.ndarray:
     return np.asarray(response_matrix[i], dtype=float)
 
 
-def fit_all_genes(response_matrix, gene_ids: list[str], covariate_matrix: np.ndarray) -> dict[str, GenePrecomputation]:
+def fit_all_genes(
+    response_matrix, gene_ids: list[str], covariate_matrix: np.ndarray
+) -> dict[str, GenePrecomputation]:
     """One batched Poisson IRLS call across all genes (they share the full
     covariate matrix), then per-gene theta estimation and precomputation pieces."""
     n_cells = covariate_matrix.shape[0]
@@ -69,14 +71,20 @@ def fit_all_genes(response_matrix, gene_ids: list[str], covariate_matrix: np.nda
         theta_est, _method = estimate_theta(y=y_k, mu=fit.fitted_values[:, k], dfr=dfr)
         theta = max(min(theta_est, 1000.0), 0.01)
         pieces = compute_precomputation_pieces(y_k, covariate_matrix, fit.coefs[:, k], theta)
-        out[gene_id] = GenePrecomputation(y=y_k, fitted_coefs=fit.coefs[:, k], theta=theta, pieces=pieces)
+        out[gene_id] = GenePrecomputation(
+            y=y_k, fitted_coefs=fit.coefs[:, k], theta=theta, pieces=pieces
+        )
     return out
 
 
 def fit_all_targets(
     grna_target_cells: dict[str, np.ndarray],
     covariate_matrix: np.ndarray,
-    *, B1: int, B2: int, B3: int, rng: np.random.Generator,
+    *,
+    B1: int,
+    B2: int,
+    B3: int,
+    rng: np.random.Generator,
 ) -> dict[str, TargetPrecomputation]:
     """One batched binomial IRLS call across all targets (indicator columns
     share the full covariate matrix), then a CRT draw per target."""
@@ -143,7 +151,9 @@ def run_discovery_ntcells_complement(
     for chunk_start in range(0, len(target_ids_needed), target_chunk_size):
         chunk_ids = target_ids_needed[chunk_start : chunk_start + target_chunk_size]
         chunk_cells = {t: grna_target_cells[t] for t in chunk_ids}
-        target_precomps = fit_all_targets(chunk_cells, covariate_matrix, B1=B1, B2=B2, B3=B3, rng=rng)
+        target_precomps = fit_all_targets(
+            chunk_cells, covariate_matrix, B1=B1, B2=B2, B3=B3, rng=rng
+        )
 
         for target_id in chunk_ids:
             target = target_precomps[target_id]
@@ -158,19 +168,23 @@ def run_discovery_ntcells_complement(
                     D=gene.pieces.D,
                     trt_idxs=target.trt_idxs,
                     synthetic_idxs=target.synthetic_idxs,
-                    B1=B1, B2=B2, B3=B3,
+                    B1=B1,
+                    B2=B2,
+                    B3=B3,
                     fit_parametric_curve=fit_parametric_curve,
                     side_code=side_code,
                 )
-                rows.append({
-                    "response_id": row.response_id,
-                    "grna_target": target_id,
-                    "p_value": result.p_value,
-                    "fold_change": result.fold_change,
-                    "log_2_fold_change": np.log2(result.fold_change),
-                    "z_orig": result.z_orig,
-                    "stage": result.stage,
-                })
+                rows.append(
+                    {
+                        "response_id": row.response_id,
+                        "grna_target": target_id,
+                        "p_value": result.p_value,
+                        "fold_change": result.fold_change,
+                        "log_2_fold_change": np.log2(result.fold_change),
+                        "z_orig": result.z_orig,
+                        "stage": result.stage,
+                    }
+                )
         del target_precomps  # free this chunk's synthetic_idxs before the next one
 
     return pd.DataFrame(rows)

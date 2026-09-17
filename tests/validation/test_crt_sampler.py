@@ -72,4 +72,6 @@ def test_null_statistic_distribution_from_our_sampler_resembles_rs(ground_truth)
     r_null_stats = compute_null_full_statistics(pieces.a, pieces.w, pieces.D, r_synthetic_idxs)
 
     ks_stat, ks_pvalue = stats.ks_2samp(our_null_stats, r_null_stats)
-    assert ks_pvalue > 0.01, f"null-statistic distributions differ (KS p={ks_pvalue}, stat={ks_stat})"
+    assert ks_pvalue > 0.01, (
+        f"null-statistic distributions differ (KS p={ks_pvalue}, stat={ks_stat})"
+    )

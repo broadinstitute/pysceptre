@@ -55,7 +55,9 @@ def fit_skew_normal_funct(y: np.ndarray) -> SkewNormalFit:
     return SkewNormalFit(xi=xi, omega=omega, alpha=alpha, mean=float(m_y), sd=float(sd_y))
 
 
-def check_sn_tail(y_sorted_ascending: np.ndarray, xi_hat: float, omega_hat: float, alpha_hat: float) -> bool:
+def check_sn_tail(
+    y_sorted_ascending: np.ndarray, xi_hat: float, omega_hat: float, alpha_hat: float
+) -> bool:
     n = y_sorted_ascending.size
     for i in range(180, 199):
         p = i / 200.0
@@ -91,7 +93,9 @@ class SkewNormalEvalResult:
         return self.p > -0.5
 
 
-def fit_and_evaluate_skew_normal(z_orig: float, null_statistics: np.ndarray, side_code: int) -> SkewNormalEvalResult:
+def fit_and_evaluate_skew_normal(
+    z_orig: float, null_statistics: np.ndarray, side_code: int
+) -> SkewNormalEvalResult:
     null_statistics = np.asarray(null_statistics, dtype=float)
     fit = fit_skew_normal_funct(null_statistics)
     p = -1.0

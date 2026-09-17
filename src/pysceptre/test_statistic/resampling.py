@@ -15,7 +15,7 @@ import numpy as np
 
 from .empirical_p import compute_empirical_p_value
 from .fold_change import estimate_log_fold_change
-from .score_stat import compute_observed_full_statistic, compute_null_full_statistics
+from .score_stat import compute_null_full_statistics, compute_observed_full_statistic
 from .skew_normal import fit_and_evaluate_skew_normal
 
 P_THRESH = 0.02
@@ -28,7 +28,9 @@ class PairResult:
     fold_change: float
     se_fold_change: float
     stage: int
-    sn_params: tuple[float, float, float] | None  # (xi, omega, alpha), None if SN was never fit/used
+    sn_params: (
+        tuple[float, float, float] | None
+    )  # (xi, omega, alpha), None if SN was never fit/used
     resampling_dist: np.ndarray | None = None
 
 
@@ -73,7 +75,9 @@ def run_low_level_test_full(
 
         if not fit_parametric_curve or not sn_fit_used:
             if B3 > 0:
-                null_statistics = compute_null_full_statistics(a, w, D, synthetic_idxs[B1 + B2 : B1 + B2 + B3])
+                null_statistics = compute_null_full_statistics(
+                    a, w, D, synthetic_idxs[B1 + B2 : B1 + B2 + B3]
+                )
             p = compute_empirical_p_value(null_statistics, z_orig, side_code)
             stage = 3
 

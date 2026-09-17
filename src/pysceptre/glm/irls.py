@@ -68,7 +68,9 @@ def _binomial_deviance(y: np.ndarray, mu: np.ndarray) -> np.ndarray:
     return 2.0 * np.sum(t1 + t2, axis=0)
 
 
-def _batched_wls_solve(X: np.ndarray, X_outer_flat: np.ndarray, w: np.ndarray, z: np.ndarray) -> np.ndarray:
+def _batched_wls_solve(
+    X: np.ndarray, X_outer_flat: np.ndarray, w: np.ndarray, z: np.ndarray
+) -> np.ndarray:
     """Solve, for each of k columns, (X^T diag(w_k) X) beta_k = X^T diag(w_k) z_k.
 
     X: (n, p) shared design matrix. X_outer_flat: (n, p*p), the precomputed
@@ -94,7 +96,9 @@ def _batched_wls_solve(X: np.ndarray, X_outer_flat: np.ndarray, w: np.ndarray, z
     return beta.T  # (p, k)
 
 
-def _fit_batch(X: np.ndarray, Y: np.ndarray, family: str, *, eps: float = _EPS, maxit: int = _MAXIT) -> GlmFitBatchResult:
+def _fit_batch(
+    X: np.ndarray, Y: np.ndarray, family: str, *, eps: float = _EPS, maxit: int = _MAXIT
+) -> GlmFitBatchResult:
     n, p = X.shape
     Y, was_1d = _as_2d(Y)
     n_y, k = Y.shape
@@ -152,8 +156,10 @@ def _fit_batch(X: np.ndarray, Y: np.ndarray, family: str, *, eps: float = _EPS, 
         beta_a = _batched_wls_solve(X, X_outer_flat, w_a, z_a)
         eta_new_a = X @ beta_a
 
-        mu_new_a = np.clip(np.exp(eta_new_a), _MU_FLOOR, None) if family == "poisson" else np.clip(
-            1.0 / (1.0 + np.exp(-eta_new_a)), _MU_FLOOR, 1 - _MU_FLOOR
+        mu_new_a = (
+            np.clip(np.exp(eta_new_a), _MU_FLOOR, None)
+            if family == "poisson"
+            else np.clip(1.0 / (1.0 + np.exp(-eta_new_a)), _MU_FLOOR, 1 - _MU_FLOOR)
         )
         dev_new_a = deviance_fn(Y_a, mu_new_a)
 
@@ -185,16 +191,22 @@ def _fit_batch(X: np.ndarray, Y: np.ndarray, family: str, *, eps: float = _EPS, 
             n_iter=n_iter[0],
             converged=converged[0],
         )
-    return GlmFitBatchResult(coefs=beta, fitted_values=mu_final, deviance=dev_old, n_iter=n_iter, converged=converged)
+    return GlmFitBatchResult(
+        coefs=beta, fitted_values=mu_final, deviance=dev_old, n_iter=n_iter, converged=converged
+    )
 
 
-def fit_poisson_glm_batch(X: np.ndarray, Y: np.ndarray, *, eps: float = _EPS, maxit: int = _MAXIT) -> GlmFitBatchResult:
+def fit_poisson_glm_batch(
+    X: np.ndarray, Y: np.ndarray, *, eps: float = _EPS, maxit: int = _MAXIT
+) -> GlmFitBatchResult:
     """X: (n, p) shared design matrix. Y: (n, k) or (n,) response column(s)."""
     with threadpool_limits(limits=1, user_api="blas"):
         return _fit_batch(X, Y, "poisson", eps=eps, maxit=maxit)
 
 
-def fit_binomial_glm_batch(X: np.ndarray, Y: np.ndarray, *, eps: float = _EPS, maxit: int = _MAXIT) -> GlmFitBatchResult:
+def fit_binomial_glm_batch(
+    X: np.ndarray, Y: np.ndarray, *, eps: float = _EPS, maxit: int = _MAXIT
+) -> GlmFitBatchResult:
     """X: (n, p) shared design matrix. Y: (n, k) or (n,) 0/1 indicator column(s)."""
     with threadpool_limits(limits=1, user_api="blas"):
         return _fit_batch(X, Y, "binomial", eps=eps, maxit=maxit)

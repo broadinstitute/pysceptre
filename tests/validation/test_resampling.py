@@ -31,8 +31,8 @@ def test_stage1_pairs_match_r_exactly_using_rs_own_synthetic_draws(ground_truth)
         # output for the B1 batch, run the orchestration with a fake synthetic
         # index list is unnecessary here -- validate end to end by checking
         # z_orig/fc/se (deterministic, no RNG involved) exactly:
-        from pysceptre.test_statistic.score_stat import compute_observed_full_statistic
         from pysceptre.test_statistic.fold_change import estimate_log_fold_change
+        from pysceptre.test_statistic.score_stat import compute_observed_full_statistic
 
         z_orig = compute_observed_full_statistic(pieces.a, pieces.w, pieces.D, trt_idxs)
         fc, se = estimate_log_fold_change(y, pieces.mu, trt_idxs)
@@ -62,8 +62,18 @@ def test_full_orchestration_escalates_correctly_on_strong_signal(ground_truth):
     synthetic_idxs = [np.array(idxs) for idxs in target["synthetic_idxs_0based"]]
 
     result = run_low_level_test_full(
-        y, mu, a, w, D, trt_idxs, synthetic_idxs,
-        B1=499, B2=4999, B3=0, fit_parametric_curve=True, side_code=0,
+        y,
+        mu,
+        a,
+        w,
+        D,
+        trt_idxs,
+        synthetic_idxs,
+        B1=499,
+        B2=4999,
+        B3=0,
+        fit_parametric_curve=True,
+        side_code=0,
     )
 
     # z_orig/fc/se are deterministic (no RNG involved) -- must match exactly
@@ -75,4 +85,6 @@ def test_full_orchestration_escalates_correctly_on_strong_signal(ground_truth):
     # match, not bit-for-bit
     assert result.stage == 2
     assert result.sn_params is not None
-    assert result.p_value < 1e-10  # R got 1.46e-35; a different valid CRT draw should still be astronomically small
+    assert (
+        result.p_value < 1e-10
+    )  # R got 1.46e-35; a different valid CRT draw should still be astronomically small

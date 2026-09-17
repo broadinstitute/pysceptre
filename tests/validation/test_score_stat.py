@@ -1,9 +1,12 @@
 import numpy as np
 
 from pysceptre.precompute.pieces import compute_precomputation_pieces
-from pysceptre.test_statistic.score_stat import compute_observed_full_statistic, compute_null_full_statistics
-from pysceptre.test_statistic.fold_change import estimate_log_fold_change
 from pysceptre.test_statistic.empirical_p import compute_empirical_p_value
+from pysceptre.test_statistic.fold_change import estimate_log_fold_change
+from pysceptre.test_statistic.score_stat import (
+    compute_null_full_statistics,
+    compute_observed_full_statistic,
+)
 
 
 def _gene_by_id(ground_truth, gene_id):

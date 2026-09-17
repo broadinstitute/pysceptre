@@ -24,11 +24,13 @@ MEDIAN_TRT_CELLS = 396
 def build_synthetic_dataset(seed: int = 0):
     rng = np.random.default_rng(seed)
 
-    X = np.column_stack([
-        np.ones(N_CELLS),
-        rng.normal(size=N_CELLS),
-        rng.normal(size=N_CELLS),
-    ])
+    X = np.column_stack(
+        [
+            np.ones(N_CELLS),
+            rng.normal(size=N_CELLS),
+            rng.normal(size=N_CELLS),
+        ]
+    )
 
     beta = rng.normal(loc=[1.0, 0.2, -0.1], scale=0.1, size=(N_GENES, 3))
     theta_true = rng.uniform(1, 50, size=N_GENES)
@@ -47,10 +49,16 @@ def build_synthetic_dataset(seed: int = 0):
     target_ids = list(grna_target_cells.keys())
     pair_gene_idx = rng.integers(0, N_GENES, size=N_PAIRS)
     pair_target_idx = rng.integers(0, N_TARGETS, size=N_PAIRS)
-    pairs = pd.DataFrame({
-        "response_id": [gene_ids[i] for i in pair_gene_idx],
-        "grna_target": [target_ids[i] for i in pair_target_idx],
-    }).drop_duplicates().reset_index(drop=True)
+    pairs = (
+        pd.DataFrame(
+            {
+                "response_id": [gene_ids[i] for i in pair_gene_idx],
+                "grna_target": [target_ids[i] for i in pair_target_idx],
+            }
+        )
+        .drop_duplicates()
+        .reset_index(drop=True)
+    )
 
     return response_matrix, gene_ids, X, grna_target_cells, pairs
 
@@ -75,7 +83,9 @@ def main():
         seed=0,
     )
     elapsed = time.time() - t0
-    print(f"\nrun_discovery_analysis: {len(pairs)} pairs in {elapsed:.1f}s ({elapsed / len(pairs) * 1000:.2f} ms/pair)")
+    print(
+        f"\nrun_discovery_analysis: {len(pairs)} pairs in {elapsed:.1f}s ({elapsed / len(pairs) * 1000:.2f} ms/pair)"
+    )
     print(result["stage"].value_counts())
     print(result.head())
 

@@ -61,7 +61,9 @@ try:
     from numba import njit
 
     @njit(cache=True)
-    def _counting_sort_group(cell_ids: np.ndarray, positions: np.ndarray, B: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _counting_sort_group(
+        cell_ids: np.ndarray, positions: np.ndarray, B: int
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         n = cell_ids.shape[0]
         counts = np.zeros(B, dtype=np.int64)
         for i in range(n):
@@ -81,7 +83,9 @@ except ImportError:
     _HAVE_NUMBA = False
 
 
-def _group_by_position_numpy(cell_ids: np.ndarray, positions: np.ndarray, B: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _group_by_position_numpy(
+    cell_ids: np.ndarray, positions: np.ndarray, B: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     # Stability is not needed: downstream consumers only ever sum over each
     # bucket's cells (order-invariant), so the default (unstable, much
     # faster) sort algorithm is used rather than "stable" (mergesort).
@@ -94,7 +98,9 @@ def _group_by_position_numpy(cell_ids: np.ndarray, positions: np.ndarray, B: int
     return sorted_cells, starts, boundaries
 
 
-def crt_index_sampler_fast(fitted_probabilities: np.ndarray, B: int, rng: np.random.Generator) -> list[np.ndarray]:
+def crt_index_sampler_fast(
+    fitted_probabilities: np.ndarray, B: int, rng: np.random.Generator
+) -> list[np.ndarray]:
     """Returns a length-B list of 0-based integer arrays: synthetic_idxs[b] is
     the set of cell indices treated in synthetic draw b. See module docstring
     for the sparse-generation strategy (O(B * n_trt) rather than O(B * n_cells))."""
@@ -114,14 +120,18 @@ def crt_index_sampler_fast(fitted_probabilities: np.ndarray, B: int, rng: np.ran
     # negligible correctness gain -- skip it.
 
     if _HAVE_NUMBA:
-        sorted_cells, starts, boundaries = _counting_sort_group(cell_ids, positions.astype(np.int64), B)
+        sorted_cells, starts, boundaries = _counting_sort_group(
+            cell_ids, positions.astype(np.int64), B
+        )
     else:
         sorted_cells, starts, boundaries = _group_by_position_numpy(cell_ids, positions, B)
 
     return [sorted_cells[starts[b] : boundaries[b]] for b in range(B)]
 
 
-def crt_index_sampler_naive(fitted_probabilities: np.ndarray, B: int, rng: np.random.Generator) -> list[np.ndarray]:
+def crt_index_sampler_naive(
+    fitted_probabilities: np.ndarray, B: int, rng: np.random.Generator
+) -> list[np.ndarray]:
     """Reference implementation used only for cross-checking (see
     test_crt_sampler.py): draws the full (B, n_cells) boolean matrix in one
     shot rather than chunking it -- simpler, but O(B * n_cells) memory, so
