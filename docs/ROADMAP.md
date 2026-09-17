@@ -117,6 +117,43 @@ scale against sceptre's 33,066:
 
 Output is bit-for-bit identical, row order included.
 
+### Note on the performance figures
+
+`README.md`'s performance table does not reproduce. Running
+`scripts/benchmark_pairs.py` unmodified -- the same script the table cites, at
+its own scale of 586,309 cells / 292 genes / 3,026 targets / 34,177 pairs --
+took **11.0 minutes** (662 s) against the table's **~1 hour**:
+
+| | this run | README table |
+|---|---|---|
+| total | **11.0 min** | ~1 hour |
+| peak RSS | 13.88 GB | not recorded |
+| swaps | 0 | not recorded |
+| stage 1 / stage 2 pairs | 33,491 / 686 | not recorded |
+
+It was **not** R sceptre: the table breaks down by pysceptre's own function
+names, and this is pysceptre's own benchmark script reproducing the same
+shape, with `fit_all_targets` dominant in both.
+
+Of the ~49-minute gap, about 5.6 minutes is attributable to code -- #6 made
+the per-pair statistic 3.4x faster, and the table allots that stage 8 minutes.
+The rest is almost certainly the machine, and specifically its memory:
+
+- The benchmark needs **~14 GB peak**. On a 16 GB VM that is borderline and on
+  anything smaller it swaps, which is slow enough to explain a 5x gap on its
+  own. This run recorded `0 swaps` only because the machine has 39 GB.
+- That run also predates #12/#13, when `fit_all_targets` was unbounded and
+  measured 13.1 GB by itself over 586k cells. A constrained VM would have
+  swapped hardest in exactly the stage the table singles out as slowest
+  (48 of ~60 minutes), while the much smaller gene fit stayed fast. Bounding
+  it has addressed the worst of that.
+
+The table is left as it stands rather than overwritten: it records someone's
+real measurements, and replacing them with numbers from different hardware
+would trade one unattributed table for another. What it needs is the hardware
+it was measured on, or a re-run somewhere documented. This run was a 14-core
+Apple silicon laptop with 39 GB.
+
 ## Tier 3 — release
 
 - **T3.1 PyPI publish.** Blocked on account/token and on whether `0.1.0` is the
@@ -132,43 +169,36 @@ Output is bit-for-bit identical, row order included.
 
 ## Tier 5 — exploratory (low priority)
 
-### T5.1 GPU support for the heavy stages
+### T5.1 GPU support for the heavy stages — TABLED
 
-Low priority: none of it is measured, and the CPU path has not yet had its
-cheap wins taken (T2.1-T2.4). Recorded now so the design constraints are not
-forgotten.
+Tabled deliberately, not forgotten: profiling the CPU path removed most of the
+case for it.
 
-The three hot stages are all GPU-shaped:
+The item was written when `docs/ROADMAP.md` and `README.md` both put
+`fit_all_targets` at ~48 minutes, i.e. 80% of a one-hour run -- a big enough
+prize to justify a GPU port. Measured at the benchmark's own scale (586,309
+cells, p=6), that stage is about **5.5 minutes**, so the ceiling on *any*
+parallelization of it is minutes rather than tens of minutes.
 
-| Stage | Work | GPU fit |
+CPU-side measurements that closed the case:
+
+| stage | measured (586k cells) | what the old table claimed |
 |---|---|---|
-| `fit_all_targets` (~48 min, dominant) | batched logistic IRLS + CRT draws | good: dense batched matmuls, per-cell binomial draws |
-| `fit_all_genes` (~5 min) | batched Poisson IRLS | good: same shape |
-| per-pair statistic (~8 min) | gathers (`a[flat_idxs]`, `D[:, flat_idxs]`) then segment sums | good: gather + scatter-add are native GPU primitives |
+| `fit_all_genes` | 0.5 min (292 genes) | 5.4 min |
+| `fit_all_targets` | 5.5 min (2,875 targets) | 48 min |
+| per-pair statistic | 3.1 min (34,886 pairs, stage-1) | 8 min |
 
-Design constraints, to save rediscovering them:
+Thread-level parallelism was also measured and is weak: 2.9x at 8 workers,
+because the numba counting sort and numpy's `Generator` both hold the GIL.
+Real parallelism would need processes plus `shared_memory` for the response
+and covariate matrices -- plausibly ~3x end to end on 14 cores, and still the
+first thing to try before any accelerator.
 
-- **Generate draws on-device.** The CRT draws are the large object (5.2 GB per
-  target for `no_approximation`, ~17 MB for `skew_normal`). Host-to-device
-  transfer would likely dominate, so `crt_index_sampler_fast` should draw
-  directly on the GPU rather than shipping CPU draws across.
-- **VRAM is much smaller than host RAM** (typically 16-80 GB), so the
-  no-densify constraint and the T1.1 streaming work matter *more* here, not
-  less. Do T1.1 first.
-- **`threadpool_limits(1)` in `glm/irls.py` is a CPU-BLAS decision** and does
-  not carry over; the thin-matmul pathology it works around is specific to
-  multi-threaded OpenBLAS.
-- **Keep the CPU path working.** Mirror the existing optional-dependency
-  pattern: `crt/sampler.py` already try/excepts numba and falls back to pure
-  numpy. A `gpu` extra in `pyproject.toml` alongside `fast` fits naturally.
-- **Library choice is open.** CuPy is the most drop-in (numpy-compatible API,
-  so `_segment_sums` and the IRLS loop could be largely shared);
-  `numba.cuda` would avoid adding a second accelerator dependency given numba
-  is already an extra. Prototype one stage before committing to either.
-
-First concrete step, if picked up: port `fit_all_targets` alone behind the
-extra and measure against the 48-minute CPU baseline. That stage dominates,
-so it decides whether the rest is worth doing.
+If this is ever revisited, the constraints recorded earlier still hold:
+generate draws on-device (they are the large object), VRAM makes T1.1
+streaming a prerequisite, `threadpool_limits(1)` is CPU-BLAS-specific and does
+not carry over, and the CPU fallback must keep working via the same optional
+extra pattern numba uses.
 
 ## Tier 4 — scope extensions
 
