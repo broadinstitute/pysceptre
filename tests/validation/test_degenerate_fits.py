@@ -7,12 +7,21 @@ statistic built on a degenerate fit with no indication at all.
 """
 
 import warnings
+from dataclasses import replace
 
 import numpy as np
 import pytest
 
-from pysceptre.pipeline.discovery import fit_all_genes, summarize_gene_fits
-from pysceptre.precompute.pieces import compute_precomputation_pieces
+from pysceptre.pipeline.discovery import (
+    GenePrecomputation,
+    _design_is_rank_deficient,
+    fit_all_genes,
+    summarize_gene_fits,
+)
+from pysceptre.precompute.pieces import (
+    PrecomputationPieces,
+    compute_precomputation_pieces,
+)
 
 
 def _nb_inputs(n_genes=4, n_cells=600, theta_true=8.0, seed=0):
@@ -78,20 +87,63 @@ def test_exactly_collinear_covariates_fail_fast_in_the_glm():
         fit_all_genes(resp, ["g0", "g1"], cov)
 
 
-def test_near_collinear_covariates_are_reported_as_rank_deficient():
-    """The case the relative check exists for: near-collinearity survives the
-    GLM solve but leaves Zt_wZ numerically rank deficient, so D's smallest
-    direction is amplified roundoff. Previously silent."""
-    rng = np.random.default_rng(1)
-    n_cells = 400
-    x = rng.normal(size=n_cells)
-    cov = np.column_stack([np.ones(n_cells), x, x + 1e-11 * rng.normal(size=n_cells)])
-    resp = rng.negative_binomial(8.0, 8.0 / (8.0 + 5.0), size=(2, n_cells)).astype(float)
+def _pieces_with_eigenvalues(min_eig, max_eig, p=3, n=10):
+    """A PrecomputationPieces carrying only what the rank check reads."""
+    return PrecomputationPieces(
+        mu=np.ones(n),
+        w=np.ones(n),
+        a=np.ones(n),
+        D=np.zeros((p, n)),
+        min_eigenvalue=min_eig,
+        max_eigenvalue=max_eig,
+    )
 
-    with pytest.warns(UserWarning, match="rank-deficient"):
-        precomps = fit_all_genes(resp, ["g0", "g1"], cov)
 
-    assert summarize_gene_fits(precomps)["singular_design"] == ["g0", "g1"]
+@pytest.mark.parametrize(
+    ("min_eig", "max_eig", "expected"),
+    [
+        (1.0, 100.0, False),  # well conditioned
+        (1e-6, 1.0, False),  # poorly conditioned but still full rank
+        (4.3e-14, 540.0, True),  # measured values for exactly collinear covariates
+        (0.0, 540.0, True),  # exactly singular
+        (-1e-13, 540.0, True),  # slightly negative, as LAPACK can return
+        (float("nan"), 540.0, True),  # eigendecomposition produced nothing usable
+        (1.0, float("nan"), True),
+        (0.0, 0.0, True),  # degenerate all round
+    ],
+)
+def test_rank_deficiency_check_on_exact_eigenvalues(min_eig, max_eig, expected):
+    """Tested on hand-built eigenvalues rather than a near-collinear design.
+
+    Constructing a design whose conditioning lands in a specific window is not
+    portable: the same matrix gives a slightly positive smallest eigenvalue on
+    one LAPACK and a slightly negative one on another, which moved an earlier
+    version of this test across the threshold between macOS and Linux CI.
+    The threshold logic is what matters, so test it directly.
+    """
+    assert _design_is_rank_deficient(_pieces_with_eigenvalues(min_eig, max_eig)) is expected
+
+
+def test_summarize_groups_each_degeneracy_independently():
+    healthy = GenePrecomputation(
+        y=np.ones(4),
+        fitted_coefs=np.ones(2),
+        theta=8.0,
+        pieces=_pieces_with_eigenvalues(1.0, 10.0),
+    )
+    precomps = {
+        "ok": healthy,
+        "not_converged": replace(healthy, glm_converged=False),
+        "theta_fell_back": replace(healthy, theta_method=2),
+        "theta_at_bound": replace(healthy, theta_clamped=True),
+        "singular": replace(healthy, pieces=_pieces_with_eigenvalues(0.0, 10.0)),
+    }
+    assert summarize_gene_fits(precomps) == {
+        "glm_not_converged": ["not_converged"],
+        "theta_fallback": ["theta_fell_back"],
+        "theta_clamped": ["theta_at_bound"],
+        "singular_design": ["singular"],
+    }
 
 
 def test_eigenvalues_are_recorded_on_the_pieces():
@@ -107,14 +159,15 @@ def test_eigenvalues_are_recorded_on_the_pieces():
     healthy_ratio = pieces.min_eigenvalue / pieces.max_eigenvalue
     assert healthy_ratio > 1e-6
 
-    # A collinear design is many orders of magnitude worse conditioned, but
-    # note D stays finite -- which is exactly why the check is relative and
-    # not an isfinite() test.
+    # A collinear design is many orders of magnitude worse conditioned. Whether
+    # its D comes out finite is LAPACK-dependent -- macOS Accelerate returns a
+    # tiny positive smallest eigenvalue and finite D, Linux OpenBLAS returns a
+    # slightly negative one and non-finite D -- so only the conditioning is
+    # asserted here. That variability is precisely why the rank check is
+    # relative rather than an isfinite() test.
     collinear = np.column_stack([cov, cov[:, 1]])
     bad = compute_precomputation_pieces(y, collinear, np.r_[coefs, 0.0], 8.0)
-    bad_ratio = bad.min_eigenvalue / bad.max_eigenvalue
-    assert bad_ratio < 1e-15
-    assert np.isfinite(bad.D).all()
+    assert abs(bad.min_eigenvalue) / bad.max_eigenvalue < 1e-15
 
 
 def test_summary_keys_are_stable_for_an_empty_gene_set():

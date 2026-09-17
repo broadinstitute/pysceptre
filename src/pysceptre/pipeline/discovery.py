@@ -154,7 +154,9 @@ def _design_is_rank_deficient(pieces: PrecomputationPieces) -> bool:
     if max_eig <= 0.0:
         return True
     p = pieces.D.shape[0]
-    return min_eig <= max_eig * p * np.finfo(float).eps
+    # bool(), not the numpy scalar the comparison yields -- callers should get
+    # a plain Python bool.
+    return bool(min_eig <= max_eig * p * np.finfo(float).eps)
 
 
 def summarize_gene_fits(gene_precomps: dict[str, GenePrecomputation]) -> dict[str, list[str]]:
