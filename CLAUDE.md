@@ -144,9 +144,20 @@ Python 3.10+ (`requires-python`). Verified passing on 3.10, 3.11, 3.12, 3.13.
   JSON records which `sceptre` version produced the fixture — if that matters
   for a change you're making, regenerate it and note the version in the commit.
 
-- **`scripts/run_moi5_validation.py` hardcodes
-  `DATA_DIR = "/mnt/disks/sw-dev-disk/..."`** — a cloud-VM path. It will not run
-  locally without editing, and the data it wants is intentionally not in the repo.
+- **The moi5 scripts take their paths from the environment**, because the data
+  they touch is real screen data that is never committed:
+
+  | var | used by | what |
+  |---|---|---|
+  | `PYSCEPTRE_MOI5_DIR` | all three | the moi5 export directory |
+  | `WTC11_BASE`         | the two R scripts | root of the wtc-11 data tree |
+  | `SCEPTRE_IO_R`       | the two R scripts | `sceptre_io.R` from the element-gene-power-analysis repo |
+
+  `run_moi5_validation.py` also takes `--data-dir`, which wins over the env
+  var. Each script fails immediately with a message naming the missing
+  variable, rather than part-way through. These were hardcoded
+  `/mnt/disks/sw-dev-disk/...` cloud-VM paths; don't reintroduce absolute
+  paths here.
 
 - **Implicit namespace packages were the previous state.** `__init__.py` files
   now exist in every package dir; without them `setuptools.find_packages`

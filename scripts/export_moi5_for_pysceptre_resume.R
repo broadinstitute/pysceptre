@@ -9,10 +9,29 @@ suppressPackageStartupMessages({
   library(sceptre)
   library(Matrix)
 })
-source("/mnt/disks/sw-dev-disk/wtc-11/element-gene-power-analysis/lib/sceptre_io.R")
+# Paths are environment-driven: real screen data is never committed (see
+# .gitignore), and these were originally hardcoded /mnt/disks/... cloud-VM
+# paths, so the scripts could not run anywhere else.
+require_env <- function(name, what) {
+  value <- Sys.getenv(name, unset = "")
+  if (!nzchar(value)) {
+    stop(sprintf("set %s (%s)", name, what), call. = FALSE)
+  }
+  value
+}
 
-OUT_DIR <- "/mnt/disks/sw-dev-disk/pysceptre/tests/validation/moi5_real"
-RESULTS_CRT_FP <- "/mnt/disks/sw-dev-disk/wtc-11/resampling-mechanism-comparison-moi5/results_crt.rds"
+SCEPTRE_IO_R <- require_env(
+  "SCEPTRE_IO_R",
+  "path to sceptre_io.R from the element-gene-power-analysis repo"
+)
+WTC11_BASE <- require_env("WTC11_BASE", "root of the wtc-11 data tree")
+OUT_DIR <- require_env("PYSCEPTRE_MOI5_DIR", "output directory for the moi5 export")
+
+source(SCEPTRE_IO_R)
+
+RESULTS_CRT_FP <- file.path(
+  WTC11_BASE, "resampling-mechanism-comparison-moi5/results_crt.rds"
+)
 
 cat("Loading rebuilt post-QC object...\n")
 so <- readRDS(file.path(OUT_DIR, "so_postqc.rds"))

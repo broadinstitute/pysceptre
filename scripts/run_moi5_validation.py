@@ -5,6 +5,8 @@ R's actual sceptre discovery_result (results_crt.rds) on the same data.
 
 from __future__ import annotations
 
+import argparse
+import os
 import time
 
 import numpy as np
@@ -12,33 +14,56 @@ import pandas as pd
 
 from pysceptre.pipeline.api import run_discovery_analysis
 
-DATA_DIR = "/mnt/disks/sw-dev-disk/pysceptre/tests/validation/moi5_real"
+_DATA_DIR_ENV = "PYSCEPTRE_MOI5_DIR"
 
 
-def load_data():
-    gene_ids = [line.strip() for line in open(f"{DATA_DIR}/response_matrix.genes.txt")]
+def resolve_data_dir(argv: list[str] | None = None) -> str:
+    """The moi5 export directory. Real screen data is never committed (see
+    .gitignore), so this must be supplied per machine -- originally a
+    hardcoded /mnt/disks/... cloud-VM path, which meant the script could not
+    run anywhere else."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--data-dir",
+        default=os.environ.get(_DATA_DIR_ENV),
+        help=f"directory holding the moi5 export (default: ${_DATA_DIR_ENV})",
+    )
+    args = parser.parse_args(argv)
+    if not args.data_dir:
+        parser.error(
+            f"no data directory given: pass --data-dir or set ${_DATA_DIR_ENV}. "
+            "It should contain the files written by scripts/export_moi5_for_pysceptre.R "
+            "(response_matrix.bin, covariate_matrix.bin, pairs.csv, ...)."
+        )
+    if not os.path.isdir(args.data_dir):
+        parser.error(f"data directory does not exist: {args.data_dir}")
+    return args.data_dir
+
+
+def load_data(data_dir: str):
+    gene_ids = [line.strip() for line in open(f"{data_dir}/response_matrix.genes.txt")]
     n_genes = len(gene_ids)
 
-    cov_cols = [line.strip() for line in open(f"{DATA_DIR}/covariate_matrix.cols.txt")]
+    cov_cols = [line.strip() for line in open(f"{data_dir}/covariate_matrix.cols.txt")]
     n_cov = len(cov_cols)
 
-    cov_flat = np.fromfile(f"{DATA_DIR}/covariate_matrix.bin", dtype=np.float64)
+    cov_flat = np.fromfile(f"{data_dir}/covariate_matrix.bin", dtype=np.float64)
     n_cells = cov_flat.size // n_cov
     covariate_matrix = cov_flat.reshape(n_cells, n_cov)
 
-    resp_flat = np.fromfile(f"{DATA_DIR}/response_matrix.bin", dtype=np.float64)
+    resp_flat = np.fromfile(f"{data_dir}/response_matrix.bin", dtype=np.float64)
     assert resp_flat.size == n_genes * n_cells, (resp_flat.size, n_genes, n_cells)
     response_matrix = resp_flat.reshape(n_genes, n_cells)
 
-    target_cells_df = pd.read_csv(f"{DATA_DIR}/grna_target_cells.csv")
+    target_cells_df = pd.read_csv(f"{data_dir}/grna_target_cells.csv")
     grna_target_cells = {
         target: group["cell_index_0based"].to_numpy()
         for target, group in target_cells_df.groupby("grna_target")
     }
 
-    pairs = pd.read_csv(f"{DATA_DIR}/pairs.csv")
+    pairs = pd.read_csv(f"{data_dir}/pairs.csv")
 
-    r_results = pd.read_csv(f"{DATA_DIR}/r_discovery_result.csv")
+    r_results = pd.read_csv(f"{data_dir}/r_discovery_result.csv")
 
     print(
         f"Loaded: {n_genes} genes, {n_cells} cells, {n_cov} covariates, "
@@ -48,7 +73,10 @@ def load_data():
 
 
 def main():
-    response_matrix, gene_ids, covariate_matrix, grna_target_cells, pairs, r_results = load_data()
+    data_dir = resolve_data_dir()
+    response_matrix, gene_ids, covariate_matrix, grna_target_cells, pairs, r_results = load_data(
+        data_dir
+    )
 
     t0 = time.time()
     result = run_discovery_analysis(
@@ -66,7 +94,7 @@ def main():
         f"({elapsed / len(pairs) * 1000:.2f} ms/pair)"
     )
 
-    result.to_csv(f"{DATA_DIR}/pysceptre_discovery_result.csv", index=False)
+    result.to_csv(f"{data_dir}/pysceptre_discovery_result.csv", index=False)
 
     merged = result.merge(r_results, on=["response_id", "grna_target"], suffixes=("_py", "_r"))
     print(f"\nMerged {len(merged)} pairs (of {len(result)} pysceptre / {len(r_results)} R)")

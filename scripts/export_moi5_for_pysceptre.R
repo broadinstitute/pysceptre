@@ -17,17 +17,35 @@ suppressPackageStartupMessages({
   library(Matrix)
 })
 
-source("/mnt/disks/sw-dev-disk/wtc-11/element-gene-power-analysis/lib/sceptre_io.R")
+# Paths are environment-driven: real screen data is never committed (see
+# .gitignore), and these were originally hardcoded /mnt/disks/... cloud-VM
+# paths, so the scripts could not run anywhere else.
+require_env <- function(name, what) {
+  value <- Sys.getenv(name, unset = "")
+  if (!nzchar(value)) {
+    stop(sprintf("set %s (%s)", name, what), call. = FALSE)
+  }
+  value
+}
 
-BASE <- "/mnt/disks/sw-dev-disk/wtc-11"
-SO_PATH <- file.path(BASE, "grna-single-target-moi5-ondisc/sceptre_object.rds")
-GENE_ODM_FP <- file.path(BASE, "grna-single-target-moi5-ondisc/gene.odm")
-GRNA_ODM_FP <- file.path(BASE, "grna-single-target-moi5-ondisc/grna.odm")
-DISCOVERY_PAIRS_FP <- file.path(BASE, "discovery_pairs.rds")
-POSITIVE_PAIRS_FP <- file.path(BASE, "positive.rds")
-RESULTS_CRT_FP <- file.path(BASE, "resampling-mechanism-comparison-moi5/results_crt.rds")
+SCEPTRE_IO_R <- require_env(
+  "SCEPTRE_IO_R",
+  "path to sceptre_io.R from the element-gene-power-analysis repo"
+)
+WTC11_BASE <- require_env("WTC11_BASE", "root of the wtc-11 data tree")
+OUT_DIR <- require_env("PYSCEPTRE_MOI5_DIR", "output directory for the moi5 export")
 
-OUT_DIR <- "/mnt/disks/sw-dev-disk/pysceptre/tests/validation/moi5_real"
+source(SCEPTRE_IO_R)
+
+SO_PATH <- file.path(WTC11_BASE, "grna-single-target-moi5-ondisc/sceptre_object.rds")
+GENE_ODM_FP <- file.path(WTC11_BASE, "grna-single-target-moi5-ondisc/gene.odm")
+GRNA_ODM_FP <- file.path(WTC11_BASE, "grna-single-target-moi5-ondisc/grna.odm")
+DISCOVERY_PAIRS_FP <- file.path(WTC11_BASE, "discovery_pairs.rds")
+POSITIVE_PAIRS_FP <- file.path(WTC11_BASE, "positive.rds")
+RESULTS_CRT_FP <- file.path(
+  WTC11_BASE, "resampling-mechanism-comparison-moi5/results_crt.rds"
+)
+
 dir.create(OUT_DIR, showWarnings = FALSE, recursive = TRUE)
 
 t_start <- Sys.time()
