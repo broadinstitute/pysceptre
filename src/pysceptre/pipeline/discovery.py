@@ -487,6 +487,23 @@ def resolve_entropy(seed) -> int:
     return np.random.SeedSequence(seed).entropy
 
 
+_TARGET_STATE: dict = {}
+
+
+def _target_draw_job(job: tuple[int, str]) -> tuple[str, TargetPrecomputation]:
+    """One target's CRT draw. Independent, since each seeds from its own name."""
+    k, target_id = job
+    st = _TARGET_STATE
+    fitted_probabilities = st["fitted_values"][k]
+    rng = np.random.default_rng(target_seed_sequence(st["seed"], target_id))
+    synthetic_idxs = crt_index_sampler_fast(fitted_probabilities, st["B_total"], rng)
+    return target_id, TargetPrecomputation(
+        trt_idxs=st["grna_target_cells"][target_id],
+        fitted_probabilities=fitted_probabilities,
+        draws=draws_to_matrix(synthetic_idxs, st["n_cells"]),
+    )
+
+
 def fit_all_targets(
     grna_target_cells: dict[str, np.ndarray],
     covariate_matrix: np.ndarray,
@@ -495,6 +512,7 @@ def fit_all_targets(
     B2: int,
     B3: int,
     seed,
+    n_jobs: int = 1,
 ) -> dict[str, TargetPrecomputation]:
     """One batched binomial IRLS call across all targets (indicator columns
     share the full covariate matrix), then a CRT draw per target.
@@ -514,17 +532,33 @@ def fit_all_targets(
 
     fit = fit_binomial_glm_batch(covariate_matrix, Y)
 
+    # The draws parallelize now that each target seeds from its own name --
+    # under a shared generator the order of consumption was the answer, so
+    # this could not have been done before that change.
+    #
+    # **Threads, not processes, and against the platform default.** A target's
+    # draw matrix is large -- 2.7M nonzeros, ~33 MB, at day0 scale -- so
+    # returning it across a process boundary would cost more than the draw.
+    # Threads pay nothing to return it, and numpy releases the GIL for the
+    # bulk `binomial` and `integers` calls that dominate here, which the
+    # gather in the per-pair statistic does not. Measured on 16 day0 targets:
+    # 1.98x at 2 threads, 2.90x at 4, and 2.40x at 8 -- the turnover is
+    # allocation and bandwidth contention on those 33 MB buffers.
+    _TARGET_STATE.update(
+        fitted_values=fit.fitted_values,
+        grna_target_cells=grna_target_cells,
+        seed=seed,
+        B_total=B1 + B2 + B3,
+        n_cells=n_cells,
+    )
     out: dict[str, TargetPrecomputation] = {}
-    B_total = B1 + B2 + B3
-    for k, target_id in enumerate(target_ids):
-        fitted_probabilities = fit.fitted_values[k]
-        target_rng = np.random.default_rng(target_seed_sequence(seed, target_id))
-        synthetic_idxs = crt_index_sampler_fast(fitted_probabilities, B_total, target_rng)
-        out[target_id] = TargetPrecomputation(
-            trt_idxs=grna_target_cells[target_id],
-            fitted_probabilities=fitted_probabilities,
-            draws=draws_to_matrix(synthetic_idxs, n_cells),
-        )
+    try:
+        for target_id, precomp in _map_jobs(
+            _target_draw_job, list(enumerate(target_ids)), n_jobs, backend="thread"
+        ):
+            out[target_id] = precomp
+    finally:
+        _TARGET_STATE.clear()
     return out
 
 
@@ -734,12 +768,16 @@ def parallel_backend() -> str:
     return "thread"
 
 
-def _map_jobs(fn, jobs: list, n_jobs: int):
+def _map_jobs(fn, jobs: list, n_jobs: int, backend: str | None = None):
     """Run `fn` over `jobs`, sequentially or in parallel.
 
     `fn` must be a module-level function that reads its bulk inputs from a
     module global, so that under the process backend only the small job
     descriptor crosses the boundary.
+
+    `backend` overrides the platform default, for stages whose shape makes
+    the other choice wrong -- see `fit_all_targets`, where the results are far
+    too large to send between processes.
     """
     workers = min(resolve_n_jobs(n_jobs), len(jobs))
     if workers <= 1 or len(jobs) <= 1:
@@ -747,7 +785,7 @@ def _map_jobs(fn, jobs: list, n_jobs: int):
             yield fn(job)
         return
 
-    backend = parallel_backend()
+    backend = backend or parallel_backend()
     if backend == "fork":
         import multiprocessing as mp
         from concurrent.futures import ProcessPoolExecutor
@@ -858,7 +896,13 @@ def run_discovery_ntcells_complement(
         chunk_ids = target_ids_needed[chunk_start : chunk_start + target_chunk_size]
         chunk_cells = {t: grna_target_cells[t] for t in chunk_ids}
         target_precomps = fit_all_targets(
-            chunk_cells, covariate_matrix, B1=B1, B2=B2, B3=B3, seed=entropy
+            chunk_cells,
+            covariate_matrix,
+            B1=B1,
+            B2=B2,
+            B3=B3,
+            seed=entropy,
+            n_jobs=n_jobs,
         )
 
         # Gene-outer inside the chunk so each gene's pieces are rebuilt once
