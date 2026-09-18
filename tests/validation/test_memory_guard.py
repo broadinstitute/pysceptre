@@ -9,7 +9,7 @@ memory.
 The cases that made this necessary, both measured at real scale:
   - the target binomial fit was unbounded: 13.1 GB at target_chunk_size=200
     over 586,309 cells;
-  - no_approximation sizes B3 as mult * n_pairs / alpha, which at moi5 scale
+  - no_approximation sizes B3 as mult * n_pairs / alpha, which at real dataset scale
     (33,066 pairs, one-sided, alpha=0.1) is 1,653,300 draws per target --
     5.2 GB each, or ~1 TB at the default chunk size.
 """
@@ -29,7 +29,7 @@ from pysceptre.pipeline.discovery import (
     target_chunk_size_for_budget,
 )
 
-MOI5_CELLS = 131_000
+REAL_CELLS = 131_000
 BENCH_CELLS = 586_309
 N_TRT = [396] * 100
 SKEW_NORMAL_B = 499 + 4999
@@ -93,13 +93,13 @@ def test_unbounded_target_fit_was_the_problem_being_fixed():
 
 
 def test_no_approximation_collapses_the_chunk_to_one():
-    assert target_chunk_size_for_budget(MOI5_CELLS, int(NO_APPROX_B), N_TRT, 2875, 4.0) == 1
+    assert target_chunk_size_for_budget(REAL_CELLS, int(NO_APPROX_B), N_TRT, 2875, 4.0) == 1
 
 
-def test_moi5_scale_leaves_the_gene_stage_unchunked():
+def test_real_scale_leaves_the_gene_stage_unchunked():
     """The default budget should not chunk a real analysis: 244 genes at 131k
     cells is well inside 4 GB."""
-    assert gene_chunk_size_for_budget(MOI5_CELLS, 244, 4.0) == 244
+    assert gene_chunk_size_for_budget(REAL_CELLS, 244, 4.0) == 244
 
 
 # --- the guarantee: chunk size is an upper bound, not a mandate -----------
@@ -123,7 +123,7 @@ def test_a_chunk_already_within_budget_is_left_alone_and_silent():
 
 def test_severity_note_appears_only_when_the_chunk_collapses_to_one():
     with pytest.warns(UserWarning, match="may still exhaust memory") as severe:
-        _resolve_target_chunk_size(MOI5_CELLS, int(NO_APPROX_B), N_TRT, 2875, 200, 4.0)
+        _resolve_target_chunk_size(REAL_CELLS, int(NO_APPROX_B), N_TRT, 2875, 200, 4.0)
     assert "no_approximation" in str(severe[0].message)
 
     with pytest.warns(UserWarning, match="stay within chunk_memory_gb") as mild:

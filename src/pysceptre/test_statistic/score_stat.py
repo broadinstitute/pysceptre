@@ -59,7 +59,7 @@ def _segment_sums(values: np.ndarray, lengths: np.ndarray, B: int) -> np.ndarray
     `np.add.reduceat` does all rows in one call, which matters because the
     2-D case is the dominant cost of this module (measured: 61.7 ms for one
     `np.bincount` per row of D versus 20.8 ms for a single `reduceat`, on a
-    moi5-shaped 5,498-draw batch).
+    real-scale 5,498-draw batch).
 
     Empty segments need care: `reduceat` given a repeated offset returns the
     *element at that offset* rather than 0, so zero-length resamples would
@@ -151,9 +151,10 @@ def compute_null_statistics_from_draws(stacked: np.ndarray, draws: sparse.csr_ma
 
     This replaces gathering `D[:, flat_idxs]` and reducing it. The gather was
     the single hottest operation in the package -- it materializes a
-    `(p, sum(lengths))` temporary, 158 MB at moi5 scale, per pair -- and the
+    `(p, sum(lengths))` temporary, 158 MB at real dataset scale, per pair --
+    and the
     matmul needs no temporary at all. **Measured 42.7 ms -> 11.2 ms**, 3.8x,
-    on a moi5-shaped call.
+    on a real-scale call.
 
     Empty resamples need no special handling here: an empty CSR row sums to
     zero on its own, where `np.add.reduceat` would have returned the element

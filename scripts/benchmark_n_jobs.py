@@ -8,7 +8,7 @@ allowed to change how long the run takes.
 (processes); everything else uses threads, because `fork` after Apple's
 Accelerate BLAS has run can deadlock. NumPy holds the GIL through much of the
 gather in the per-pair statistic, so the thread ceiling is materially lower --
-measured 1.85x against 3.54x for processes on one moi5-shaped call. A number
+measured 1.85x against 3.54x for processes on one real-scale call. A number
 measured here on a Mac is a lower bound on what Linux does, not a prediction
 of it.
 

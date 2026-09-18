@@ -80,7 +80,7 @@ Python 3.10+ (`requires-python`). Verified passing on 3.10, 3.11, 3.12, 3.13.
   flags, measured timings) must be confirmable from source. If you can't verify
   it, omit it.
 - **Never commit real screen data.** `.gitignore` covers
-  `tests/validation/moi5_real/`, `*.rds`, `*.csv`. Only synthetic, fixed-seed
+  `test_data/`, `*.rds`, `*.csv`. Only synthetic, fixed-seed
   fixtures belong in the repo.
 - **Plots must be colorblind-safe.** Categorical/discrete series use the
   Okabe-Ito palette; continuous scales use `cividis`. Okabe-Ito in order:
@@ -158,20 +158,18 @@ Python 3.10+ (`requires-python`). Verified passing on 3.10, 3.11, 3.12, 3.13.
   JSON records which `sceptre` version produced the fixture — if that matters
   for a change you're making, regenerate it and note the version in the commit.
 
-- **The moi5 scripts take their paths from the environment**, because the data
-  they touch is real screen data that is never committed:
+- **Real screen data is never committed, so anything that needs it takes a
+  path from the environment and fails immediately when it is missing.**
+  `tests/validation/test_day0_regression.py` reads `PYSCEPTRE_DAY0_EXPORT`;
+  `docker/run_on_gcp.sh` requires `GCS_IN` and `GCS_SO` with no defaults.
+  Don't reintroduce absolute paths, and don't give a dataset-specific
+  default: a wrong-but-plausible default is worse than a missing one when
+  the output is a benchmark or a validation number.
 
-  | var | used by | what |
-  |---|---|---|
-  | `PYSCEPTRE_MOI5_DIR` | all three | the moi5 export directory |
-  | `WTC11_BASE`         | the two R scripts | root of the wtc-11 data tree |
-  | `SCEPTRE_IO_R`       | the two R scripts | `sceptre_io.R` from the element-gene-power-analysis repo |
-
-  `run_moi5_validation.py` also takes `--data-dir`, which wins over the env
-  var. Each script fails immediately with a message naming the missing
-  variable, rather than part-way through. These were hardcoded
-  `/mnt/disks/sw-dev-disk/...` cloud-VM paths; don't reintroduce absolute
-  paths here.
+- **The `realdata` pytest marker is named for the kind of test, not a
+  dataset.** Those tests are deselected by default (`addopts` in
+  `pyproject.toml`); run them with `pytest -m realdata`. Swapping which
+  screen they run on should not mean renaming the marker -- it did once.
 
 - **The dataset is MuData (`.h5mu`) with two assays, and the `grna` assay's
   `var` is load-bearing.** sceptre keeps gRNA assignments at exactly two
@@ -180,14 +178,16 @@ Python 3.10+ (`requires-python`). Verified passing on 3.10, 3.11, 3.12, 3.13.
   *non-targeting* gRNA. Targeting gRNAs are never kept individually — they are
   only ever used as a union — and NTCs are, because the calibration check
   regroups them into synthetic targets. **`"non-targeting"` is not a key in the
-  target-keyed table** (2,974 keys against 2,975 distinct targets on moi5), so
+  target-keyed table** (2,974 keys against 2,975 distinct targets on one real
+  screen), so
   a target-keyed export silently drops every NTC and makes the calibration
   check impossible. Both kinds are stored as rows of one annotated `var` with a
   `unit_kind` of `target` or `ntc_grna`. Don't collapse them back.
 
 - **Calibration QC is a filter on construction, not a reported column.**
   A discovery result reports failures in-band (`pass_qc = False`, NaN p-value:
-  34,256 rows of which 1,121 fail on moi5). A calibration result has no
+  34,256 rows of which 1,121 fail on a real screen). A calibration result has
+  no
   `pass_qc` column at all, because every row passed by construction (33,135
   rows, zero failures). Don't "add the missing column".
 

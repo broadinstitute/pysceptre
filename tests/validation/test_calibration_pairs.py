@@ -31,9 +31,9 @@ from pysceptre.pipeline.calibration import (
 
 # (n_calibration_pairs, n_genes, pass_qc_rate, expected) -- observed by calling
 # sceptre:::sample_combinations_v2 directly, with 1,499 NTC gRNAs and groups of
-# 15, the moi5 configuration.
+# 15, that configuration.
 R_GROUP_COUNTS = [
-    (33_135, 9_045, 0.967, 100),  # moi5 as actually run: lands on the floor
+    (33_135, 9_045, 0.967, 100),  # a real run: lands on the floor
     (500_000, 9_045, 0.967, 286),
     (33_135, 100, 0.967, 1_714),
     (33_135, 50, 0.5, 6_627),
@@ -60,7 +60,7 @@ def test_pass_qc_rate_changes_the_count_off_the_floor():
     # actual 625 groups, while assuming every pair passes yields 598.
     assert n_synthetic_groups(34_886, 292, 0.9571) == 625
     assert n_synthetic_groups(34_886, 292, 1.0) == 598
-    # ...but it cannot matter when the floor binds, which is why moi5 was
+    # ...but it cannot matter when the floor binds, which is why the first dataset probed was
     # insensitive to it and day0 is the case that pinned it down.
     assert n_synthetic_groups(33_135, 9_045, 0.967) == n_synthetic_groups(33_135, 9_045, 1.0)
 

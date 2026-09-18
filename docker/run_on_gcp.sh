@@ -23,8 +23,10 @@ ZONE="${ZONE:-us-central1-a}"              # same region as the data
 MACHINE="${MACHINE:-n2-standard-8}"        # 8 vCPU / 32 GB; consistent clocks,
                                            # and headroom for --memory sweeps
 DISK="${DISK:-200GB}"
-GCS_IN="${GCS_IN:-gs://hgrm-seqera/sceptre-nf-ondisc-test/moi5}"
-GCS_SO="${GCS_SO:-gs://hgrm-seqera/nextflow-work/sceptre-nf-dockerhub-full-moi5/37/c40f07fe1ff7cb0b0d21d7fa0730b8/sceptre_object.rds}"
+# No defaults: these name a specific screen, and a wrong-but-plausible
+# default is worse than a missing one when the output is a benchmark.
+GCS_IN="${GCS_IN:?set GCS_IN to the GCS prefix holding the ondisc inputs}"
+GCS_SO="${GCS_SO:?set GCS_SO to the GCS path of the sceptre_object.rds}"
 REPO="${REPO:-https://github.com/broadinstitute/pysceptre.git}"
 REF="${REF:-main}"
 
@@ -96,9 +98,10 @@ run)
   ;;
 
 fetch)
-  mkdir -p test_data/moi5/bench_gcp
-  gcloud compute scp --recurse "$VM":/mnt/work/out/'*' test_data/moi5/bench_gcp/ --zone "$ZONE"
-  echo "fetched -> test_data/moi5/bench_gcp"
+  DEST="${DEST:-test_data/bench_gcp}"
+  mkdir -p "$DEST"
+  gcloud compute scp --recurse "$VM":/mnt/work/out/'*' "$DEST"/ --zone "$ZONE"
+  echo "fetched -> $DEST"
   ;;
 
 delete)

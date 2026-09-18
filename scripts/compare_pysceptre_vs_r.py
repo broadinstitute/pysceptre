@@ -200,7 +200,7 @@ def plot(m: pd.DataFrame, path: str) -> None:
     ax.set_ylim(0, lim)
     ax.set_xlabel("R sceptre  $-\\log_{10}(p)$")
     ax.set_ylabel("pysceptre  $-\\log_{10}(p)$")
-    ax.set_title("Discovery p-values, moi5 (CRT, both sides)")
+    ax.set_title("Discovery p-values (CRT, both sides)")
     ax.spines[["top", "right"]].set_visible(False)
     fig.tight_layout()
     fig.savefig(path, dpi=150)

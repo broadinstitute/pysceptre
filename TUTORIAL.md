@@ -82,7 +82,7 @@ print(result.head())
 ```
 
 Output columns: `response_id`, `grna_target`, `p_value`, `fold_change`,
-`se_fold_change`, `pct_change`, `pct_change_ci_low`, `pct_change_ci_high`,
+`se_fold_change`, `pct_change_es`, `pct_change_es_ci_low`, `pct_change_es_ci_high`,
 `z_orig`, `stage` (see [README.md](README.md#api-reference)
 for what each means, in particular `stage`, which tells you whether a pair's
 p-value came from the initial empirical draws or a skew-normal tail fit).
@@ -108,7 +108,7 @@ result = run_discovery_analysis(
     pairs=pairs, side="left", seed=0,
 )
 hit = result[(result.response_id == strong_gene) & (result.grna_target == strong_target)]
-print(hit)  # expect a very small p_value, pct_change well below 0, stage == 2
+print(hit)  # expect a very small p_value, pct_change_es well below 0, stage == 2
 ```
 
 ## 5. Tuning for your dataset's scale

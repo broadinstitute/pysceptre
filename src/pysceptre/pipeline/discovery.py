@@ -39,7 +39,7 @@ from ..test_statistic.score_stat import draws_to_matrix, stack_pieces
 # which also carries the input, retained state and allocator overhead.
 #
 # Users are not expected to set this. 1.0 is both the fastest and the leanest
-# setting measured on moi5 -- a larger budget produces chunks past the point
+# setting measured -- a larger budget produces chunks past the point
 # where batching still pays, so it costs memory for no throughput:
 #
 #   budget   wall     peak RSS
@@ -100,7 +100,7 @@ _GENE_CHUNK_MEMORY_GB = 1.0
 # badly: the IRLS loop also holds eta and per-iteration temporaries, and
 # `fit_all_genes` additionally churns a precomputation per gene.
 #
-# Measured on moi5 (131,055 cells, p=12), growth attributable to
+# Measured at 131,055 cells, p=12, growth attributable to
 # `fit_all_genes`:
 #
 #   budget   chunk   predicted at 4   actual   implied arrays/column
@@ -572,7 +572,7 @@ def target_bytes_per_item(n_cells: int, B_total: int, n_trt_values) -> float:
     plus the CRT draws it holds.
 
     The fit term is the wasteful one -- the responses are indicators with
-    roughly `n_trt` ones per column (396 of 586,309 in the moi5 benchmark,
+    roughly `n_trt` ones per column (396 of 586,309 in the benchmark,
     0.07% dense) yet held as float64 because the IRLS needs them dense.
     Measured unbounded peak was 13.1 GB at `target_chunk_size=200` over 586k
     cells. The draw term is what explodes under `no_approximation`, where
@@ -715,9 +715,15 @@ def _gene_job(job: tuple[str, list[str]]) -> dict[tuple[str, str], dict]:
             # `log2(fold_change)` is not returned: it is a pure transform of a
             # column already present, so it would be bytes rather than
             # information.
-            "pct_change": _as_pct(result.fold_change),
-            "pct_change_ci_low": _as_pct(result.fold_change - half_width),
-            "pct_change_ci_high": _as_pct(result.fold_change + half_width),
+            #
+            # `_es` because `DataFrame.pct_change` is a pandas method. Named
+            # `pct_change`, attribute access returns the method rather than
+            # the column, and arithmetic on it raises a TypeError about
+            # 'method' rather than a KeyError -- which cost time twice here
+            # before the column was renamed.
+            "pct_change_es": _as_pct(result.fold_change),
+            "pct_change_es_ci_low": _as_pct(result.fold_change - half_width),
+            "pct_change_es_ci_high": _as_pct(result.fold_change + half_width),
             "z_orig": result.z_orig,
             "stage": result.stage,
         }
@@ -750,7 +756,7 @@ def parallel_backend() -> str:
     rather than assumed. The per-pair statistic is a large gather
     (`D[:, flat_idxs]`) followed by `reduceat`; NumPy holds the GIL through
     much of the gather, so threads scale poorly. On one machine, 8 workers on
-    a moi5-shaped call: **1.85x with threads, 3.54x with processes**.
+    one real-scale call: **1.85x with threads, 3.54x with processes**.
 
     Processes are reached via `fork`, which shares the response matrix and the
     chunk's draws copy-on-write. `spawn` is not an option -- a chunk's
@@ -824,8 +830,8 @@ def run_discovery_ntcells_complement(
 ) -> pd.DataFrame:
     """pairs: DataFrame with columns 'response_id', 'grna_target' -- the
     QC-passed pairs to test. Returns a DataFrame with one row per pair:
-    response_id, grna_target, p_value, fold_change, se_fold_change, pct_change,
-    pct_change_ci_low, pct_change_ci_high, z_orig, stage.
+    response_id, grna_target, p_value, fold_change, se_fold_change, pct_change_es,
+    pct_change_es_ci_low, pct_change_es_ci_high, z_orig, stage.
 
     Targets are fit and CRT-drawn in chunks of `target_chunk_size` rather than
     all at once: each target's B1+B2+B3 synthetic index sets are individually
@@ -843,7 +849,7 @@ def run_discovery_ntcells_complement(
     draws -- which is why one budget covers both. That matters most for
     `resampling_approximation="no_approximation"`, whose B3 grows as
     `n_pairs / multiple_testing_alpha` and reaches 1.65M draws (5.2 GB) per
-    target at moi5 scale.
+    target at real dataset scale.
     """
     # No single shared generator: each target seeds its own from its name, so
     # results do not depend on target order or on which other targets are in
@@ -853,7 +859,8 @@ def run_discovery_ntcells_complement(
 
     # Fit only the genes some pair mentions. `gene_ids` labels every row of
     # `response_matrix`, which for an all-genes dataset is far more than the
-    # analysis touches: on moi5 a calibration check tests 9,045 of 38,606
+    # analysis touches: on a transcriptome-wide screen a calibration check
+    # tested 9,045 of 38,606
     # genes, so fitting all of them is 4.3x the necessary work. The fits are
     # per-column independent, so this changes no result. It was invisible while
     # the export carried only the genes under test -- the export was doing the

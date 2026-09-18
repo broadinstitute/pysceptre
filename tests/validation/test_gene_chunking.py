@@ -28,9 +28,9 @@ def test_chunk_size_is_at_least_one_even_on_a_tiny_budget():
     assert gene_chunk_size_for_budget(131_000, 100, 1e-9) == 1
 
 
-def test_moi5_scale_analysis_still_fits_in_one_chunk():
+def test_real_scale_analysis_still_fits_in_one_chunk():
     """The default budget must not make normal runs chunk needlessly: the
-    real moi5 analysis tested 244 genes over 131k cells. At the corrected
+    real analysis tested 244 genes over 131k cells. At the corrected
     per-column cost, 4 GB still holds all of them (381 would fit)."""
     assert gene_chunk_size_for_budget(131_000, 244, 4.0) == 244
 
@@ -103,7 +103,7 @@ def test_end_to_end_results_agree_across_gene_chunk_budgets():
     # on the p <= 0.02 escalation boundary.
     pd.testing.assert_series_equal(reference.p_value, chunked.p_value)
     pd.testing.assert_series_equal(reference.stage, chunked.stage)
-    for col in ("z_orig", "fold_change", "se_fold_change", "pct_change"):
+    for col in ("z_orig", "fold_change", "se_fold_change", "pct_change_es"):
         np.testing.assert_allclose(reference[col], chunked[col], rtol=1e-8)
 
 

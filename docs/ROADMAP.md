@@ -10,14 +10,14 @@ Two standing constraints apply to everything below:
   was OOM-killed, and `no_approximation` materializing all CRT draws needs
   5.2 GB per target (see T1.1).
 - **Modern on-disk formats.** Parquet for tabular data, zarr for chunked
-  nd-arrays. The raw `.bin` + sidecar `.txt` layout the moi5 scripts write is
+  nd-arrays. The raw `.bin` + sidecar `.txt` layout the first export scripts wrote is
   legacy (see T3.4).
 
 ## Tier 1 — correctness and safety
 
 ### T1.1 `no_approximation` can exhaust memory
 
-Reachable since #2. Measured at moi5 scale (33,066 pairs, one-sided, alpha=0.1):
+Reachable since #2. Measured at real scale (33,066 pairs, one-sided, alpha=0.1):
 
 | | |
 |---|---|
@@ -39,7 +39,7 @@ R does not hit this because it processes one target at a time.
   loop, so it is its own PR.
 
 **Reprioritised — this is worth more than originally scoped.** It was filed as
-a `no_approximation` fix, but profiling the moi5 run shows draws dominate the
+a `no_approximation` fix, but profiling a real run shows draws dominate the
 target stage on the *default* `skew_normal` path too: 16.5 MB of the 20.7 MB
 per target, so a 193-target chunk holds 3.2 GB of draws out of a 3.99 GB
 working set. Streaming would cut the dominant memory term for **every**
@@ -48,7 +48,7 @@ highest-value memory change available.
 
 ### T1.4 `chunk_memory_gb` under-predicts actual RSS — PARTLY ADDRESSED
 
-Measured on moi5: a 4.0 GB budget produced a 9.58 GB peak RSS -- roughly 2.4x.
+Measured: a 4.0 GB budget produced a 9.58 GB peak RSS -- roughly 2.4x.
 The guard is behaving correctly (it capped the chunk at 193 targets); the
 budget simply counts *logical array bytes* and ignores two things:
 
@@ -61,7 +61,7 @@ budget simply counts *logical array bytes* and ignores two things:
 `chunk_memory_gb`, because it governs chunk sizing rather than process memory
 and the old name invited exactly this confusion; its default dropped from 4.0
 to 1.0, which measured both faster and leaner; and the h5ad input removed the
-largest ungoverned term. Peak on moi5 went 9.77 GB -> 3.78 GB.
+largest ungoverned term. Peak went 9.77 GB -> 3.78 GB.
 
 What remains: the per-column factor still under-predicts at small chunk sizes
 because roughly 1 GB of the gene stage is a floor from per-gene
@@ -74,7 +74,7 @@ explicitly as a logical-bytes budget rather than an RSS guarantee, or apply a
 calibrated safety factor. **Measure the budget-to-RSS relationship across
 several budget values before choosing a factor** -- do not guess a constant.
 
-Accounting for the moi5 peak, for reference:
+Accounting for that peak, for reference:
 
 | component | |
 |---|---|
@@ -168,7 +168,7 @@ sampler's existing with-replacement one. Not worth it for speed alone.
 `fit_all_genes` "builds a dense `(n_cells, n_genes)` `Y` regardless of what
 the caller passed". It does not, on two counts: `Y` is per *chunk*, sized by
 `gene_chunk_size_for_budget`, and only genes appearing in `pairs` are fit at
-all. At moi5 genome-wide shape (38,606 genes x 131,055 cells):
+all. At transcriptome-wide shape (38,606 genes x 131,055 cells):
 
 | budget | chunk | `Y` | full densify would be |
 |---|---|---|---|
@@ -203,11 +203,11 @@ everything from `p+1` numbers, so **parquet, zarr and memmap are all the wrong
 answer here** -- there is nothing to spill. Parquet would be doubly wrong: it
 is columnar and compressed, so each access decompresses a 6.3 MB array, and it
 is built for analytical scans of tabular data rather than random access to
-numeric arrays in a hot loop. (Parquet/zarr remain right for the moi5 *export*
+numeric arrays in a hot loop. (Parquet/zarr remain right for the *export*
 files -- T3.4.)
 
 pysceptre recomputes once per gene per target chunk rather than once per pair,
-by iterating gene-outer inside each chunk. That is ~3,660 rebuilds at moi5
+by iterating gene-outer inside each chunk. That is ~3,660 rebuilds at that
 scale against sceptre's 33,066:
 
 | | rebuilds | cost |
@@ -263,7 +263,7 @@ Apple silicon laptop with 39 GB.
   tag, so no long-lived token is handled.
 - **T3.2** `py.typed` marker.
 - **T3.3** CHANGELOG.
-- **T3.4 Parquet/zarr for the moi5 export.** The scripts currently write raw
+- **T3.4 Parquet/zarr for the export.** The scripts currently write raw
   float64 `.bin` blobs with `.txt` sidecars for labels, which carries no dtype,
   shape, or column metadata. Zarr for the matrices, parquet for the tabular
   files.

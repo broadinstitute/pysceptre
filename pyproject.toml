@@ -68,11 +68,13 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# `moi5` marks the slow regression tests against R on the real screen. They
-# need data that is never committed, so they are deselected by default.
-addopts = "-m 'not moi5'"
+# `realdata` marks the slow regression tests against R on a real screen. They
+# need data that is never committed, so they are deselected by default. Named
+# for the kind of test rather than a dataset, so swapping the dataset does not
+# mean renaming the marker.
+addopts = "-m 'not realdata'"
 markers = [
-    "moi5: regression tests against R sceptre on the real moi5 dataset (slow, needs local data)",
+    "realdata: regression tests against R sceptre on a real screen (slow, needs local data)",
 ]
 
 [tool.ruff]

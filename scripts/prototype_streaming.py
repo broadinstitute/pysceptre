@@ -1,7 +1,7 @@
 """Prototype: stream CRT draws per target instead of per chunk (ROADMAP T1.1).
 
 The current pipeline draws every target in a chunk up front, so the chunk holds
-`chunk_size x (fit arrays + draws)`. Profiling moi5 showed the draws dominate
+`chunk_size x (fit arrays + draws)`. Profiling a real screen showed the draws dominate
 that -- 16.5 MB of the 20.7 MB per target -- and they are the reason a 4 GB
 budget becomes a 9.8 GB peak.
 
@@ -12,9 +12,9 @@ processed, discarding them immediately.
 
 That forces the pair loop target-outer, where the current implementation is
 gene-outer, so gene precomputations are rebuilt per pair rather than per chunk
--- 33,135 rebuilds instead of 3,660 on moi5, about +47 s.
+-- 33,135 rebuilds instead of 3,660, about +47 s.
 
-Predicted on moi5: 3.97 GB -> 0.84 GB of working set, +12% wall time.
+Predicted at that scale: 3.97 GB -> 0.84 GB of working set, +12% wall time.
 
 Results must be IDENTICAL: targets are drawn in the same order as before, so
 the RNG stream is unchanged, and each pair's test depends only on its own
@@ -122,7 +122,7 @@ def streamed_discovery(
                     "p_value": r.p_value,
                     "fold_change": r.fold_change,
                     "se_fold_change": r.se_fold_change,
-                    "pct_change": (r.fold_change - 1.0) * 100.0,
+                    "pct_change_es": (r.fold_change - 1.0) * 100.0,
                     "z_orig": r.z_orig,
                     "stage": r.stage,
                 }

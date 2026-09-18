@@ -7,7 +7,7 @@
 # anndata requires scalars, and R is the wrong side of the boundary to chase
 # the on-disk spec from.
 #
-# Generalises the moi5-specific export_moi5_for_pysceptre.R: it takes any
+# Takes any
 # sceptre object plus its backing ondisc matrices, and is driven by flags
 # rather than hardcoded paths.
 #
@@ -15,7 +15,7 @@
 #
 #   * The response matrix is written as a SPARSE TRIPLET, never densified. The
 #     old script did `as.matrix()` on the whole thing, which needed ~38 GiB for
-#     the full moi5 gene set and was OOM-killed. Genes are read one at a time
+#     a transcriptome-wide gene set and was OOM-killed. Genes are read one at a time
 #     straight out of the odm (~0.4 ms each) and only their nonzero entries are
 #     kept.
 #   * Output is columnar with a metadata.json sidecar, rather than raw float64

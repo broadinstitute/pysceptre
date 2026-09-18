@@ -2,7 +2,7 @@
 
 pysceptre reads h5mu. That is what the single-cell Python ecosystem uses
 (`anndata`, `scanpy`, `muon`), and it stores sparse matrices in CSR/CSC form
-natively, so a load reads straight into the final arrays -- measured on moi5,
+natively, so a load reads straight into the final arrays -- measured on a real screen,
 0.41 GB against 1.17 GB for the intermediate columnar form, and a smaller file
 (62 MB against 76 MB).
 

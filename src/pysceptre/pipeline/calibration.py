@@ -7,10 +7,11 @@ and the pairwise QC that construction is filtered by.
 
 **The structural difference from discovery.** Discovery pairs are given by the
 caller: R tests all of them and reports QC failures in-band, with
-`pass_qc = FALSE` and a NaN p-value (measured on moi5: 34,256 rows of which
+`pass_qc = FALSE` and a NaN p-value (measured on a 567,690-cell screen: 34,256 rows of which
 1,121 fail). Calibration pairs are *constructed*: R samples only combinations
 that already clear `n_nonzero_trt_thresh` / `n_nonzero_cntrl_thresh`, so every
-returned row passes (measured on moi5: 33,135 rows, zero failures, zero NaN).
+returned row passes (measured on the same screen: 33,135 rows, zero
+failures, zero NaN).
 QC is therefore a filter on construction here, not a reported outcome, which is
 why this module has to know the thresholds at all.
 
@@ -36,7 +37,8 @@ oversamples candidate pairs so enough survive QC.
 **Confirmed independently on a real dataset.** The day0 object had already been
 through `run_calibration_check` in R and stores the pairs it used: 625 groups,
 over 292 genes, for 34,886 pairs, with 2,031 NTC gRNAs -- every parameter
-different from moi5, and far off the floor. The rule reproduces 625 exactly,
+different from the probe grid, and far off the floor. The rule reproduces
+625 exactly,
 but only when `pass_qc_rate` is R's own `mean(discovery_pairs_with_info$pass_qc)`
 = 0.9571; assuming 1.0 gives 598. So the rate matters whenever the result is
 not pinned to the floor, and the dataset export records it.
@@ -88,7 +90,8 @@ def n_synthetic_groups(
     It defaults to 1.0 only because pysceptre is handed pairs that already
     passed QC and so cannot recompute the rate. **Pass the real rate when you
     have it** -- the dataset export records it as
-    `metadata["discovery_pass_qc_rate"]`. The default is harmless on moi5,
+    `metadata["discovery_pass_qc_rate"]`. The default is harmless when the
+    group count is pinned to its floor of 100,
     where R's 0.967 and 1.0 both land on the floor of 100, and wrong on day0,
     where R's 0.9571 gives its actual 625 groups and 1.0 gives 598.
     """
@@ -118,7 +121,8 @@ def sample_ntc_groups(
     on the name string, so it costs one hash per draw. When the number of
     possible combinations is small enough that distinct draws become hard to
     find, this gives up rather than spinning: `choose(n, k)` is astronomically
-    large for any realistic screen (choose(1499, 15) on moi5), so exhausting it
+    large for any realistic screen (choose(1499, 15) for 1,499 NTC gRNAs in
+    groups of 15), so exhausting it
     means the caller asked for something degenerate.
     """
     n_ntc = len(ntc_grna_ids)
@@ -274,7 +278,7 @@ def nonzero_counts(
     if hasattr(response_matrix, "rows"):
         # Backed input: sweep contiguous gene slabs so the full sparsity
         # pattern is never resident. Only the (n_genes, n_groups) counts are
-        # kept, which are small -- 38,606 x 100 int64 is 31 MB on moi5.
+        # kept, which are small -- 38,606 genes x 100 groups of int64 is 31 MB.
         n_genes = response_matrix.shape[0]
         trts, tots = [], []
         for start in range(0, n_genes, gene_chunk):

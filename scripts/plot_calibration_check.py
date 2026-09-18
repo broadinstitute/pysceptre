@@ -104,7 +104,7 @@ def _log2_fc(frame: pd.DataFrame) -> np.ndarray | None:
     """log-2 fold change, computed from `fold_change` when not stored.
 
     pysceptre drops `log_2_fold_change` from its output: it is derivable, and
-    `pct_change` is the effect size actually read off. sceptre's panel C is
+    `pct_change_es` is the effect size actually read off. sceptre's panel C is
     defined on the log-2 scale, so it is reconstructed here rather than the
     panel being silently redefined.
     """

@@ -171,17 +171,17 @@ def main() -> None:
     mdata.uns["pysceptre_calibration"] = calib
     best = result.loc[result.groupby("response_id")["p_value"].idxmin()]
     rna.var["sceptre_min_p"] = best.set_index("response_id").p_value.reindex(rna.var_names)
-    # Bracketed, not attribute access: `pct_change` is also a DataFrame
-    # method, so `frame.pct_change` returns the method rather than the column.
-    rna.var["sceptre_pct_change"] = best.set_index("response_id")["pct_change"].reindex(
+    # Bracketed, not attribute access: `pct_change_es` is also a DataFrame
+    # method, so `frame.pct_change_es` returns the method rather than the column.
+    rna.var["sceptre_pct_change"] = best.set_index("response_id")["pct_change_es"].reindex(
         rna.var_names
     )
 
     hit = result.nsmallest(1, "p_value").iloc[0]
     print(
         f"top hit: {hit.response_id} x {hit.grna_target}  p = {hit.p_value:.2e}  "
-        f"{hit['pct_change']:+.1f}% "
-        f"[{hit['pct_change_ci_low']:+.1f}, {hit['pct_change_ci_high']:+.1f}]"
+        f"{hit['pct_change_es']:+.1f}% "
+        f"[{hit['pct_change_es_ci_low']:+.1f}, {hit['pct_change_es_ci_high']:+.1f}]"
     )
 
     # --- 6. carry on in scanpy, on the same object ---------------------------

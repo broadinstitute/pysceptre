@@ -142,6 +142,6 @@ def test_planted_effect_is_recovered(screen):
     # A 50% knockdown, so roughly -50% with the interval covering it. Loose
     # bounds: this asserts the effect is found and signed correctly, not that
     # the estimator is unbiased on 600 cells.
-    assert planted["pct_change"] < -25.0
-    assert planted["pct_change_ci_high"] < 0.0
+    assert planted["pct_change_es"] < -25.0
+    assert planted["pct_change_es_ci_high"] < 0.0
     assert planted["p_value"] < 1e-3

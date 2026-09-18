@@ -5,7 +5,7 @@ Two questions, which need different evidence:
 1. **Does the engine agree with R on the same pairs?** R's calibration pair
    selection is unseeded -- nothing in its calibration path calls `set.seed`
    and `sceptre_object` has no seed slot -- so re-running R gives a different
-   pair set (two runs on moi5 shared only ~20 of each group's 331 genes). A
+   pair set (two runs on one screen shared only ~20 of each group's 331 genes). A
    pair-by-pair comparison is therefore only meaningful when R's own pairs are
    fed back in, which is what `--inject` does. Fold change involves no
    resampling and should agree to near machine precision; p-values are
@@ -64,7 +64,7 @@ def peak_rss_gb() -> float:
 def r_pairs(export, external: pd.DataFrame | None = None) -> pd.DataFrame | None:
     """R's own negative-control pairs, from whichever source carried them.
 
-    An object saved *before* `run_calibration_check` has no pairs in it -- moi5
+    An object saved *before* `run_calibration_check` has no pairs in it -- some exports
     is exported from its post-QC object, so its R result exists only as a
     separate parquet. `--r-result` supplies that case.
     """
@@ -221,7 +221,7 @@ def main() -> None:
     chunk_memory_gb = value("--chunk-memory-gb", float, None)
 
     # Backed by default: an all-genes dataset is mostly genes a given run never
-    # reads, and holding them costs 0.86 GB on moi5 for nothing.
+    # reads, and holding them costs 0.86 GB for nothing on a transcriptome-wide screen.
     backed = "--eager" not in argv
     export = load_export(export_dir, backed=backed)
     print(f"reading {'backed' if backed else 'eagerly'}")

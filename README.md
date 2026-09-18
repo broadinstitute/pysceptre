@@ -74,7 +74,7 @@ result = run_discovery_analysis(
 )
 # result: DataFrame with one row per pair --
 #   response_id, grna_target, p_value, fold_change, se_fold_change,
-#   pct_change, pct_change_ci_low, pct_change_ci_high, z_orig, stage
+#   pct_change_es, pct_change_es_ci_low, pct_change_es_ci_high, z_orig, stage
 ```
 
 [`examples/scanpy_interop.py`](examples/scanpy_interop.py) runs a whole screen
@@ -122,7 +122,7 @@ run_discovery_analysis(
 | `seed` | `int \| None` | Seeds the `numpy.random.Generator` used for all CRT draws in the run. Note this does **not** reproduce sceptre's own R/C++ RNG stream bit-for-bit (different algorithm and seeding scheme) -- see [Scope and limitations](#scope-and-limitations). |
 | `target_chunk_size` | `int` | How many gRNA targets to fit and CRT-draw at once. An **upper bound, not a mandate** -- it is reduced automatically to respect `chunk_memory_gb`, so no value here can exhaust memory. Default `200`. |
 | `n_jobs` | `int` | Workers for the per-pair tests, which are ~80% of the runtime. `1` (default) runs serially; a negative value uses every core. **Results do not depend on it** -- only the genes inside an already-drawn target chunk are distributed, so the resampling draws are made in the same order at any worker count, and output is bit-identical. Processes on Linux, threads elsewhere (`fork` after macOS's Accelerate BLAS can deadlock), so the ceiling is lower off Linux. Memory grows by about one gene's working arrays per worker, not by `chunk_memory_gb` per worker. |
-| `chunk_memory_gb` | `float` | Budget for the arrays a *chunk* holds, which sizes how many genes or targets are processed together. **Not** a cap on the process's memory -- the input, retained state and allocator overhead sit outside it. **You should not normally need to change this.** The default is both the fastest and the leanest setting measured: a larger budget produces chunks past the point where batching still pays, costing memory for no throughput (on moi5, 4 GB gave 8.42 GB peak against 3.78 GB at 1 GB, for the same runtime). Default `1.0`. |
+| `chunk_memory_gb` | `float` | Budget for the arrays a *chunk* holds, which sizes how many genes or targets are processed together. **Not** a cap on the process's memory -- the input, retained state and allocator overhead sit outside it. **You should not normally need to change this.** The default is both the fastest and the leanest setting measured: a larger budget produces chunks past the point where batching still pays, costing memory for no throughput (4 GB gave 8.42 GB peak against 3.78 GB at 1 GB, for the same runtime). Default `1.0`. |
 
 **Returns** a `pd.DataFrame`, one row per input pair, with columns:
 
@@ -131,8 +131,8 @@ run_discovery_analysis(
 | `response_id`, `grna_target` | Echoed from `pairs`. |
 | `p_value` | The test p-value (see `stage`). |
 | `fold_change` | Estimated fold change of the treated group vs. complement control (deterministic given the data -- no resampling randomness). |
-| `pct_change` | Effect size as a percent change from baseline, `(fold_change - 1) * 100`. |
-| `pct_change_ci_low`, `pct_change_ci_high` | Two-sided 95% Wald interval on `pct_change`, from `se_fold_change`. Deterministic, unlike the resampled p-value, so it is a useful independent read on pairs sitting near a significance threshold. Note it is a normal approximation, not sceptre's test. |
+| `pct_change_es` | Effect size as a percent change from baseline, `(fold_change - 1) * 100`. Named `_es` rather than `pct_change` because `DataFrame.pct_change` is a pandas *method*: `result.pct_change` would silently return the method instead of the column, and comparisons against it fail with a confusing `TypeError` rather than a `KeyError`. |
+| `pct_change_es_ci_low`, `pct_change_es_ci_high` | Two-sided 95% Wald interval on `pct_change_es`, from `se_fold_change`. Deterministic, unlike the resampled p-value, so it is a useful independent read on pairs sitting near a significance threshold. Note it is a normal approximation, not sceptre's test. |
 | `log2(fold_change)` | Not returned -- a pure transform of a column already present. Compute it if you need it. |
 | `se_fold_change` | Standard error of `fold_change`, on the same ratio scale, so `fold_change ± 1.96 × se_fold_change` is a Wald interval around 1 (no effect). Deterministic, unlike the resampled p-value. |
 | `z_orig` | The observed test statistic (before resampling). |
@@ -310,33 +310,38 @@ R package (pinned upstream commit), not just internal self-consistency:
    [Scope and limitations](#scope-and-limitations)). Run via
    `scripts/dump_r_ground_truth.R` + `pytest tests/validation/`.
 
-2. **Real dataset** (moi5 single-cell CRISPR screen, 244 genes / 131k cells
-   / 2,875 targets / 33,066 real QC-passed pairs): ran the actual data
-   through both `pysceptre.run_discovery_analysis` and R's real
-   `sceptre::run_discovery_analysis()` (same parameters: `side="left"`,
-   `grna_integration_strategy="union"`, `resampling_mechanism="crt"`).
-   Results:
+2. **Real dataset: discovery analysis** (day0_grna20: 567,690 cells /
+   292 genes / 3,026 targets / 34,886 QC-passed pairs). The same screen was
+   run through `pysceptre.run_discovery_analysis` and R's
+   `sceptre::run_discovery_analysis()`, with R exporting the exact object it
+   analysed so the two cannot disagree about their inputs:
 
    | Metric | Value |
    |---|---|
-   | Fold-change agreement (Pearson r) | 1.0000 (exact -- deterministic) |
-   | p-value agreement (Spearman rho) | 0.9964 |
-   | Strong-hit calls (p < 1e-4) | 156 (pysceptre) vs. 157 (R), 152 in common |
+   | Fold-change agreement (Pearson r) | 1.000000 (max difference 2.6e-12) |
+   | p-value agreement (Spearman rho) | 0.9865 |
+   | p-value agreement (Pearson r on -log10 p) | 0.9940 |
 
-   Significance-call agreement is reported as a 2x2 contingency table rather
-   than a single index: a Jaccard coefficient collapses the table and cannot
-   distinguish calling extra hits from missing them, which are different
-   failures.
+   Significance calls at BH 0.1, with R as the reference:
 
-   For context, R's own CRT-vs-permutations agreement on this same dataset
-   is Spearman rho = 0.996 -- pysceptre matches R about as well as R
-   matches itself across resampling mechanisms. The largest individual
-   p-value disagreements were all pairs both methods agree are strong hits
-   (exact fold-change match in every case); the disagreement is in how
-   extreme an already-astronomically-small p-value is, which is expected
-   skew-normal-tail Monte Carlo noise -- confirmed by R disagreeing with
-   *itself* by a similar margin on the identical pair when compared across
-   its own two resampling mechanisms.
+   | | R: significant | R: not |
+   |---|---|---|
+   | **pysceptre: significant** | 251 | 10 |
+   | **pysceptre: not significant** | 3 | 34,622 |
+
+   Sensitivity 0.9882, specificity 0.9997, 13 discordant pairs of 34,886.
+   Reported as a 2x2 table rather than a single index, because a Jaccard
+   coefficient collapses it and cannot distinguish calling extra hits from
+   missing them, which are different failures.
+
+   Fold change carries the weight here: no resampling enters it, so agreement
+   to 2.6e-12 establishes that both implementations fit the same models to
+   the same cells. The p-value correlation is then bounded below by Monte
+   Carlo noise -- pysceptre agrees with R about as closely as it agrees with
+   itself across seeds. Every one of the 13 discordant pairs has an interval
+   excluding no effect and a p-value within a factor of four of the
+   threshold, so the disagreement is about which side of a cutoff a resampled
+   p-value fell on, never about whether an effect was detected.
 
 3. **Calibration check** (day0_grna20: 567,690 cells / 292 genes / 2,031
    non-targeting gRNAs / 34,886 negative-control pairs), with R's own pairs
@@ -352,10 +357,8 @@ R package (pinned upstream commit), not just internal self-consistency:
 
    Before any p-value, a deterministic checkpoint: rebuilding R's synthetic
    groups from their names and recomputing the pairwise counts reproduces R
-   **exactly** -- `n_nonzero_trt` and `n_nonzero_cntrl` both 33,135/33,135 on
-   moi5 and 34,886/34,886 on day0, zero discrepancies over ~136,000 integer
-   comparisons across two screens with different gRNA libraries and different
-   QC thresholds.
+   **exactly** -- `n_nonzero_trt` and `n_nonzero_cntrl` both 34,886/34,886,
+   zero discrepancies over ~70,000 integer comparisons.
 
    The negative-control p-values are **not perfectly uniform** -- KS 0.0259
    against a 5% critical value of 0.0073, with 6.1% below 0.05 where 5% is

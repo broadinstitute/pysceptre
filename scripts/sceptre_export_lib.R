@@ -7,7 +7,7 @@
 # Kept separate from the CLI so the benchmark scripts can export the *exact*
 # object it is about to analyze, rather than re-deriving inputs and hoping they
 # match. They do not: re-running assign_grnas(thresholding, threshold = 5) on
-# the moi5 object reproduced only 39 of 2,974 targets' cell sets, which is
+# one real object reproduced only 39 of 2,974 targets' cell sets, which is
 # enough to break fold-change agreement (a deterministic quantity) from ~1e-15
 # to 0.67.
 
@@ -96,7 +96,7 @@ export_sceptre_object <- function(so, out_dir, all_genes = FALSE,
   #
   #   grna_group_idxs     one entry per TARGET, the union of that target's
   #                       gRNAs. "non-targeting" is deliberately absent -- 2,974
-  #                       keys against 2,975 distinct targets on moi5.
+  #                       keys against 2,975 distinct targets on one real screen.
   #   indiv_nt_grna_idxs  one entry per individual NON-TARGETING gRNA (1,499).
   #
   # So per-gRNA resolution exists for NTCs and nowhere else; sceptre keeps it

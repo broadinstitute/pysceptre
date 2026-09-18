@@ -8,7 +8,7 @@
 # quietly swapping.
 set -euo pipefail
 
-DATA_DIR="${DATA_DIR:?set DATA_DIR to the host directory holding the moi5 inputs}"
+DATA_DIR="${DATA_DIR:?set DATA_DIR to the host directory holding the screen inputs}"
 OUT_DIR="${OUT_DIR:-$DATA_DIR/bench_linux}"
 CPUS="${CPUS:-1}"
 MEMORY="${MEMORY:-16g}"

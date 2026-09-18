@@ -21,7 +21,7 @@ one entry per *target*, the union of that target's gRNAs, and
 Targeting gRNAs are never kept individually, because they are only ever used
 as a union; NTCs are, because the calibration check regroups them into
 synthetic targets. Crucially, `"non-targeting"` is **not a key** in the
-target-keyed table (2,974 keys against 2,975 distinct targets on moi5), so a
+target-keyed table (2,974 keys against 2,975 distinct targets on one real screen), so a
 target-keyed export drops every NTC -- not by oversight, but by construction.
 Storing both kinds as rows of one `var` with a `unit_kind` column is what makes
 the calibration check expressible at all.
@@ -37,7 +37,7 @@ CSC. A CSC matrix's transpose is the same buffers relabelled as CSR, so
 `X.T` yields the `(genes, cells)` CSR that `run_discovery_analysis` wants with
 **no copy** -- verified with `np.shares_memory`.
 
-Neither format is ever densified. The full moi5 gene set densifies to ~38 GiB
+Neither format is ever densified. A transcriptome-wide gene set densifies to ~38 GiB
 and was OOM-killed once already.
 """
 
@@ -104,7 +104,7 @@ class BackedResponseMatrix:
     exactly the access pattern `fit_all_genes` uses. That is why the orientation
     was chosen, and this class is what finally exploits it.
 
-    The point is to stop paying for genes that are never touched. moi5's full
+    The point is to stop paying for genes that are never touched. A transcriptome-wide
     matrix is 142.7M nonzeros -- 1.71 GB resident as float64, 0.86 GB once
     stored as counts -- while a calibration run reads 9,045 of its 38,606 genes
     and a discovery run reads 244.
@@ -132,7 +132,7 @@ class BackedResponseMatrix:
             )
         self._data = g["data"]
         self._indices = g["indices"]
-        # Small enough to hold: 38,607 int32 for moi5. Holding it avoids a
+        # Small enough to hold: 38,607 int32 at transcriptome scale. Holding it avoids a
         # round trip per lookup, and every read needs two of its entries.
         self._indptr = g["indptr"][:]
         stored_shape = tuple(g.attrs["shape"])  # (n_cells, n_genes)
@@ -422,7 +422,7 @@ def as_counts(matrix):
     """Re-type a count matrix to the smallest exact unsigned integer dtype.
 
     UMI counts are integers, and R hands them over as float64, which is 8 bytes
-    per nonzero for values that on moi5 never exceed 1,610. Nothing downstream
+    per nonzero for values that never exceed 1,610 on a real screen. Nothing downstream
     does arithmetic in the stored dtype -- the engine's `_get_row` casts every
     row to float on extraction, and the calibration check binarizes -- so this
     is purely a storage choice and cannot change a result.
@@ -460,7 +460,7 @@ def write_h5mu(export: SceptreExport, path: str | Path, compression: str | None 
     **Written uncompressed by default**, because this is a file to be read
     backed. A gzipped dataset must decompress a whole HDF5 chunk to serve any
     read inside it, which is the wrong trade when genes are fetched on demand.
-    Compression also buys less here than it appears to: measured on moi5 at
+    Compression also buys less here than it appears to: measured on a real screen at
     gzip level 4, `data` went 1142 -> 57 MB, but almost all of that was gzip
     eating the padding in float64 counts, which storing them as `uint16`
     removes at the source. `indices` -- the term that actually dominates an
