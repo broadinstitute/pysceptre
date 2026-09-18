@@ -119,6 +119,7 @@ run_discovery_analysis(
 | `grna_target_cells` | `dict[str, np.ndarray]` | Maps each gRNA target to the **0-based** indices (into `covariate_matrix`'s cell axis) of cells treated with that target. This is the "union" grna-integration-strategy convention: one entry per target, not per individual gRNA. |
 | `pairs` | `pd.DataFrame` with columns `response_id`, `grna_target` | The QC-passed (gene, target) pairs to test. `pysceptre` does not run `assign_grnas()`/`run_qc()` itself -- feed it pairs that have already passed QC upstream. |
 | `side` | `"left"` \| `"both"` \| `"right"` | Test sidedness, matching sceptre's own convention. Use `"left"` for expected-repression screens (e.g. CRISPRi enhancer knockdown), `"both"` for a two-sided test. |
+| `resampling_mechanism` | `"crt"` \| `"permutations"` | Matches sceptre's own option for high-MOI data. The CRT (default) draws each target's synthetic treated set from that target's own fitted probabilities; permutations draw one set of random subsets, sized by the largest target, and reuse it for every target. **The choice is a real trade, and yours to make** -- see [Reproducibility](#reproducibility-and-incremental-analysis), because permutations cannot offer the invariance the CRT does. R pairs permutations with `B3 = 24999` against the CRT's `0`, so sampling is cheaper but the escalation batch is five times larger. |
 | `resampling_approximation` | `"skew_normal"` \| `"no_approximation"` | `"skew_normal"` (default, matching sceptre): pairs whose initial empirical p-value (`B1=499` draws) is `<= 0.02` get a skew-normal tail fit from a further `B2=4999` draws, giving p-values far smaller than `1/(B1+1)` could resolve. `"no_approximation"` fits no curve and instead draws a third, larger empirical batch, sized by R's own rule: `B3 = ceil(mult * n_pairs / multiple_testing_alpha)`, `mult = 10` two-sided and `5` one-sided. That grows linearly in the number of pairs and is much slower -- see [Scope and limitations](#scope-and-limitations). Any other value raises `ValueError`. |
 | `seed` | `int \| None` | Seeds the `numpy.random.Generator` used for all CRT draws in the run. Note this does **not** reproduce sceptre's own R/C++ RNG stream bit-for-bit (different algorithm and seeding scheme) -- see [Scope and limitations](#scope-and-limitations). |
 | `target_chunk_size` | `int` | How many gRNA targets to fit and CRT-draw at once. An **upper bound, not a mandate** -- it is reduced automatically to respect `chunk_memory_gb`, so no value here can exhaust memory. Default `200`. |
@@ -258,7 +259,17 @@ That makes an incremental workflow safe: run a subset, check it, then run the
 full set and reuse what you already have. The pairs in common come back
 identical rather than merely similar.
 
-Two limits, both worth knowing exactly:
+**This applies to the CRT, and cannot apply to permutations.** With
+`resampling_mechanism="permutations"` the draws are made once and shared by
+every target, sized by the largest target present, so adding a target bigger
+than the current largest changes every result in the run. That is inherent to
+sharing one draw set -- it is what makes permutations cheap -- not a defect
+that could be fixed. Permutation runs remain fully deterministic for a fixed
+pair list, and independent of chunk size and worker count; they are simply
+not invariant to changing the analysis. Use the CRT if you intend to extend
+an analysis and reuse earlier results.
+
+Two limits on the CRT path, both worth knowing exactly:
 
 | change between runs | shared pairs |
 |---|---|

@@ -27,6 +27,7 @@ import numpy as np
 import pandas as pd
 from scipy import sparse
 
+from ..crt.permutations import draws_for_target, permutation_draws
 from ..crt.sampler import crt_index_sampler_fast
 from ..glm.irls import fit_binomial_glm_batch, fit_poisson_glm_batch
 from ..glm.nb_theta import estimate_theta
@@ -495,8 +496,16 @@ def _target_draw_job(job: tuple[int, str]) -> tuple[str, TargetPrecomputation]:
     k, target_id = job
     st = _TARGET_STATE
     fitted_probabilities = st["fitted_values"][k]
-    rng = np.random.default_rng(target_seed_sequence(st["seed"], target_id))
-    synthetic_idxs = crt_index_sampler_fast(fitted_probabilities, st["B_total"], rng)
+    perms = st["permutations"]
+    if perms is None:
+        rng = np.random.default_rng(target_seed_sequence(st["seed"], target_id))
+        synthetic_idxs = crt_index_sampler_fast(fitted_probabilities, st["B_total"], rng)
+    else:
+        # Permutations: every target reads the same draws, taking a prefix
+        # the size of its own treated set. No per-target randomness, which is
+        # what makes the mechanism cheap and also what makes it unable to be
+        # composition-invariant. See crt/permutations.py.
+        synthetic_idxs = draws_for_target(perms, len(st["grna_target_cells"][target_id]))
     return target_id, TargetPrecomputation(
         trt_idxs=st["grna_target_cells"][target_id],
         fitted_probabilities=fitted_probabilities,
@@ -513,6 +522,7 @@ def fit_all_targets(
     B3: int,
     seed,
     n_jobs: int = 1,
+    permutations: np.ndarray | None = None,
 ) -> dict[str, TargetPrecomputation]:
     """One batched binomial IRLS call across all targets (indicator columns
     share the full covariate matrix), then a CRT draw per target.
@@ -545,6 +555,7 @@ def fit_all_targets(
     # 1.98x at 2 threads, 2.90x at 4, and 2.40x at 8 -- the turnover is
     # allocation and bandwidth contention on those 33 MB buffers.
     _TARGET_STATE.update(
+        permutations=permutations,
         fitted_values=fit.fitted_values,
         grna_target_cells=grna_target_cells,
         seed=seed,
@@ -827,6 +838,7 @@ def run_discovery_ntcells_complement(
     target_chunk_size: int = _DEFAULT_TARGET_CHUNK_SIZE,
     chunk_memory_gb: float = _DEFAULT_CHUNK_MEMORY_GB,
     n_jobs: int = 1,
+    resampling_mechanism: str = "crt",
 ) -> pd.DataFrame:
     """pairs: DataFrame with columns 'response_id', 'grna_target' -- the
     QC-passed pairs to test. Returns a DataFrame with one row per pair:
@@ -884,6 +896,20 @@ def run_discovery_ntcells_complement(
     pairs_by_target = {target_id: group for target_id, group in pairs.groupby("grna_target")}
     target_ids_needed = [t for t in grna_target_cells if t in pairs_by_target]
 
+    # Permutation draws are generated **once for the whole analysis**, not
+    # per chunk, matching R and keeping results independent of the chunking.
+    # M is the largest target's cell count across every target tested, so
+    # chunk boundaries cannot change it either.
+    permutations = None
+    if resampling_mechanism == "permutations":
+        m = max(len(grna_target_cells[t]) for t in target_ids_needed)
+        permutations = permutation_draws(
+            covariate_matrix.shape[0],
+            m,
+            B1 + B2 + B3,
+            np.random.default_rng(entropy),
+        )
+
     target_chunk_size = _resolve_target_chunk_size(
         covariate_matrix.shape[0],
         B1 + B2 + B3,
@@ -910,6 +936,7 @@ def run_discovery_ntcells_complement(
             B3=B3,
             seed=entropy,
             n_jobs=n_jobs,
+            permutations=permutations,
         )
 
         # Gene-outer inside the chunk so each gene's pieces are rebuilt once

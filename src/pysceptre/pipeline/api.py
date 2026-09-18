@@ -32,6 +32,7 @@ from .power import (
 
 _SIDE_CODES = {"left": -1, "both": 0, "right": 1}
 _RESAMPLING_APPROXIMATIONS = ("skew_normal", "no_approximation")
+_RESAMPLING_MECHANISMS = ("crt", "permutations")
 
 
 def run_discovery_analysis(
@@ -48,6 +49,7 @@ def run_discovery_analysis(
     target_chunk_size: int = _DEFAULT_TARGET_CHUNK_SIZE,
     chunk_memory_gb: float = _DEFAULT_CHUNK_MEMORY_GB,
     n_jobs: int = 1,
+    resampling_mechanism: str = "crt",
 ) -> pd.DataFrame:
     """response_matrix: (n_genes, n_cells) dense ndarray or scipy.sparse matrix.
     gene_ids: row labels for response_matrix, in order.
@@ -61,6 +63,21 @@ def run_discovery_analysis(
         batch/hold in memory at once (see pipeline/discovery.py) -- lower this
         if you hit memory pressure, raise it for a modest speed gain if you
         have memory to spare.
+    resampling_mechanism: `"crt"` (default) or `"permutations"`, matching
+        sceptre's own option for high-MOI data. The CRT draws each target's
+        synthetic treated set from that target's own fitted probabilities;
+        permutations draw one set of random subsets, sized by the largest
+        target, and reuse it for every target.
+
+        The choice is a real trade and is left to the caller.
+        **Permutations cannot be reproducible across a change of pair list**:
+        the shared draws are sized by the largest target present, so adding a
+        target bigger than the current largest moves every result in the run.
+        The CRT path has no such dependence -- each target seeds its own
+        stream from its own name -- so a subset can be analysed, checked and
+        extended with the earlier pairs reused unchanged. Permutations also
+        pair with `B3 = 24999` in R against the CRT's `0`, so sampling is
+        cheaper but the escalation batch is five times larger.
     n_jobs: worker processes (Linux) or threads (elsewhere) used for the
         per-pair tests, which are ~80% of the runtime. 1 disables
         parallelism, a negative value uses every core. Results do not depend
@@ -91,11 +108,20 @@ def run_discovery_analysis(
             f"resampling_approximation must be one of "
             f"{list(_RESAMPLING_APPROXIMATIONS)}, got {resampling_approximation!r}"
         )
+    if resampling_mechanism not in _RESAMPLING_MECHANISMS:
+        raise ValueError(
+            f"resampling_mechanism must be one of {list(_RESAMPLING_MECHANISMS)}, "
+            f"got {resampling_mechanism!r}"
+        )
 
     side_code = _SIDE_CODES[side]
     fit_parametric_curve = resampling_approximation == "skew_normal"
     B2, B3 = _resampling_budget(
-        resampling_approximation, side_code, len(pairs), multiple_testing_alpha
+        resampling_approximation,
+        side_code,
+        len(pairs),
+        multiple_testing_alpha,
+        resampling_mechanism,
     )
 
     return run_discovery_ntcells_complement(
@@ -112,6 +138,7 @@ def run_discovery_analysis(
         target_chunk_size=target_chunk_size,
         chunk_memory_gb=chunk_memory_gb,
         n_jobs=n_jobs,
+        resampling_mechanism=resampling_mechanism,
     )
 
 
@@ -292,12 +319,22 @@ def _resampling_budget(
     side_code: int,
     n_pairs: int,
     multiple_testing_alpha: float,
+    resampling_mechanism: str = "crt",
 ) -> tuple[int, int]:
     """Port of R's B2/B3 sizing (`run_discovery_analysis` + `run_qc_pt_2` in
     `s4_analysis_functs_1.R`). B1 is always 499 and is left at its default.
 
-    `skew_normal` -> (4999, 0). B3 is 0 because this package only implements
-    the CRT resampling mechanism; R uses B3=24999 only for `permutations`.
+    `skew_normal` -> (4999, 0) for the CRT, and (4999, 24999) for
+    permutations, which is R's rule verbatim:
+
+        B3 <- if (resampling_mechanism == "permutations") 24999L else 0L
+
+    The asymmetry is structural rather than arbitrary. Under the CRT a
+    rejected skew-normal fit falls back to the B2 statistics already drawn,
+    because 24,999 more draws *per target* would be ruinous. Permutation
+    draws are made once and shared by every target, so a large third batch
+    is nearly free -- and it buys a p-value floor of 1/25000 = 4e-5 instead
+    of 1/5000 = 2e-4 for pairs whose fit is rejected.
 
     `no_approximation` -> (0, ceil(mult * n_pairs / alpha)), with mult = 10
     two-sided and 5 one-sided. B2 is 0 because no curve is fit. `n_pairs` is
@@ -317,6 +354,6 @@ def _resampling_budget(
     correction applied here.
     """
     if resampling_approximation == "skew_normal":
-        return 4999, 0
+        return (4999, 24999) if resampling_mechanism == "permutations" else (4999, 0)
     mult_fact = 10 if side_code == 0 else 5
     return 0, math.ceil(mult_fact * n_pairs / multiple_testing_alpha)
