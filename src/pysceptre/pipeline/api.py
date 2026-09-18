@@ -42,6 +42,7 @@ def run_discovery_analysis(
     seed: int | None = None,
     target_chunk_size: int = _DEFAULT_TARGET_CHUNK_SIZE,
     chunk_memory_gb: float = _DEFAULT_CHUNK_MEMORY_GB,
+    n_jobs: int = 1,
 ) -> pd.DataFrame:
     """response_matrix: (n_genes, n_cells) dense ndarray or scipy.sparse matrix.
     gene_ids: row labels for response_matrix, in order.
@@ -55,6 +56,13 @@ def run_discovery_analysis(
         batch/hold in memory at once (see pipeline/discovery.py) -- lower this
         if you hit memory pressure, raise it for a modest speed gain if you
         have memory to spare.
+    n_jobs: worker processes (Linux) or threads (elsewhere) used for the
+        per-pair tests, which are ~80% of the runtime. 1 disables
+        parallelism, a negative value uses every core. Results do not depend
+        on it: only the genes within an already-drawn target chunk are
+        distributed, so the resampling draws are made in the same order
+        whatever the worker count. Memory grows by roughly one gene's working
+        arrays per worker, not by `chunk_memory_gb` per worker.
     chunk_memory_gb: budget for the arrays a chunk holds, which sizes how many
         genes or targets are processed together. Not a cap on the process's
         memory -- the input, retained state and allocator overhead sit outside
@@ -92,6 +100,7 @@ def run_discovery_analysis(
         seed=seed,
         target_chunk_size=target_chunk_size,
         chunk_memory_gb=chunk_memory_gb,
+        n_jobs=n_jobs,
     )
 
 
@@ -113,6 +122,7 @@ def run_calibration_check(
     seed: int | None = None,
     target_chunk_size: int = _DEFAULT_TARGET_CHUNK_SIZE,
     chunk_memory_gb: float = _DEFAULT_CHUNK_MEMORY_GB,
+    n_jobs: int = 1,
 ) -> pd.DataFrame:
     """Run sceptre's calibration check: the discovery test over negative controls.
 
@@ -175,6 +185,7 @@ def run_calibration_check(
         seed=seed,
         target_chunk_size=target_chunk_size,
         chunk_memory_gb=chunk_memory_gb,
+        n_jobs=n_jobs,
     )
 
 

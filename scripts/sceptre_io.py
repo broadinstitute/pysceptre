@@ -44,6 +44,7 @@ and was OOM-killed once already.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -119,9 +120,9 @@ class BackedResponseMatrix:
     """
 
     def __init__(self, path: str | Path, key: str = "mod/rna/X", cache_rows: int = 512):
-        import h5py
-
-        self._file = h5py.File(Path(path), "r")
+        self._path = Path(path)
+        self._key = key
+        self._open()
         g = self._file[key]
         if g.attrs.get("encoding-type") not in ("csc_matrix", None):
             raise ValueError(
@@ -141,12 +142,35 @@ class BackedResponseMatrix:
         self._cache: dict[int, sparse.csr_matrix] = {}
         self._cache_rows = cache_rows
 
+    def _open(self) -> None:
+        import h5py
+
+        self._file = h5py.File(self._path, "r")
+        # Recorded so a forked child can tell that its inherited handle belongs
+        # to the parent. An HDF5 file handle is NOT fork-safe: children sharing
+        # one corrupt each other's reads, and silently -- the reads succeed and
+        # return wrong bytes. See `_ensure_own_handle`.
+        self._pid = os.getpid()
+
+    def _ensure_own_handle(self) -> None:
+        """Reopen if this process inherited the handle across a fork.
+
+        Self-healing rather than something the caller must remember, because
+        the failure mode is silent corruption rather than an exception, and
+        because an eagerly-loaded matrix survives fork fine under
+        copy-on-write -- so a test using in-memory input would never catch it.
+        """
+        if os.getpid() != self._pid:
+            self._cache.clear()
+            self._open()
+
     @property
     def n_cells(self) -> int:
         return self.shape[1]
 
     def rows(self, start: int, stop: int) -> sparse.csr_matrix:
         """Genes `[start, stop)` as CSR, in one contiguous read per array."""
+        self._ensure_own_handle()
         start, stop = int(start), int(min(stop, self.shape[0]))
         if stop <= start:
             return sparse.csr_matrix((0, self.n_cells), dtype=self.dtype)
@@ -160,6 +184,7 @@ class BackedResponseMatrix:
     def __getitem__(self, i):
         if isinstance(i, slice):
             return self.rows(i.start or 0, self.shape[0] if i.stop is None else i.stop)
+        self._ensure_own_handle()
         i = int(i)
         hit = self._cache.get(i)
         if hit is not None:

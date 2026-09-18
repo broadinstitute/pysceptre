@@ -17,6 +17,8 @@ per-gene loop; likewise all targets share it for the logistic fit.
 
 from __future__ import annotations
 
+import os
+import sys
 import warnings
 from dataclasses import dataclass
 
@@ -481,6 +483,137 @@ def _resolve_target_chunk_size(
     return fitted
 
 
+# Populated by the orchestrator immediately before a chunk's genes are mapped,
+# and read by `_gene_job` in whichever process or thread runs it. A module
+# global rather than a closure because a forked child inherits it for free
+# (copy-on-write, so the response matrix is not copied) while a closure over
+# these arrays would have to be pickled per task.
+_WORKER_STATE: dict = {}
+
+
+def _gene_job(job: tuple[str, list[str]]) -> dict[tuple[str, str], dict]:
+    """One gene's pairs against the current chunk's targets.
+
+    Reads its inputs from `_WORKER_STATE` rather than taking them as
+    arguments, so that under a process backend nothing large crosses the
+    process boundary -- only the gene id and its target list go in, and only
+    the finished result rows come back.
+    """
+    gene_id, targets_here = job
+    st = _WORKER_STATE
+    gene = st["gene_precomps"][gene_id]
+    y = _get_row(st["response_matrix"], st["gene_row_index"][gene_id])
+    pieces = compute_precomputation_pieces(y, st["covariate_matrix"], gene.fitted_coefs, gene.theta)
+
+    out: dict[tuple[str, str], dict] = {}
+    for target_id in targets_here:
+        target = st["target_precomps"][target_id]
+        result = run_low_level_test_full(
+            y=y,
+            mu=pieces.mu,
+            a=pieces.a,
+            w=pieces.w,
+            D=pieces.D,
+            trt_idxs=target.trt_idxs,
+            synthetic_idxs=target.synthetic_idxs,
+            B1=st["B1"],
+            B2=st["B2"],
+            B3=st["B3"],
+            fit_parametric_curve=st["fit_parametric_curve"],
+            side_code=st["side_code"],
+        )
+        half_width = _CI_Z * result.se_fold_change
+        out[(gene_id, target_id)] = {
+            "response_id": gene_id,
+            "grna_target": target_id,
+            "p_value": result.p_value,
+            "fold_change": result.fold_change,
+            "se_fold_change": result.se_fold_change,
+            # The effect size people actually read, with its interval.
+            # `log2(fold_change)` is not returned: it is a pure transform of a
+            # column already present, so it would be bytes rather than
+            # information.
+            "pct_change": _as_pct(result.fold_change),
+            "pct_change_ci_low": _as_pct(result.fold_change - half_width),
+            "pct_change_ci_high": _as_pct(result.fold_change + half_width),
+            "z_orig": result.z_orig,
+            "stage": result.stage,
+        }
+    return out
+
+
+def _limit_blas_threads() -> None:
+    """One BLAS thread per worker, so W workers do not spawn W x N threads."""
+    try:
+        from threadpoolctl import threadpool_limits
+
+        threadpool_limits(limits=1, user_api="blas")
+    except Exception:  # pragma: no cover - threadpoolctl is a hard dependency
+        pass
+
+
+def resolve_n_jobs(n_jobs: int) -> int:
+    """Worker count: `n_jobs <= 0` means every core."""
+    if n_jobs is None or n_jobs == 0:
+        return 1
+    if n_jobs < 0:
+        return os.cpu_count() or 1
+    return n_jobs
+
+
+def parallel_backend() -> str:
+    """Which backend a worker pool would use here: "fork", "thread" or "none".
+
+    **Processes on Linux, threads elsewhere**, and the difference is measured
+    rather than assumed. The per-pair statistic is a large gather
+    (`D[:, flat_idxs]`) followed by `reduceat`; NumPy holds the GIL through
+    much of the gather, so threads scale poorly. On one machine, 8 workers on
+    a moi5-shaped call: **1.85x with threads, 3.54x with processes**.
+
+    Processes are reached via `fork`, which shares the response matrix and the
+    chunk's draws copy-on-write. `spawn` is not an option -- a chunk's
+    `synthetic_idxs` runs to hundreds of MB and would be pickled per worker per
+    chunk, costing more than the parallelism saves.
+
+    macOS therefore gets threads: `fork` after Apple's Accelerate BLAS has run
+    can deadlock, because the Grand Central Dispatch pools it relies on are not
+    fork-safe. The lower ceiling is the price of not hanging. Note this means
+    each backend is exercised on one platform only -- CI (Linux) covers fork,
+    local development on a Mac covers threads.
+    """
+    if sys.platform.startswith("linux") and hasattr(os, "fork"):
+        return "fork"
+    return "thread"
+
+
+def _map_gene_jobs(jobs: list, n_jobs: int):
+    """Run `_gene_job` over `jobs`, sequentially or in parallel."""
+    workers = min(resolve_n_jobs(n_jobs), len(jobs))
+    if workers <= 1 or len(jobs) <= 1:
+        for job in jobs:
+            yield _gene_job(job)
+        return
+
+    backend = parallel_backend()
+    if backend == "fork":
+        import multiprocessing as mp
+        from concurrent.futures import ProcessPoolExecutor
+
+        ctx = mp.get_context("fork")
+        # The pool is created per chunk, after that chunk's draws exist, so a
+        # forked child inherits them without copying. On Linux a fork is tens
+        # of milliseconds against a chunk that takes seconds.
+        with ProcessPoolExecutor(
+            max_workers=workers, mp_context=ctx, initializer=_limit_blas_threads
+        ) as ex:
+            yield from ex.map(_gene_job, jobs)
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            yield from ex.map(_gene_job, jobs)
+
+
 def run_discovery_ntcells_complement(
     response_matrix,
     gene_ids: list[str],
@@ -496,6 +629,7 @@ def run_discovery_ntcells_complement(
     seed: int | None = None,
     target_chunk_size: int = _DEFAULT_TARGET_CHUNK_SIZE,
     chunk_memory_gb: float = _DEFAULT_CHUNK_MEMORY_GB,
+    n_jobs: int = 1,
 ) -> pd.DataFrame:
     """pairs: DataFrame with columns 'response_id', 'grna_target' -- the
     QC-passed pairs to test. Returns a DataFrame with one row per pair:
@@ -571,51 +705,34 @@ def run_discovery_ntcells_complement(
         # (~0.9 min), while holding one gene's pieces (10.5 MB) instead of
         # every gene's (2.56 GB).
         chunk_target_set = set(chunk_ids)
-        for gene_id, gene_pairs in pairs_by_gene.items():
-            targets_here = [t for t in gene_pairs if t in chunk_target_set]
-            if not targets_here:
-                continue
+        gene_jobs = [
+            (gene_id, [t for t in gene_pairs if t in chunk_target_set])
+            for gene_id, gene_pairs in pairs_by_gene.items()
+        ]
+        gene_jobs = [job for job in gene_jobs if job[1]]
 
-            gene = gene_precomps[gene_id]
-            y = _get_row(response_matrix, gene_row_index[gene_id])
-            pieces = compute_precomputation_pieces(
-                y, covariate_matrix, gene.fitted_coefs, gene.theta
-            )
-
-            for target_id in targets_here:
-                target = target_precomps[target_id]
-                result = run_low_level_test_full(
-                    y=y,
-                    mu=pieces.mu,
-                    a=pieces.a,
-                    w=pieces.w,
-                    D=pieces.D,
-                    trt_idxs=target.trt_idxs,
-                    synthetic_idxs=target.synthetic_idxs,
-                    B1=B1,
-                    B2=B2,
-                    B3=B3,
-                    fit_parametric_curve=fit_parametric_curve,
-                    side_code=side_code,
-                )
-                half_width = _CI_Z * result.se_fold_change
-                rows[(gene_id, target_id)] = {
-                    "response_id": gene_id,
-                    "grna_target": target_id,
-                    "p_value": result.p_value,
-                    "fold_change": result.fold_change,
-                    "se_fold_change": result.se_fold_change,
-                    # The effect size people actually read, with its interval.
-                    # `log2(fold_change)` is not returned: it is a pure
-                    # transform of a column already present, so it would be
-                    # bytes rather than information.
-                    "pct_change": _as_pct(result.fold_change),
-                    "pct_change_ci_low": _as_pct(result.fold_change - half_width),
-                    "pct_change_ci_high": _as_pct(result.fold_change + half_width),
-                    "z_orig": result.z_orig,
-                    "stage": result.stage,
-                }
-            del pieces, y  # one gene's arrays at a time
+        # Genes within a chunk are independent -- each rebuilds its own pieces
+        # from this chunk's already-drawn synthetic index sets -- so this is
+        # where the work parallelizes. Deliberately NOT over chunks: the RNG is
+        # consumed target-by-target in `fit_all_targets`, so running chunks
+        # concurrently would change every p-value, and chunk-parallelism would
+        # multiply `chunk_memory_gb` by the worker count instead of sharing one
+        # chunk's draws.
+        _WORKER_STATE.update(
+            response_matrix=response_matrix,
+            covariate_matrix=covariate_matrix,
+            gene_precomps=gene_precomps,
+            gene_row_index=gene_row_index,
+            target_precomps=target_precomps,
+            B1=B1,
+            B2=B2,
+            B3=B3,
+            fit_parametric_curve=fit_parametric_curve,
+            side_code=side_code,
+        )
+        for produced in _map_gene_jobs(gene_jobs, n_jobs):
+            rows.update(produced)
+        _WORKER_STATE.clear()
 
         del target_precomps  # free this chunk's synthetic_idxs before the next one
 
