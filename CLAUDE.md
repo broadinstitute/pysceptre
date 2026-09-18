@@ -4,18 +4,25 @@ Standalone Python port of the statistical engine behind
 [`sceptre`](https://github.com/Katsevich-Lab/sceptre)'s discovery analysis for
 single-cell CRISPR screens.
 
-**Scope: two validated analysis paths, not a general sceptre reimplementation.**
-Discovery analysis and the calibration check, both on the complement control
-group + CRT (conditional randomization test) resampling, high-MOI path.
-Permutations, non-complement control groups, low-MOI, `assign_grnas()`,
-`run_qc()`, the power check, and R's formula DSL are all deliberately out of
-scope — see "Scope and limitations" in `README.md` before adding any of them.
+**Scope: three validated analysis paths, not a general sceptre
+reimplementation.** Discovery analysis, the calibration check and the power
+check, all on the complement control group + CRT (conditional randomization
+test) resampling, high-MOI path. Permutations, non-complement control groups,
+low-MOI, `assign_grnas()`, `run_qc()` and R's formula DSL are all deliberately
+out of scope — see "Scope and limitations" in `README.md` before adding any of them.
 
-**One carve-out from "no `run_qc()`".** The calibration check *constructs* its
-pairs, and sceptre only ever samples combinations that already clear
-`n_nonzero_trt_thresh` / `n_nonzero_cntrl_thresh`, so pairwise nonzero-count
-filtering is inseparable from building the pairs and lives in
-`pipeline/calibration.py`. Cell-level and gRNA-level QC stay out of scope.
+**One carve-out from "no `run_qc()`".** The calibration and power checks
+*construct or receive* their own pairs, so both must decide which are testable
+at all. Pairwise nonzero-count filtering therefore lives in
+`pipeline/pairwise_qc.py`, shared by both. Cell-level and gRNA-level QC stay
+out of scope.
+
+The two use it in **opposite** ways, and that is deliberate. Calibration
+samples its pairs, so it avoids ones that would fail and every returned row
+passes -- there is no `pass_qc` column. A positive control is a specific
+claim about a specific pair, so the power check *reports* failures with a NaN
+result; dropping them would overstate power by hiding the controls the screen
+had too few cells to test. Discovery behaves like the power check.
 
 `README.md` is the user-facing reference (full API table, validation numbers,
 performance figures). This file is the contributor-facing complement: don't

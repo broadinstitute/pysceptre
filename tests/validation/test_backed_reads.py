@@ -33,7 +33,7 @@ from sceptre_io import (  # noqa: E402
     write_h5mu,
 )
 
-from pysceptre.pipeline.calibration import nonzero_counts  # noqa: E402
+from pysceptre.pipeline.pairwise_qc import nonzero_counts  # noqa: E402
 
 
 @pytest.fixture

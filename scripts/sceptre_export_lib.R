@@ -163,6 +163,28 @@ export_sceptre_object <- function(so, out_dir, all_genes = FALSE,
     cat("   R calibration_result:", nrow(cr), "rows\n")
   }
 
+  # The power check's pairs and results, when the object has been through
+  # run_power_check. Carried for the same reason as the calibration pairs:
+  # positive controls are a claim the experiment makes, and the name-matching
+  # rule that sceptre falls back to finds nothing when targets are genomic
+  # intervals rather than gene names -- 0 of 3,071 on this kind of screen.
+  # Without these there is no way to know which target was meant to perturb
+  # which gene.
+  pcp <- so@positive_control_pairs_with_info
+  if (!is.null(pcp) && nrow(pcp) > 0) {
+    pcp <- as.data.frame(pcp)
+    if ("grna_group" %in% names(pcp)) names(pcp)[names(pcp) == "grna_group"] <- "grna_target"
+    write_parquet(pcp, file.path(out_dir, "positive_control_pairs.parquet"))
+    cat("   R positive_control_pairs:", nrow(pcp), "rows\n")
+  }
+  power_result <- so@power_result
+  if (!is.null(power_result) && nrow(power_result) > 0) {
+    pw <- as.data.frame(power_result)
+    if ("grna_group" %in% names(pw)) names(pw)[names(pw) == "grna_group"] <- "grna_target"
+    write_parquet(pw, file.path(out_dir, "power_result.parquet"))
+    cat("   R power_result:", nrow(pw), "rows\n")
+  }
+
   discovery_result <- so@discovery_result
   if (!is.null(discovery_result) && nrow(discovery_result) > 0) {
     write_parquet(as.data.frame(discovery_result),

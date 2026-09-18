@@ -24,6 +24,11 @@ from .discovery import (
     _DEFAULT_TARGET_CHUNK_SIZE,
     run_discovery_ntcells_complement,
 )
+from .power import (
+    annotate_pairwise_qc,
+    construct_positive_control_pairs,
+    merge_qc_failures,
+)
 
 _SIDE_CODES = {"left": -1, "both": 0, "right": 1}
 _RESAMPLING_APPROXIMATIONS = ("skew_normal", "no_approximation")
@@ -193,6 +198,93 @@ def run_calibration_check(
         chunk_memory_gb=chunk_memory_gb,
         n_jobs=n_jobs,
     )
+
+
+def run_power_check(
+    response_matrix,
+    gene_ids: list[str],
+    covariate_matrix: np.ndarray,
+    grna_target_cells: dict[str, np.ndarray],
+    *,
+    positive_control_pairs: pd.DataFrame | None = None,
+    n_nonzero_trt_thresh: int = 7,
+    n_nonzero_cntrl_thresh: int = 7,
+    side: str = "both",
+    resampling_approximation: str = "skew_normal",
+    multiple_testing_alpha: float = 0.1,
+    seed: int | None = None,
+    target_chunk_size: int = _DEFAULT_TARGET_CHUNK_SIZE,
+    chunk_memory_gb: float = _DEFAULT_CHUNK_MEMORY_GB,
+    n_jobs: int = 1,
+) -> pd.DataFrame:
+    """Run sceptre's power check: the discovery test over positive controls.
+
+    A positive control is a (gene, target) pair where an effect is expected
+    -- usually a gRNA against the gene's own TSS. The check asks whether the
+    pipeline recovers effects it should, and is read next to
+    `run_calibration_check`, which asks whether it invents effects it
+    should not.
+
+    positive_control_pairs: the pairs to test, as
+        `DataFrame['response_id', 'grna_target']`. **Supply these.** They are
+        a biological claim about which target perturbs which gene, and only
+        the experiment knows it. When omitted, R's name-matching rule is used
+        as a fallback -- a target that is itself a gene id pairs with that
+        gene -- which works when targets are named after genes and finds
+        nothing when they are named after genomic intervals. A screen of the
+        latter kind raises rather than silently returning an empty result.
+    n_nonzero_trt_thresh / n_nonzero_cntrl_thresh: pairwise QC thresholds.
+        Unlike the calibration check, failures are **reported, not
+        filtered**: the returned frame has a `pass_qc` column and NaN
+        results for pairs that did not meet them. Dropping them would
+        overstate power by hiding the controls the screen had too few cells
+        to test.
+
+    Returns one row per supplied pair, with `pass_qc`, `n_nonzero_trt` and
+    `n_nonzero_cntrl` alongside the usual columns. No multiple-testing
+    correction is applied, matching R: these are a diagnostic, not
+    discoveries, and adjusting them against each other answers no question.
+    """
+    if positive_control_pairs is None:
+        positive_control_pairs = construct_positive_control_pairs(gene_ids, list(grna_target_cells))
+        if positive_control_pairs.empty:
+            raise ValueError(
+                "no positive control pairs: no gRNA target is named after a gene, so "
+                "R's name-matching rule finds nothing. This is normal for a screen "
+                "targeting genomic intervals -- pass positive_control_pairs explicitly."
+            )
+
+    annotated = annotate_pairwise_qc(
+        positive_control_pairs[["response_id", "grna_target"]],
+        response_matrix,
+        gene_ids,
+        grna_target_cells,
+        covariate_matrix.shape[0],
+        n_nonzero_trt_thresh=n_nonzero_trt_thresh,
+        n_nonzero_cntrl_thresh=n_nonzero_cntrl_thresh,
+    )
+    testable = annotated[annotated["pass_qc"]][["response_id", "grna_target"]]
+    if testable.empty:
+        raise ValueError(
+            f"no positive control pair passes pairwise QC (thresholds "
+            f"trt >= {n_nonzero_trt_thresh}, cntrl >= {n_nonzero_cntrl_thresh})"
+        )
+
+    tested = run_discovery_analysis(
+        response_matrix=response_matrix,
+        gene_ids=gene_ids,
+        covariate_matrix=covariate_matrix,
+        grna_target_cells={t: grna_target_cells[t] for t in testable["grna_target"].unique()},
+        pairs=testable.reset_index(drop=True),
+        side=side,
+        resampling_approximation=resampling_approximation,
+        multiple_testing_alpha=multiple_testing_alpha,
+        seed=seed,
+        target_chunk_size=target_chunk_size,
+        chunk_memory_gb=chunk_memory_gb,
+        n_jobs=n_jobs,
+    )
+    return merge_qc_failures(tested, annotated)
 
 
 def _resampling_budget(

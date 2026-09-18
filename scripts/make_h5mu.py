@@ -33,6 +33,8 @@ INTERMEDIATE_FILES = (
     "grna_annotation.parquet",
     "pairs.parquet",
     "discovery_result.parquet",
+    "positive_control_pairs.parquet",
+    "power_result.parquet",
 )
 
 

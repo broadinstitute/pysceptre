@@ -76,6 +76,11 @@ class SceptreExport:
     # are the only record of which pairs a given result used.
     negative_control_pairs: pd.DataFrame | None = None
     calibration_result: pd.DataFrame | None = None
+    # The power check's positive controls and R's result for them. Positive
+    # controls cannot be reconstructed for a screen whose targets are genomic
+    # intervals, so they have to travel with the dataset.
+    positive_control_pairs: pd.DataFrame | None = None
+    power_result: pd.DataFrame | None = None
 
     @property
     def side(self) -> str:
@@ -315,6 +320,8 @@ def load_h5mu(path: str | Path, backed: bool = False) -> SceptreExport:
 
     negative_control_pairs = _uns_frame("negative_control_pairs")
     calibration_result = _uns_frame("calibration_result")
+    positive_control_pairs = _uns_frame("positive_control_pairs")
+    power_result = _uns_frame("power_result")
 
     discovery = mdata.uns.get("discovery_result")
     discovery_result = None
@@ -336,6 +343,8 @@ def load_h5mu(path: str | Path, backed: bool = False) -> SceptreExport:
         ntc_grna_cells=ntc_grna_cells,
         negative_control_pairs=negative_control_pairs,
         calibration_result=calibration_result,
+        positive_control_pairs=positive_control_pairs,
+        power_result=power_result,
     )
 
 
@@ -523,6 +532,8 @@ def write_h5mu(export: SceptreExport, path: str | Path, compression: str | None 
     for key, frame in (
         ("negative_control_pairs", export.negative_control_pairs),
         ("calibration_result", export.calibration_result),
+        ("positive_control_pairs", export.positive_control_pairs),
+        ("power_result", export.power_result),
     ):
         if frame is not None and len(frame):
             mdata.uns[key] = {c: _h5_safe(frame[c]) for c in frame.columns}
@@ -593,6 +604,8 @@ def _load_intermediate(export_dir: Path) -> SceptreExport:
 
     negative_control_pairs = _optional("negative_control_pairs.parquet")
     calibration_result = _optional("calibration_result.parquet")
+    positive_control_pairs = _optional("positive_control_pairs.parquet")
+    power_result = _optional("power_result.parquet")
 
     _check_shapes(metadata, response_matrix, covariate_matrix, gene_ids, grna_target_cells)
     return SceptreExport(
@@ -606,6 +619,8 @@ def _load_intermediate(export_dir: Path) -> SceptreExport:
         ntc_grna_cells=ntc_grna_cells,
         negative_control_pairs=negative_control_pairs,
         calibration_result=calibration_result,
+        positive_control_pairs=positive_control_pairs,
+        power_result=power_result,
     )
 
 

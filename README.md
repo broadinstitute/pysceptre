@@ -6,8 +6,9 @@ analysis for single-cell CRISPR screens -- specifically the **complement
 control group + CRT (conditional randomization test) resampling** path used
 for high-MOI data.
 
-It covers two of sceptre's analysis steps on that path -- the **discovery
-analysis** and the **calibration check** -- and is *not* a general
+It covers three of sceptre's analysis steps on that path -- the **discovery
+analysis**, the **calibration check** and the **power check** -- and is *not*
+a general
 reimplementation. Targeting one validated path is what lets it batch the
 linear-algebra work sceptre does per-gene/per-target in R/C++ loops into
 vectorized numpy calls, cutting real-dataset runtimes from hours to tens of
@@ -187,6 +188,41 @@ calibration path calls `set.seed` and `sceptre_object` has no seed slot, so
 re-running R gives a different pair set. Comparing pair-by-pair against an R
 result means passing R's pairs back in via `negative_control_pairs`.
 
+### `pysceptre.pipeline.api.run_power_check`
+
+Runs the discovery test over **positive controls** -- pairs where an effect
+is expected, usually a gRNA against the gene's own TSS. Where the calibration
+check asks whether the pipeline invents effects it should not, this asks
+whether it recovers effects it should. The two are read together.
+
+```python
+from pysceptre import run_power_check
+
+power = run_power_check(
+    response_matrix=response_matrix,
+    gene_ids=gene_ids,
+    covariate_matrix=covariate_matrix,
+    grna_target_cells=grna_target_cells,
+    positive_control_pairs=positive_control_pairs,  # response_id, grna_target
+    side="left",
+    seed=0,
+)
+```
+
+| Argument | Notes |
+|---|---|
+| `positive_control_pairs` | The pairs to test. **Supply these**: which target perturbs which gene is a claim only the experiment can make. Omitted, sceptre's name-matching rule is used -- a target that is itself a gene id pairs with that gene -- which works when targets are named after genes and finds *nothing* when they are named after genomic intervals. On a real screen of the latter kind it matched 0 of 3,071 targets, so that case raises rather than quietly returning an empty result. |
+| `n_nonzero_trt_thresh`, `n_nonzero_cntrl_thresh` | Pairwise QC thresholds. |
+
+**QC is reported, not filtered** -- the opposite of the calibration check.
+The result has one row per supplied pair, with `pass_qc`, `n_nonzero_trt` and
+`n_nonzero_cntrl`, and NaN results where a pair did not meet the thresholds.
+Dropping those would overstate power by hiding exactly the controls the
+screen had too few cells to test.
+
+**No multiple-testing correction is applied**, matching R, which returns no
+`significant` column here. These are a diagnostic rather than discoveries.
+
 ### Lower-level building blocks
 
 `run_discovery_analysis` is a thin wrapper around
@@ -248,9 +284,6 @@ adjustment over the union each time.
 - **Complement control group only, high-MOI/CRT resampling only.** This is
   the one analysis path this package targets; other sceptre modes
   (permutations, non-complement control groups, low-MOI) are out of scope.
-- **No power check.** `run_calibration_check` is implemented;
-  `run_power_check` is not.
-
 - **No `assign_grnas()` / `run_qc()`**, with one carve-out: the calibration
   check applies the *pairwise* nonzero-count thresholds, because it builds its
   own pairs and cannot select them otherwise. Cell-level and gRNA-level QC
@@ -365,6 +398,23 @@ R package (pinned upstream commit), not just internal self-consistency:
    expected. R deviates by the same amount to four decimal places, so this is
    sceptre's behaviour on this data and not an artefact of the port; pysceptre
    reproduces the reference's mild anti-conservatism rather than adding any.
+
+4. **Power check** (day0_grna20, 266 positive-control pairs), against R's
+   stored `power_result`:
+
+   | Metric | Value |
+   |---|---|
+   | rows | 266 / 266 |
+   | `pass_qc` agreement | 266 / 266 |
+   | `n_nonzero_trt`, `n_nonzero_cntrl` | exact, 266 / 266 each |
+   | Fold-change agreement (Pearson r) | 1.000000 (max difference 1.3e-12) |
+   | p-value agreement (Spearman rho), 246 testable pairs | 0.9892 |
+   | median effect | -35.2% |
+
+   The 20 pairs that fail pairwise QC are reported with NaN results by both
+   implementations, and both agree on exactly which 20. A median effect of
+   -35.2% is the check working: positive controls target a gene's own TSS,
+   so they should repress it.
 
 ## License and attribution
 

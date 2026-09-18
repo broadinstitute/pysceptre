@@ -25,9 +25,9 @@ from pysceptre.pipeline.calibration import (
     group_name,
     n_synthetic_groups,
     negative_control_pairs_from_names,
-    nonzero_counts,
     sample_ntc_groups,
 )
+from pysceptre.pipeline.pairwise_qc import nonzero_counts
 
 # (n_calibration_pairs, n_genes, pass_qc_rate, expected) -- observed by calling
 # sceptre:::sample_combinations_v2 directly, with 1,499 NTC gRNAs and groups of
