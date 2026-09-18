@@ -41,8 +41,8 @@ fully-qualified `pysceptre.pipeline.api` path; both work, keep both working.
 ## Commands
 ```bash
 uv venv --python 3.12 .venv           # numba is not verified above 3.13
-source .venv/bin/activate
-uv pip install -e ".[dev,fast]"       # dev = pytest + ruff + pre-commit
+uv sync --extra dev --extra fast --extra io   # reproducible, uses uv.lock
+uv lock --check                       # is the committed lockfile current?
 
 pytest                                # full suite; no R needed (see Gotchas)
 pytest tests/validation/test_glm_fits.py -q
@@ -165,6 +165,22 @@ Python 3.10+ (`requires-python`). Verified passing on 3.10, 3.11, 3.12, 3.13.
   variable, rather than part-way through. These were hardcoded
   `/mnt/disks/sw-dev-disk/...` cloud-VM paths; don't reintroduce absolute
   paths here.
+
+- **`uv.lock` is committed but CI installs unlocked.** The lockfile exists so
+  `uv sync` reproduces a known-good dev environment; the test matrix still
+  runs `uv pip install -e ".[dev,fast]"` and resolves fresh against the
+  pyproject ranges, so a breaking upstream release surfaces in CI instead of
+  being masked by pins. A separate `lock` job runs `uv lock --check` to stop
+  the committed file drifting from `pyproject.toml` -- if you change
+  dependencies, run `uv lock` and commit the result or that job fails. The
+  lockfile does not constrain anyone installing pysceptre from PyPI; it is not
+  in the wheel.
+
+- **The `io` extra is dev-only and nothing under `src/` imports it.**
+  `anndata` (h5ad) and `pyarrow` (result parquet) are used by `scripts/`, not
+  by the package: `run_discovery_analysis` takes in-memory arrays and needs
+  neither. Keep them out of `dependencies` -- a user who already has their
+  data in memory should not be made to install zarr, which `anndata` pulls in.
 
 - **Implicit namespace packages were the previous state.** `__init__.py` files
   now exist in every package dir; without them `setuptools.find_packages`

@@ -33,8 +33,21 @@ jobs:
       # without R/sceptre installed -- conftest only shells out to Rscript
       # when that cached fixture is missing.
       - run: uv pip install -e ".[dev,fast]"
-      # --no-sync: this is a setuptools project with no uv.lock to sync against.
+      # --no-sync: install unlocked, deliberately. uv.lock is committed so a
+      # contributor's `uv sync` is reproducible, but the matrix resolves fresh
+      # against the pyproject ranges so upstream breakage surfaces here rather
+      # than being hidden behind pins. The `lock` job below keeps the committed
+      # lockfile honest.
       - run: uv run --no-sync pytest -q
+
+  lock:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      # Fails if uv.lock is out of date with pyproject.toml. Without this the
+      # committed lockfile silently drifts, since no other job reads it.
+      - run: uv lock --check
 
   build:
     runs-on: ubuntu-latest
