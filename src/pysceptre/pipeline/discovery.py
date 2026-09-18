@@ -24,12 +24,14 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
+from scipy import sparse
 
 from ..crt.sampler import crt_index_sampler_fast
 from ..glm.irls import fit_binomial_glm_batch, fit_poisson_glm_batch
 from ..glm.nb_theta import estimate_theta
 from ..precompute.pieces import compute_precomputation_pieces
 from ..test_statistic.resampling import run_low_level_test_full
+from ..test_statistic.score_stat import draws_to_matrix, stack_pieces
 
 # Budget for the arrays a *chunk* holds, in GB. It sizes how many genes or
 # targets are processed together; it is NOT a cap on the process's memory,
@@ -113,7 +115,12 @@ class GenePrecomputation:
 class TargetPrecomputation:
     trt_idxs: np.ndarray  # 0-based
     fitted_probabilities: np.ndarray
-    synthetic_idxs: list[np.ndarray]
+    # The target's B1+B2+B3 CRT draws as a (B, n_cells) 0/1 CSR matrix. Held
+    # in this form rather than as a list of index arrays because every gene
+    # paired with this target needs exactly the same flattening, which used to
+    # be redone once per *pair*: 2,451 rebuilds of a target-fixed structure in
+    # one profiled run.
+    draws: sparse.csr_matrix
 
 
 # 97.5th percentile of the standard normal, for two-sided 95% intervals.
@@ -380,7 +387,7 @@ def fit_all_targets(
         out[target_id] = TargetPrecomputation(
             trt_idxs=grna_target_cells[target_id],
             fitted_probabilities=fitted_probabilities,
-            synthetic_idxs=synthetic_idxs,
+            draws=draws_to_matrix(synthetic_idxs, n_cells),
         )
     return out
 
@@ -504,6 +511,10 @@ def _gene_job(job: tuple[str, list[str]]) -> dict[tuple[str, str], dict]:
     gene = st["gene_precomps"][gene_id]
     y = _get_row(st["response_matrix"], st["gene_row_index"][gene_id])
     pieces = compute_precomputation_pieces(y, st["covariate_matrix"], gene.fitted_coefs, gene.theta)
+    # a, w and D all need the same per-resample segment sums, so stacking them
+    # once per gene lets each of that gene's pairs get all three from a single
+    # matmul.
+    stacked = stack_pieces(pieces.a, pieces.w, pieces.D)
 
     out: dict[tuple[str, str], dict] = {}
     for target_id in targets_here:
@@ -515,7 +526,8 @@ def _gene_job(job: tuple[str, list[str]]) -> dict[tuple[str, str], dict]:
             w=pieces.w,
             D=pieces.D,
             trt_idxs=target.trt_idxs,
-            synthetic_idxs=target.synthetic_idxs,
+            synthetic_idxs=target.draws,
+            stacked=stacked,
             B1=st["B1"],
             B2=st["B2"],
             B3=st["B3"],

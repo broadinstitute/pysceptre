@@ -113,15 +113,28 @@ Ranked by measured win over effort.
 
 | Item | Win | Confidence |
 |---|---|---|
-| T2.1 `reduceat` for the D row sums | 61.7 -> 20.8 ms, ~2x the per-pair stage (~8 -> ~4 min at moi5) | measured, bit-identical |
-| T2.2 Wire up flatten-once | ~1.2 min at moi5 (3%) | measured |
-| T2.3 Parallelize `fit_all_targets` | targets the 48-min stage | unmeasured |
+| ~~T2.1 `reduceat` for the D row sums~~ | **superseded**: the gather it reduced is gone entirely (see T2.5) | done |
+| ~~T2.2 Wire up flatten-once~~ | **done**: the draw matrix is built once per target | done |
+| ~~T2.5 Sparse-matmul null statistic~~ | **42.7 -> 11.2 ms** on the hot call, **1.72x end to end** | measured |
+| T2.3 Parallelize `fit_all_targets` | the remaining serial stage, now a larger share | unmeasured |
 | T2.4 Sparse-aware `fit_all_genes` | removes the `(n_cells, n_genes)` densify | required by the no-densify constraint |
 
-**T2.1 caveat:** `np.add.reduceat` returns the element at the offset rather
-than `0` for a zero-length segment (verified: gives `1.0` where `0` is
-correct). An empty CRT draw has probability ~`exp(-n_trt)` — negligible at
-real scale, not impossible for tiny targets. Needs a guard and a test.
+**T2.1/T2.2/T2.5 are done.** The per-pair statistic no longer gathers
+`D[:, flat_idxs]` at all: the draws are a `(B, n_cells)` 0/1 CSR matrix and
+`draws @ [a, w, D.T]` produces every segment sum in one matmul, with no
+158 MB temporary. That subsumes both the `reduceat` work and the
+flatten-once work, since the matrix is built once per target.
+
+It also removes the T2.1 caveat rather than guarding it: `np.add.reduceat`
+returned the element at the offset rather than `0` for a zero-length segment,
+and needed correcting. An empty CSR row sums to zero on its own.
+
+Measured against the previous implementation on 2,400 pairs: `fold_change`,
+`z_orig` and `stage` bit-identical, and 2,353 of 2,400 p-values bit-identical.
+The 47 that moved moved by at most **8.3e-17**, against a resampling
+resolution of `1/(B1+1) = 2e-3` — so no empirical quantile flipped, and
+Spearman rho is exactly 1.0. A sparse matmul accumulates in a different order
+than a gather, which is where the last bits come from.
 
 **T2.3 note:** the 48-minute target stage dominates end to end, so this is the
 larger prize, but it is unmeasured and interacts with the deliberate

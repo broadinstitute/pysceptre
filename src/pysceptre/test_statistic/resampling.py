@@ -12,10 +12,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+from scipy import sparse
 
 from .empirical_p import compute_empirical_p_value
 from .fold_change import estimate_log_fold_change
-from .score_stat import compute_null_full_statistics, compute_observed_full_statistic
+from .score_stat import (
+    compute_null_statistics_from_draws,
+    compute_observed_full_statistic,
+    draws_to_matrix,
+    row_slice,
+    stack_pieces,
+)
 from .skew_normal import fit_and_evaluate_skew_normal
 
 P_THRESH = 0.02
@@ -41,8 +48,9 @@ def run_low_level_test_full(
     w: np.ndarray,
     D: np.ndarray,
     trt_idxs: np.ndarray,
-    synthetic_idxs: list[np.ndarray],
+    synthetic_idxs,
     *,
+    stacked: np.ndarray | None = None,
     B1: int = 499,
     B2: int = 4999,
     B3: int = 0,
@@ -51,21 +59,37 @@ def run_low_level_test_full(
     p_thresh: float = P_THRESH,
     return_resampling_dist: bool = False,
 ) -> PairResult:
-    """trt_idxs: 0-based observed treated-cell indices. synthetic_idxs: a list of
-    length B1+B2+B3 ragged 0-based index arrays (the CRT/permutation draws),
-    consumed in three consecutive slices [0:B1], [B1:B1+B2], [B1+B2:B1+B2+B3]."""
+    """trt_idxs: 0-based observed treated-cell indices.
+
+    synthetic_idxs: the B1+B2+B3 CRT draws, consumed in three consecutive
+        slices [0:B1], [B1:B1+B2], [B1+B2:B1+B2+B3]. Either a `(B, n_cells)`
+        0/1 CSR matrix from `draws_to_matrix` -- the fast path, built once per
+        target and shared across that target's genes -- or a list of ragged
+        index arrays, which is converted here. The list form is kept because
+        it is the natural thing to write by hand in a test; the analysis
+        always passes the matrix.
+    stacked: `stack_pieces(a, w, D)`, built once per gene and reused across
+        that gene's targets. Computed here when omitted.
+    """
+    if not sparse.issparse(synthetic_idxs):
+        synthetic_idxs = draws_to_matrix(list(synthetic_idxs), a.shape[0])
+    if stacked is None:
+        stacked = stack_pieces(a, w, D)
+
     fc, se = estimate_log_fold_change(y, mu, trt_idxs)
     z_orig = compute_observed_full_statistic(a, w, D, trt_idxs)
 
     sn_params: tuple[float, float, float] | None = None
     stage = 1
-    null_statistics = compute_null_full_statistics(a, w, D, synthetic_idxs[0:B1])
+    null_statistics = compute_null_statistics_from_draws(stacked, row_slice(synthetic_idxs, 0, B1))
     p = compute_empirical_p_value(null_statistics, z_orig, side_code)
 
     if p <= p_thresh:
         sn_fit_used = False
         if fit_parametric_curve:
-            null_statistics = compute_null_full_statistics(a, w, D, synthetic_idxs[B1 : B1 + B2])
+            null_statistics = compute_null_statistics_from_draws(
+                stacked, row_slice(synthetic_idxs, B1, B1 + B2)
+            )
             sn_result = fit_and_evaluate_skew_normal(z_orig, null_statistics, side_code)
             p = sn_result.p
             sn_fit_used = sn_result.used
@@ -75,8 +99,8 @@ def run_low_level_test_full(
 
         if not fit_parametric_curve or not sn_fit_used:
             if B3 > 0:
-                null_statistics = compute_null_full_statistics(
-                    a, w, D, synthetic_idxs[B1 + B2 : B1 + B2 + B3]
+                null_statistics = compute_null_statistics_from_draws(
+                    stacked, row_slice(synthetic_idxs, B1 + B2, B1 + B2 + B3)
                 )
             p = compute_empirical_p_value(null_statistics, z_orig, side_code)
             stage = 3

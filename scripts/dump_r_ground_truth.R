@@ -80,8 +80,14 @@ for (t in seq_len(n_targets)) {
 
   synthetic_idxs_ptr <- sc("crt_index_sampler_fast")(fitted_probabilities = fitted_probabilities, B = B_total)
   synthetic_idxs_r <- sc("synth_idx_list_to_r_list")(synthetic_idxs_ptr)
-  # convert to 0-based for downstream Python consumption
-  synthetic_idxs_0based <- lapply(synthetic_idxs_r, function(v) as.integer(v) - 1L)
+  # NO conversion: sceptre's crt_index_sampler_fast is C++ and already returns
+  # 0-BASED cell indices. Subtracting 1 here (as this script used to) turned
+  # every legitimate 0 into -1 -- 0.24% of all indices. Python's fancy indexing
+  # then silently wrapped `a[-1]` to the LAST cell instead of the first, so the
+  # fixture was subtly wrong and nothing failed. Verified 0-based: the values
+  # spanned [0, 399] over 400 cells, whereas a 1-based vector would span
+  # [1, 400] and could never produce a -1 after subtracting one.
+  synthetic_idxs_0based <- lapply(synthetic_idxs_r, as.integer)
 
   target_results[[t]] <- list(
     target_id = paste0("target_", t),
