@@ -15,20 +15,15 @@ target_id)` and on nothing about the rest of the run.
 its own name-keyed stream, and the binomial fit is batched per chunk but
 measured identical on both BLAS libraries tested.
 
-*Changing the gene set* is exact only to floating point. The gene GLM is
-batched across whichever genes share a chunk, and floating-point addition is
-not associative, so a different batch width can change a fit in its last
-bits. Measured on OpenBLAS: removing one gene from a ten-gene run moved
-`fold_change` on 3 of 72 shared pairs, by at most **1.11e-16** -- one unit in
-the last place. On Accelerate the same comparison was exactly zero. This
-cannot be fixed while the fits are batched, and batching them is the reason
-this package is fast, so it is documented rather than chased.
+*Changing the gene set* is also bitwise exact, because genes are fitted one
+at a time. While the gene GLM was batched this was only true to floating
+point: a gene's fit depended on which others shared its BLAS call, and
+removing one moved `fold_change` on 3 of 72 pairs under OpenBLAS. Fitting
+each gene alone costs about 0.5% of a run and removes the dependence
+outright.
 
-The practical consequence for reusing results across runs: **adding pairs or
-targets is safe to the bit; adding genes is safe to about 1e-16.** No
-scientific conclusion turns on the difference, but "identical" is the wrong
-word for the second case and "identical to floating-point precision" is the
-right one.
+The practical consequence for reusing results across runs: **everything the
+analysis controls is safe to the bit.**
 
 **What is *not* reusable, and should not be.** A Benjamini-Hochberg adjusted
 p-value depends on every p-value in the set, so adding pairs changes the
@@ -157,17 +152,16 @@ def test_changing_the_targets_leaves_other_pairs_bitwise_identical(world, baseli
         ("removing a gene", BASE_GENES[:-1]),
     ],
 )
-def test_changing_the_genes_leaves_other_pairs_agreeing_to_floating_point(
-    world, baseline, what, genes
-):
-    """Weaker on purpose: the gene GLM is batched, so the batch width moves.
+def test_changing_the_genes_leaves_other_pairs_bitwise_identical(world, baseline, what, genes):
+    """Bitwise, since genes are fitted one at a time.
 
-    Measured residue on OpenBLAS is one ULP (1.11e-16 on `fold_change`, 3 of
-    72 pairs); on Accelerate it is exactly zero. `rtol=1e-12` is far above the
-    former and far below anything that could matter, so this fails if the
-    residue ever grows by four orders of magnitude.
+    This asserted only a tolerance while gene GLMs were batched: a gene's fit
+    then depended on its BLAS companions, and removing one moved
+    `fold_change` on 3 of 72 pairs under OpenBLAS. Fitting each gene alone
+    makes the fit a function of that gene's counts and the covariates only,
+    so the dependence is gone rather than bounded.
     """
-    _assert_shared_pairs_agree(baseline, _run(world, genes, BASE_TARGETS), what)
+    _assert_shared_pairs_identical(baseline, _run(world, genes, BASE_TARGETS), what)
 
 
 @pytest.mark.parametrize("chunk", [1, 3, 5])

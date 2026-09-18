@@ -63,7 +63,13 @@ def run_discovery_analysis(
         distributed, so the resampling draws are made in the same order
         whatever the worker count. Memory grows by roughly one gene's working
         arrays per worker, not by `chunk_memory_gb` per worker.
-    chunk_memory_gb: budget for the arrays a chunk holds, which sizes how many
+    chunk_memory_gb: budget for the gRNA-target chunk's arrays. **It cannot
+        change a result**: it sizes target chunking only, and the binomial fit
+        is bitwise identical across chunk widths (verified at 14 against 114
+        on 567,690 cells). Gene fitting uses a fixed internal budget precisely
+        so that this knob stays numerical-free -- driving both from it meant
+        raising the budget moved 2 of 237 gene fits on day0. Budget for the
+        arrays a chunk holds, which sizes how many
         genes or targets are processed together. Not a cap on the process's
         memory -- the input, retained state and allocator overhead sit outside
         it. You should not normally need to change this; the default is the

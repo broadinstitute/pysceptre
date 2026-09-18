@@ -53,6 +53,42 @@ from ..test_statistic.score_stat import draws_to_matrix, stack_pieces
 # no_approximation draws reach ~1 TB.
 _DEFAULT_CHUNK_MEMORY_GB = 1.0
 
+# Genes are fitted ONE AT A TIME, not batched.
+#
+# Batching the gene GLM means a gene's fit depends on which other genes share
+# its BLAS call: floating-point addition is not associative, so the normal
+# equations accumulate slightly differently, and for genes whose likelihood is
+# flat -- those with near-zero expression, whose coefficients are large and
+# poorly determined -- that surfaces as ~2e-8 in the coefficients with the
+# deviance unchanged. Both answers solve the GLM to the requested precision;
+# neither is more correct. But it means "the fit for gene X" is not a
+# well-defined quantity until you say what else was in the run.
+#
+# Fitting each gene alone makes it well-defined. Measured cost on day0 (237
+# genes, 567,690 cells, p=11): 29.17 s against 24.96 s batched -- 17% of the
+# gene-fitting stage, which is itself ~3% of a run, so about 0.5% overall. For
+# that we get a fit that depends only on the gene's own counts and the
+# covariates, which is what makes results reusable across analyses.
+#
+# This is also the shape that parallelizes: independent fits, no shared batch.
+_GENE_BATCH_WIDTH = 1
+
+# Retained as the memory bound for the per-gene path and for callers of
+# `fit_all_genes` that still batch deliberately. Not the caller's
+# `chunk_memory_gb`: a memory knob must not be a numerical one.
+# `chunk_memory_gb`. Batching the gene GLM across a chunk means the chunk's
+# composition can perturb a fit -- sporadically, only for genes with
+# near-zero expression, and bounded at ~2e-8 with the deviance unchanged, but
+# it happens. Driving that from a user-tunable memory budget made a memory
+# knob into a numerical one: on day0, raising the budget from 1 GB to 4 GB
+# moved 2 of 237 gene fits, which was enough to flip a discrete p-value
+# comparison. Pinning it here means the budget cannot change a result, and
+# the gene batching depends only on the dataset's cell count.
+#
+# The value matches the previous default, so results are unchanged for anyone
+# who was already on it.
+_GENE_CHUNK_MEMORY_GB = 1.0
+
 # Dense (n_cells,)-sized arrays one IRLS column costs, measured rather than
 # counted from the source. Counting the obvious ones -- the responses plus mu,
 # weights and working response -- gives 4, which under-predicts peak RSS
@@ -195,6 +231,7 @@ def fit_all_genes(
     *,
     chunk_memory_gb: float = _DEFAULT_CHUNK_MEMORY_GB,
     gene_rows: list[int] | None = None,
+    batch_width: int | None = None,
 ) -> dict[str, GenePrecomputation]:
     """Batched Poisson IRLS across genes (they share the full covariate
     matrix), then per-gene theta estimation and precomputation pieces.
@@ -203,6 +240,11 @@ def fit_all_genes(
     see `gene_chunk_size_for_budget`. Only the fit is transient -- the
     returned precomputations are just coefficients and theta (80 bytes per
     gene), so nothing large is retained.
+
+    `batch_width` pins how many genes share one BLAS call, overriding the
+    budget. The pipeline passes 1, so each fit depends only on its own gene --
+    see `_GENE_BATCH_WIDTH` for why. Larger values are faster by a few percent
+    and make a fit depend on its batch companions.
 
     `gene_rows` gives each gene's row in `response_matrix`, for when `gene_ids`
     is a *subset* of the matrix's rows rather than all of them in order. The
@@ -218,7 +260,11 @@ def fit_all_genes(
     """
     n_cells = covariate_matrix.shape[0]
     dfr = covariate_matrix.shape[0] - covariate_matrix.shape[1]
-    chunk = gene_chunk_size_for_budget(n_cells, len(gene_ids), chunk_memory_gb)
+    chunk = (
+        max(1, int(batch_width))
+        if batch_width is not None
+        else gene_chunk_size_for_budget(n_cells, len(gene_ids), chunk_memory_gb)
+    )
     rows = list(range(len(gene_ids))) if gene_rows is None else list(gene_rows)
     if len(rows) != len(gene_ids):
         raise ValueError(f"gene_rows has {len(rows)} entries for {len(gene_ids)} gene_ids")
@@ -733,8 +779,12 @@ def run_discovery_ntcells_complement(
         response_matrix,
         needed_gene_ids,
         covariate_matrix,
-        chunk_memory_gb=chunk_memory_gb,
+        # One gene per BLAS call, so a fit depends on nothing but that gene.
+        # See `_GENE_BATCH_WIDTH`. The caller's `chunk_memory_gb` governs
+        # target chunking only, which is result-neutral.
+        chunk_memory_gb=_GENE_CHUNK_MEMORY_GB,
         gene_rows=needed_gene_rows,
+        batch_width=_GENE_BATCH_WIDTH,
     )
 
     pairs_by_target = {target_id: group for target_id, group in pairs.groupby("grna_target")}
@@ -772,7 +822,19 @@ def run_discovery_ntcells_complement(
             (gene_id, [t for t in gene_pairs if t in chunk_target_set])
             for gene_id, gene_pairs in pairs_by_gene.items()
         ]
-        gene_jobs = [job for job in gene_jobs if job[1]]
+        # Longest first. A gene's job costs roughly one piece rebuild plus one
+        # test per pair, so pair count is a good proxy for duration, and they
+        # vary a lot -- day0 has a median of 154 targets per gene and a max of
+        # 299. A pool pulling tasks in arrival order would hand a worker
+        # several heavy genes at the end of a chunk and leave the rest idle.
+        #
+        # Sorting descending is enough; no explicit bin packing is needed,
+        # because the executor already pulls dynamically. That makes this
+        # Longest-Processing-Time-first scheduling, which is within 4/3 of
+        # optimal makespan. Ordering only affects scheduling: each gene job is
+        # independent and results are collected into a dict, so this cannot
+        # change a number.
+        gene_jobs = sorted((job for job in gene_jobs if job[1]), key=lambda j: -len(j[1]))
 
         # Genes within a chunk are independent -- each rebuilds its own pieces
         # from this chunk's already-drawn synthetic index sets -- so this is
