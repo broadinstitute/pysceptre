@@ -15,11 +15,16 @@ uniformly random ordering of distinct cells, so any prefix is a uniformly
 random subset of that size.
 
 **This cannot be composition-invariant, and the reason is structural.** The
-shared draws are sized by `M`, the largest target present. Add a target
-larger than all the others and `M` grows, every subset changes, and every
-result in the run moves. Add a smaller one and nothing changes. Contrast the
-CRT path, where each target seeds its own stream from its own name and is
-invariant to what else is analysed (see
+shared draws are sized by `M`, the largest target in the dataset. Add a
+target larger than all the others and `M` grows, every subset changes, and
+every result in the run moves. Add a smaller one, or add pairs for targets
+already present, and nothing changes -- R takes the maximum over the whole
+target set rather than over the tested pairs, which at least keeps the pair
+list out of it.
+
+Contrast the CRT path, where each target seeds its own stream from its own
+name and is invariant to everything: the pair list, the target set, the
+chunking and the worker count (see
 `pipeline/discovery.py::target_seed_sequence`).
 
 That is not a defect of this implementation; it follows from sharing one

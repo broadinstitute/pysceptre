@@ -898,11 +898,19 @@ def run_discovery_ntcells_complement(
 
     # Permutation draws are generated **once for the whole analysis**, not
     # per chunk, matching R and keeping results independent of the chunking.
-    # M is the largest target's cell count across every target tested, so
-    # chunk boundaries cannot change it either.
+    #
+    # M is the largest cell count over **every** supplied target, not only the
+    # tested ones, which is R's rule:
+    #
+    #     max(vapply(grna_assignments$grna_group_idxs, length, integer(1)))
+    #
+    # It matters for more than parity. Taking the maximum over the whole
+    # target set makes M independent of the *pair list*, so adding pairs for
+    # targets already present cannot move a result. Only adding a larger
+    # target to the dataset can.
     permutations = None
     if resampling_mechanism == "permutations":
-        m = max(len(grna_target_cells[t]) for t in target_ids_needed)
+        m = max(len(v) for v in grna_target_cells.values())
         permutations = permutation_draws(
             covariate_matrix.shape[0],
             m,
