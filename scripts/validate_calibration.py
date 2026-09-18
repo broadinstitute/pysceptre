@@ -19,7 +19,7 @@ Two questions, which need different evidence:
 
 Usage:
   validate_calibration.py <export_dir> [--inject] [--construct] [--plot out.png]
-      [--seed N] [--chunk-memory-gb G] [--eager]
+      [--seed N] [--chunk-memory-gb G] [--eager] [--n-jobs N]
 
 `--inject` uses R's stored pairs (from the export's `negative_control_pairs` /
 `calibration_result`, or from `--r-result <parquet>` when the object was saved
@@ -104,9 +104,9 @@ def bh_rejections(p: np.ndarray, alpha: float) -> int:
     return int(np.sum(stats.false_discovery_control(np.clip(p, 0, 1), method="bh") < alpha))
 
 
-def run(export, pairs, *, seed, chunk_memory_gb, label) -> tuple[pd.DataFrame, dict]:
+def run(export, pairs, *, seed, chunk_memory_gb, label, n_jobs=1) -> tuple[pd.DataFrame, dict]:
     meta = export.metadata
-    kwargs = {}
+    kwargs = {"n_jobs": n_jobs}
     if chunk_memory_gb is not None:
         kwargs["chunk_memory_gb"] = chunk_memory_gb
     t0 = time.perf_counter()
@@ -213,6 +213,7 @@ def main() -> None:
         return cast(argv[argv.index(name) + 1]) if name in argv else default
 
     seed = value("--seed", int, 0)
+    n_jobs = value("--n-jobs", int, 1)
     r_result_path = value("--r-result", str, None)
     external = pd.read_parquet(r_result_path) if r_result_path else None
     if external is not None:
@@ -244,7 +245,12 @@ def main() -> None:
             raise SystemExit("--inject given but the export carries no R pairs")
         print(f"\n== injected: R's own {len(injected):,} pairs ==")
         result, timing = run(
-            export, injected, seed=seed, chunk_memory_gb=chunk_memory_gb, label="injected"
+            export,
+            injected,
+            seed=seed,
+            chunk_memory_gb=chunk_memory_gb,
+            label="injected",
+            n_jobs=n_jobs,
         )
         result.to_parquet(export_dir / "pysceptre_calibration_injected.parquet")
         report["injected"] = {
@@ -261,7 +267,12 @@ def main() -> None:
     if do_construct:
         print("\n== constructed: pysceptre's own pairs ==")
         result, timing = run(
-            export, None, seed=seed, chunk_memory_gb=chunk_memory_gb, label="constructed"
+            export,
+            None,
+            seed=seed,
+            chunk_memory_gb=chunk_memory_gb,
+            label="constructed",
+            n_jobs=n_jobs,
         )
         result.to_parquet(export_dir / "pysceptre_calibration_constructed.parquet")
         report["constructed"] = {
