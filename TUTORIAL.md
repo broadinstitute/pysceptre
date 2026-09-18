@@ -38,8 +38,8 @@ covariate_matrix = np.column_stack([
 ])
 
 # --- response_matrix: (n_genes, n_cells), one row per gene ---
-# Only include genes that actually appear in `pairs` below -- don't pass a
-# whole genome-wide matrix if just a few genes are tested (see README).
+# A genome-wide matrix is fine: only genes appearing in `pairs` are fitted.
+# Untested rows cost storage, not compute (see README).
 gene_ids = [f"gene_{i}" for i in range(n_genes)]
 beta = rng.normal(loc=[1.0, 0.2, -0.1], scale=0.1, size=(n_genes, 3))
 theta_true = rng.uniform(5, 50, size=n_genes)  # NB dispersion
@@ -123,11 +123,19 @@ print(hit)  # expect a very small p_value, pct_change well below 0, stage == 2
   `numba`-accelerated CRT sampling. This is close to a strict improvement
   with no downside at real dataset scale; without it, `pysceptre` still
   works correctly, just slower.
-- **Filter `response_matrix` and `gene_ids` to only genes that appear in
-  `pairs`** before calling `run_discovery_analysis` -- fitting every gene in
-  a genome-wide matrix when only a few hundred are actually tested wastes
-  most of the work (this was the single biggest real-world memory/time
-  mistake made in early testing against a real dataset: a naive densify of
-  a 38,606-gene x 131k-cell matrix needed ~38 GiB and OOM-killed the
-  process, versus ~256 MiB after subsetting to the 244 genes actually
-  tested).
+- **`n_jobs`** (default `1`) parallelizes the per-pair tests, which are
+  about 80% of the runtime. A negative value uses every core. Results are
+  bit-identical at any worker count -- only the genes inside an
+  already-drawn target chunk are distributed, so the resampling draws are
+  made in the same order regardless. Linux uses processes; other platforms
+  use threads and hit a lower ceiling, because `fork` after macOS's
+  Accelerate BLAS can deadlock.
+- **You no longer need to pre-filter `response_matrix` to the tested
+  genes.** The engine fits only genes that appear in `pairs`, so passing a
+  genome-wide matrix costs memory to *hold* but not time to fit. Earlier
+  versions fitted every row, which made this the single biggest real-world
+  mistake in early testing: 38,606 genes fitted to test 244. Holding the
+  matrix is still real memory, though -- never densify one (a
+  38,606-gene x 131k-cell densify needs ~38 GiB and was OOM-killed once),
+  and for a large matrix prefer a backed reader, which serves genes from
+  disk on demand.

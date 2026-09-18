@@ -6,12 +6,13 @@ analysis for single-cell CRISPR screens -- specifically the **complement
 control group + CRT (conditional randomization test) resampling** path used
 for high-MOI data.
 
-This is *not* a general reimplementation of `sceptre`. It targets one
-specific, validated analysis path so that it can batch the linear-algebra
-work sceptre does per-gene/per-target in R/C++ loops into vectorized numpy
-calls, cutting real-dataset runtimes from hours to tens of minutes. See
-[Scope and limitations](#scope-and-limitations) for exactly what is and
-isn't covered.
+It covers two of sceptre's analysis steps on that path -- the **discovery
+analysis** and the **calibration check** -- and is *not* a general
+reimplementation. Targeting one validated path is what lets it batch the
+linear-algebra work sceptre does per-gene/per-target in R/C++ loops into
+vectorized numpy calls, cutting real-dataset runtimes from hours to tens of
+minutes. See [Scope and limitations](#scope-and-limitations) for exactly what
+is and isn't covered.
 
 ## Why this exists
 
@@ -37,9 +38,25 @@ pip install -e ".[dev,fast]"
   the CRT sampler's cell-grouping step (a counting sort). Without it,
   `pysceptre` falls back to a slower pure-numpy `argsort`-based version
   automatically -- everything still works, just slower at real dataset scale.
+- `io` installs `mudata`, `anndata`, `pyarrow` and `matplotlib`. These are
+  needed only by the dataset-export and benchmarking scripts under
+  `scripts/`, **not** by the package: `run_discovery_analysis` takes in-memory
+  arrays, so calling it does not require them.
 
 Requires Python >= 3.10. Core dependencies: `numpy`, `scipy`, `pandas`,
 `threadpoolctl`.
+
+### Datasets
+
+The analysis functions take plain arrays, so any route that produces them
+works. The `scripts/` directory also carries one out of R end to end:
+`export_sceptre_dataset.R` extracts a post-QC `sceptre_object`, and
+`make_h5mu.py` converts that to a **MuData `.h5mu`** with two assays --
+`rna` (cells x genes counts) and `grna` (cells x assignment units, whose
+`var` marks each unit as a per-target union or an individual non-targeting
+gRNA). `scripts/sceptre_io.load_export` reads one back, and with
+`backed=True` serves genes from disk on demand rather than holding the whole
+matrix.
 
 ## Quick start
 
@@ -88,7 +105,7 @@ run_discovery_analysis(
 
 | Parameter | Type | Description |
 |---|---|---|
-| `response_matrix` | `(n_genes, n_cells)` dense `ndarray` or `scipy.sparse` matrix | Gene expression counts. Rows must correspond 1:1 with `gene_ids`, in order -- pre-filter this to only the genes that actually appear in `pairs` (do not pass a whole genome-wide matrix if only a few hundred genes are actually tested; see [TUTORIAL.md](TUTORIAL.md)). |
+| `response_matrix` | `(n_genes, n_cells)` dense `ndarray`, `scipy.sparse` matrix, or a backed reader | Gene expression counts. Rows must correspond 1:1 with `gene_ids`, in order. Passing a genome-wide matrix is fine: only genes appearing in `pairs` are fitted, so untested rows cost storage but not compute. (Earlier versions fitted every row and this table told you to pre-filter; that is no longer necessary.) |
 | `gene_ids` | `list[str]` | Row labels for `response_matrix`, in the same order as its rows. Matched against `pairs['response_id']`. |
 | `covariate_matrix` | `(n_cells, p)` `ndarray` | Already formula-expanded numeric design matrix (intercept column, `log(umis)`, batch dummies, etc. -- whatever R's `model.matrix()` would have produced). `pysceptre` does not parse an R-style formula DSL; build this matrix yourself, or extract it directly from an existing `sceptre_object`'s `@covariate_matrix` slot. |
 | `grna_target_cells` | `dict[str, np.ndarray]` | Maps each gRNA target to the **0-based** indices (into `covariate_matrix`'s cell axis) of cells treated with that target. This is the "union" grna-integration-strategy convention: one entry per target, not per individual gRNA. |
@@ -97,6 +114,7 @@ run_discovery_analysis(
 | `resampling_approximation` | `"skew_normal"` \| `"no_approximation"` | `"skew_normal"` (default, matching sceptre): pairs whose initial empirical p-value (`B1=499` draws) is `<= 0.02` get a skew-normal tail fit from a further `B2=4999` draws, giving p-values far smaller than `1/(B1+1)` could resolve. `"no_approximation"` fits no curve and instead draws a third, larger empirical batch, sized by R's own rule: `B3 = ceil(mult * n_pairs / multiple_testing_alpha)`, `mult = 10` two-sided and `5` one-sided. That grows linearly in the number of pairs and is much slower -- see [Scope and limitations](#scope-and-limitations). Any other value raises `ValueError`. |
 | `seed` | `int \| None` | Seeds the `numpy.random.Generator` used for all CRT draws in the run. Note this does **not** reproduce sceptre's own R/C++ RNG stream bit-for-bit (different algorithm and seeding scheme) -- see [Scope and limitations](#scope-and-limitations). |
 | `target_chunk_size` | `int` | How many gRNA targets to fit and CRT-draw at once. An **upper bound, not a mandate** -- it is reduced automatically to respect `chunk_memory_gb`, so no value here can exhaust memory. Default `200`. |
+| `n_jobs` | `int` | Workers for the per-pair tests, which are ~80% of the runtime. `1` (default) runs serially; a negative value uses every core. **Results do not depend on it** -- only the genes inside an already-drawn target chunk are distributed, so the resampling draws are made in the same order at any worker count, and output is bit-identical. Processes on Linux, threads elsewhere (`fork` after macOS's Accelerate BLAS can deadlock), so the ceiling is lower off Linux. Memory grows by about one gene's working arrays per worker, not by `chunk_memory_gb` per worker. |
 | `chunk_memory_gb` | `float` | Budget for the arrays a *chunk* holds, which sizes how many genes or targets are processed together. **Not** a cap on the process's memory -- the input, retained state and allocator overhead sit outside it. **You should not normally need to change this.** The default is both the fastest and the leanest setting measured: a larger budget produces chunks past the point where batching still pays, costing memory for no throughput (on moi5, 4 GB gave 8.42 GB peak against 3.78 GB at 1 GB, for the same runtime). Default `1.0`. |
 
 **Returns** a `pd.DataFrame`, one row per input pair, with columns:
@@ -112,6 +130,55 @@ run_discovery_analysis(
 | `se_fold_change` | Standard error of `fold_change`, on the same ratio scale, so `fold_change ± 1.96 × se_fold_change` is a Wald interval around 1 (no effect). Deterministic, unlike the resampled p-value. |
 | `z_orig` | The observed test statistic (before resampling). |
 | `stage` | `1` = reported from the initial `B1=499`-draw empirical p-value (not significant enough to escalate). `2` = escalated to a skew-normal tail fit on `B2=4999` further draws. `3` = an empirical p-value from a further batch, reached either because `resampling_approximation="no_approximation"` (so no curve is fit, and the `B3` draws are used) or because a skew-normal fit was attempted and *rejected* (see `check_sn_tail`/`check_for_outliers` in `test_statistic/skew_normal.py`), in which case the already-drawn `B2=4999` statistics are used. |
+
+### `pysceptre.pipeline.api.run_calibration_check`
+
+Runs the discovery test over **synthetic negative-control targets**, built by
+regrouping individual non-targeting (NTC) gRNAs. No target is real, so a
+correctly calibrated method returns p-values uniform on (0, 1) -- and that
+uniformity, not agreement with any other implementation, is what the check
+measures.
+
+```python
+from pysceptre import run_calibration_check
+
+calib = run_calibration_check(
+    response_matrix=response_matrix,
+    gene_ids=gene_ids,
+    covariate_matrix=covariate_matrix,
+    ntc_grna_cells=ntc_grna_cells,   # dict[NTC gRNA id -> 0-based cell indices]
+    n_calibration_pairs=len(pairs),
+    calibration_group_size=15,
+    n_nonzero_trt_thresh=7,
+    n_nonzero_cntrl_thresh=7,
+    side="left",
+    seed=0,
+)
+```
+
+Returns the same columns as `run_discovery_analysis`, minus any `pass_qc`
+column -- see below for why there isn't one.
+
+| Argument | Notes |
+|---|---|
+| `ntc_grna_cells` | `dict[NTC gRNA id -> 0-based cell indices]`. Keyed by **individual gRNA**, not by target. A target-keyed mapping collapses every NTC into one entry, and in sceptre's own object omits them entirely (`"non-targeting"` is not a key in `grna_group_idxs`), leaving nothing to regroup. |
+| `n_calibration_pairs` | How many pairs to test. R defaults this to the number of discovery pairs that passed QC. |
+| `calibration_group_size` | NTC gRNAs per synthetic target. R's default is the median gRNAs per real target, capped at the NTC count; that median is not derivable from these arguments, so it is required here. |
+| `n_nonzero_trt_thresh`, `n_nonzero_cntrl_thresh` | Pairwise QC thresholds, sceptre's defaults being `7`. Prefer your object's own values. |
+| `pass_qc_rate` | R's `p_hat`, the fraction of discovery pairs clearing QC, which sizes how many synthetic groups get built. Only matters when the group count is above its floor of 100 -- but there it is decisive. |
+| `negative_control_pairs` | Test exactly these pairs instead of constructing any, with `grna_target` entries being `&`-joined NTC gRNA ids. This is how you compare against an R result pair-by-pair. |
+
+**QC works differently here, deliberately.** A discovery result reports QC
+failures in-band (`pass_qc = False`, NaN p-value). A calibration check
+*constructs* its pairs and only ever samples combinations that already clear
+the thresholds, so every returned row passes and there is no `pass_qc`
+column. Pairwise nonzero-count filtering is therefore inseparable from
+building the pairs; cell-level and gRNA-level QC remain out of scope.
+
+**R's own pair selection is not reproducible.** Nothing in sceptre's
+calibration path calls `set.seed` and `sceptre_object` has no seed slot, so
+re-running R gives a different pair set. Comparing pair-by-pair against an R
+result means passing R's pairs back in via `negative_control_pairs`.
 
 ### Lower-level building blocks
 
@@ -141,7 +208,13 @@ importable and unit-tested, for anyone extending or debugging the pipeline:
 - **Complement control group only, high-MOI/CRT resampling only.** This is
   the one analysis path this package targets; other sceptre modes
   (permutations, non-complement control groups, low-MOI) are out of scope.
-- **No `assign_grnas()` / `run_qc()`.** Feed `run_discovery_analysis` pairs
+- **No power check.** `run_calibration_check` is implemented;
+  `run_power_check` is not.
+
+- **No `assign_grnas()` / `run_qc()`**, with one carve-out: the calibration
+  check applies the *pairwise* nonzero-count thresholds, because it builds its
+  own pairs and cannot select them otherwise. Cell-level and gRNA-level QC
+  are still out of scope. Feed `run_discovery_analysis` pairs
   that have already passed QC (e.g. from a real `sceptre_object`'s
   `@discovery_pairs_with_info`, filtered to `pass_qc == TRUE`). This package
   is the statistical engine only.
@@ -208,7 +281,12 @@ R package (pinned upstream commit), not just internal self-consistency:
    |---|---|
    | Fold-change agreement (Pearson r) | 1.0000 (exact -- deterministic) |
    | p-value agreement (Spearman rho) | 0.9964 |
-   | Strong-hit calls (p < 1e-4) | 156 (pysceptre) vs. 157 (R), 152 in common, Jaccard 0.944 |
+   | Strong-hit calls (p < 1e-4) | 156 (pysceptre) vs. 157 (R), 152 in common |
+
+   Significance-call agreement is reported as a 2x2 contingency table rather
+   than a single index: a Jaccard coefficient collapses the table and cannot
+   distinguish calling extra hits from missing them, which are different
+   failures.
 
    For context, R's own CRT-vs-permutations agreement on this same dataset
    is Spearman rho = 0.996 -- pysceptre matches R about as well as R
@@ -219,6 +297,31 @@ R package (pinned upstream commit), not just internal self-consistency:
    skew-normal-tail Monte Carlo noise -- confirmed by R disagreeing with
    *itself* by a similar margin on the identical pair when compared across
    its own two resampling mechanisms.
+
+3. **Calibration check** (day0_grna20: 567,690 cells / 292 genes / 2,031
+   non-targeting gRNAs / 34,886 negative-control pairs), with R's own pairs
+   injected so both sides test identical ones:
+
+   | Metric | Value |
+   |---|---|
+   | Pairs merged | 34,886 / 34,886 |
+   | Fold-change agreement (Pearson r) | 1.0 (max abs difference 4.5e-11) |
+   | p-value agreement (Spearman rho) | 0.9863 |
+   | KS vs `U(0,1)` | 0.02592 (pysceptre) vs 0.02594 (R) |
+   | False discoveries, BH at 0.1 | 7 (pysceptre) vs 6 (R) |
+
+   Before any p-value, a deterministic checkpoint: rebuilding R's synthetic
+   groups from their names and recomputing the pairwise counts reproduces R
+   **exactly** -- `n_nonzero_trt` and `n_nonzero_cntrl` both 33,135/33,135 on
+   moi5 and 34,886/34,886 on day0, zero discrepancies over ~136,000 integer
+   comparisons across two screens with different gRNA libraries and different
+   QC thresholds.
+
+   The negative-control p-values are **not perfectly uniform** -- KS 0.0259
+   against a 5% critical value of 0.0073, with 6.1% below 0.05 where 5% is
+   expected. R deviates by the same amount to four decimal places, so this is
+   sceptre's behaviour on this data and not an artefact of the port; pysceptre
+   reproduces the reference's mild anti-conservatism rather than adding any.
 
 ## License and attribution
 

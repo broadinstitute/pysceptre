@@ -116,8 +116,8 @@ Ranked by measured win over effort.
 | ~~T2.1 `reduceat` for the D row sums~~ | **superseded**: the gather it reduced is gone entirely (see T2.5) | done |
 | ~~T2.2 Wire up flatten-once~~ | **done**: the draw matrix is built once per target | done |
 | ~~T2.5 Sparse-matmul null statistic~~ | **42.7 -> 11.2 ms** on the hot call, **1.72x end to end** | measured |
-| T2.3 Parallelize `fit_all_targets` | the remaining serial stage, now a larger share | unmeasured |
-| T2.4 Sparse-aware `fit_all_genes` | removes the `(n_cells, n_genes)` densify | required by the no-densify constraint |
+| T2.3 Parallelize `fit_all_targets` | **measured, and mostly blocked** -- see below | measured |
+| ~~T2.4 Sparse-aware `fit_all_genes`~~ | **already resolved**; the premise was stale | done |
 
 **T2.1/T2.2/T2.5 are done.** The per-pair statistic no longer gathers
 `D[:, flat_idxs]` at all: the draws are a `(B, n_cells)` 0/1 CSR matrix and
@@ -136,13 +136,49 @@ resolution of `1/(B1+1) = 2e-3` — so no empirical quantile flipped, and
 Spearman rho is exactly 1.0. A sparse matmul accumulates in a different order
 than a gather, which is where the last bits come from.
 
-**T2.3 note:** the 48-minute target stage dominates end to end, so this is the
-larger prize, but it is unmeasured and interacts with the deliberate
-`threadpool_limits(1)` decision in `glm/irls.py`. Needs a design note first.
+**T2.3 is mostly blocked, and the measurement says why.** `fit_all_targets`
+splits into RNG draws and a deterministic counting sort. At day0 scale
+(567,690 cells, B = 5,498):
 
-**T2.4** was originally ranked low value because the README tells callers to
-pre-filter genes. The no-densify constraint promotes it: `fit_all_genes`
-builds a dense `(n_cells, n_genes)` `Y` regardless of what the caller passed.
+| | per target |
+|---|---|
+| `rng.binomial` + `rng.integers` | **37.8 ms** |
+| counting sort (numba) | 2.5 ms |
+| slice into list | 1.7 ms |
+
+So ~90% of the stage is the RNG draw. The trick that made gene-level
+parallelism free -- keep the stream sequential in the parent, distribute the
+deterministic work -- recovers only the other 10% here, worth about 2% of a
+run.
+
+Parallelizing the draws themselves means giving each target its own stream
+(`SeedSequence.spawn` on the target index). That is defensible and would
+actually *improve* an invariant, making results independent of chunk size as
+well as worker count. But it changes **every p-value once**, so it costs a
+re-run of the validation numbers. At an estimated ~13% of runtime that is a
+poor trade while a preprint is pending; revisit if the target stage becomes
+dominant after further per-pair gains.
+
+Note the RNG cost is not obviously reducible either: `rng.binomial(B, p)` over
+every cell is irreducible per target, and replacing it with a Poisson
+approximation would add a second statistical approximation on top of the
+sampler's existing with-replacement one. Not worth it for speed alone.
+
+**T2.4 is already resolved, and its premise was stale.** It claimed
+`fit_all_genes` "builds a dense `(n_cells, n_genes)` `Y` regardless of what
+the caller passed". It does not, on two counts: `Y` is per *chunk*, sized by
+`gene_chunk_size_for_budget`, and only genes appearing in `pairs` are fit at
+all. At moi5 genome-wide shape (38,606 genes x 131,055 cells):
+
+| budget | chunk | `Y` | full densify would be |
+|---|---|---|---|
+| 0.5 GB | 47 genes | 0.05 GB | 40.5 GB |
+| 1.0 GB | 95 genes | 0.10 GB | 40.5 GB |
+| 4.0 GB | 381 genes | 0.40 GB | 40.5 GB |
+
+The remaining densification is inherent to IRLS rather than an oversight: the
+working response `z = eta + (y - mu) / mu` and the weights are dense because
+`mu` is, so holding `y` sparse saves nothing. Nothing to do here.
 
 ### T2.5 Retained gene precomputation — DONE
 
