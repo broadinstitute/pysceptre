@@ -30,8 +30,9 @@ src-layout — the importable package lives under `src/`, so it is only on
                         numba JIT-compiles, ~2s once its cache is warm). Every
                         test compares against R ground truth, not just internal
                         consistency.
-- `scripts/`          — R ground-truth dumper, moi5 export/validation, and the
-                        benchmark. **Not shipped in the wheel**; dev-only.
+- `scripts/`          — dataset export (`export_sceptre_dataset.R` +
+                        `make_h5ad.py`), the R-comparison benchmark setup, and the
+                        validation runners. **Not shipped in the wheel**.
 
 `run_discovery_analysis` is also re-exported at the top level
 (`from pysceptre import run_discovery_analysis`). `README.md` documents the
@@ -53,7 +54,6 @@ pre-commit run --all-files
 uv build                              # sdist + wheel into dist/
 uvx twine check dist/*                # metadata check before any upload
 
-python scripts/benchmark_pairs.py     # synthetic run at real-dataset scale
 Rscript scripts/dump_r_ground_truth.R tests/validation/ground_truth.json 4
 ```
 
@@ -108,6 +108,13 @@ Python 3.10+ (`requires-python`). Verified passing on 3.10, 3.11, 3.12, 3.13.
   loss — measured 68.7s -> 17.7s for a 150-column batch over 100k cells by
   forcing one thread. Scoped to this module so it doesn't clobber BLAS
   threading process-wide. See the module docstring.
+
+  **It is a silent no-op on macOS.** numpy there is built against Apple
+  Accelerate, which `threadpoolctl` cannot introspect —
+  `threadpool_info()` returns `[]` and a matmul takes the same time inside and
+  outside the context manager (measured ratio 0.98). So local benchmarks on a
+  Mac do not exercise this path, while CI (ubuntu-latest, OpenBLAS) does.
+  Any measurement of this optimization must name the BLAS it was taken on.
 
 - **numba is optional and both code paths must keep working.**
   `crt/sampler.py` try/excepts the import and falls back to a pure-numpy

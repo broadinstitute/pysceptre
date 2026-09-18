@@ -40,7 +40,7 @@ NO_APPROX_B = 499 + 5 * 33_066 // 0.1  # one-sided, alpha=0.1
 
 
 def test_chunk_size_is_budget_over_cost_per_item():
-    assert chunk_size_for_budget(bytes_per_item=1e9, n_items=100, max_memory_gb=4.0) == 4
+    assert chunk_size_for_budget(bytes_per_item=1e9, n_items=100, chunk_memory_gb=4.0) == 4
 
 
 def test_chunk_size_never_exceeds_the_item_count():
@@ -58,8 +58,11 @@ def test_chunk_size_handles_a_zero_cost_without_dividing_by_zero():
 # --- what each stage costs ------------------------------------------------
 
 
-def test_irls_cost_is_four_dense_arrays_per_column():
-    assert irls_bytes_per_column(BENCH_CELLS) == 4 * BENCH_CELLS * 8
+def test_irls_cost_uses_the_measured_per_column_factor():
+    """10, not the 4 obvious arrays. Counting mu, weights, working response and
+    the responses under-predicted peak RSS by about 2.5x; the factor is
+    calibrated against measured growth (see _IRLS_ARRAYS_PER_COLUMN)."""
+    assert irls_bytes_per_column(BENCH_CELLS) == 10 * BENCH_CELLS * 8
 
 
 def test_target_cost_is_the_fit_plus_its_draws():
@@ -104,7 +107,7 @@ def test_moi5_scale_leaves_the_gene_stage_unchunked():
 
 @pytest.mark.parametrize("asked", [200, 5_000, 100_000])
 def test_any_requested_chunk_size_is_clamped_to_the_budget(asked):
-    with pytest.warns(UserWarning, match="stay within max_memory_gb"):
+    with pytest.warns(UserWarning, match="stay within chunk_memory_gb"):
         got = _resolve_target_chunk_size(BENCH_CELLS, SKEW_NORMAL_B, N_TRT, 3026, asked, 4.0)
     assert got < asked
     assert target_bytes_per_item(BENCH_CELLS, SKEW_NORMAL_B, N_TRT) * got <= 4e9
@@ -123,7 +126,7 @@ def test_severity_note_appears_only_when_the_chunk_collapses_to_one():
         _resolve_target_chunk_size(MOI5_CELLS, int(NO_APPROX_B), N_TRT, 2875, 200, 4.0)
     assert "no_approximation" in str(severe[0].message)
 
-    with pytest.warns(UserWarning, match="stay within max_memory_gb") as mild:
+    with pytest.warns(UserWarning, match="stay within chunk_memory_gb") as mild:
         got = _resolve_target_chunk_size(BENCH_CELLS, SKEW_NORMAL_B, N_TRT, 3026, 200, 4.0)
     assert got > 1
     assert "may still exhaust memory" not in str(mild[0].message)
@@ -190,5 +193,5 @@ def test_a_tiny_budget_does_not_change_results():
     )
     reference = run_discovery_analysis(**common)
     with pytest.warns(UserWarning):
-        squeezed = run_discovery_analysis(**common, max_memory_gb=1e-7)
+        squeezed = run_discovery_analysis(**common, chunk_memory_gb=1e-7)
     pd.testing.assert_frame_equal(reference, squeezed)

@@ -41,16 +41,23 @@ _MU_FLOOR = 1e-10
 
 @dataclass
 class GlmFitBatchResult:
-    coefs: np.ndarray  # (p, k)
-    fitted_values: np.ndarray  # (n, k)
+    coefs: np.ndarray  # (k, p)
+    fitted_values: np.ndarray  # (k, n)
     deviance: np.ndarray  # (k,)
     n_iter: np.ndarray  # (k,)
     converged: np.ndarray  # (k,) bool
 
 
 def _as_2d(Y: np.ndarray) -> tuple[np.ndarray, bool]:
+    """Promote a single response vector to a batch of one.
+
+    Shapes here are batch-axis-first -- `(k, n)`, k responses of n
+    observations -- matching numpy's own batched-linalg convention
+    (`np.linalg.solve` takes `(k, p, p)`), keeping each response contiguous,
+    and letting the normal equations be assembled with no transposes at all.
+    """
     if Y.ndim == 1:
-        return Y[:, None], True
+        return Y[None, :], True
     return Y, False
 
 
@@ -58,14 +65,14 @@ def _poisson_deviance(y: np.ndarray, mu: np.ndarray) -> np.ndarray:
     # 2 * sum(y*log(y/mu) - (y - mu)), with the convention y*log(y/mu) = 0 at y = 0
     with np.errstate(divide="ignore", invalid="ignore"):
         term = np.where(y > 0, y * np.log(y / mu), 0.0)
-    return 2.0 * np.sum(term - (y - mu), axis=0)
+    return 2.0 * np.sum(term - (y - mu), axis=-1)
 
 
 def _binomial_deviance(y: np.ndarray, mu: np.ndarray) -> np.ndarray:
     with np.errstate(divide="ignore", invalid="ignore"):
         t1 = np.where(y > 0, y * np.log(y / mu), 0.0)
         t2 = np.where(y < 1, (1 - y) * np.log((1 - y) / (1 - mu)), 0.0)
-    return 2.0 * np.sum(t1 + t2, axis=0)
+    return 2.0 * np.sum(t1 + t2, axis=-1)
 
 
 def _batched_wls_solve(
@@ -76,8 +83,8 @@ def _batched_wls_solve(
     X: (n, p) shared design matrix. X_outer_flat: (n, p*p), the precomputed
     (and iteration-independent) per-row outer product X[n,:] outer X[n,:],
     flattened -- passed in rather than recomputed every IRLS iteration.
-    w, z: (n, k) per-column IRLS weights and working response.
-    Returns beta: (p, k).
+    w, z: (k, n) per-response IRLS weights and working response.
+    Returns beta: (k, p).
 
     Deliberately expressed as two plain matmuls (BLAS-backed) rather than a
     per-iteration `einsum` building a (k, p, n) intermediate: for realistic
@@ -89,11 +96,12 @@ def _batched_wls_solve(
     anything of size k*p*n.
     """
     p = X.shape[1]
-    A_flat = X_outer_flat.T @ w  # (p*p, n) @ (n, k) -> (p*p, k)
-    A = A_flat.T.reshape(-1, p, p)  # (k, p, p)
-    b = X.T @ (w * z)  # (p, n) @ (n, k) -> (p, k)
-    beta = np.linalg.solve(A, b.T[:, :, None])[:, :, 0]  # (k, p)
-    return beta.T  # (p, k)
+    # Batch-axis-first means both products come out already batched, and the
+    # reshape below is a view rather than a copy -- with (n, k) inputs the
+    # same computation needs a transpose on each of A and b.
+    A = (w @ X_outer_flat).reshape(-1, p, p)  # (k, n) @ (n, p*p) -> (k, p, p)
+    b = (w * z) @ X  # (k, n) @ (n, p) -> (k, p)
+    return np.linalg.solve(A, b[:, :, None])[:, :, 0]  # (k, p)
 
 
 def _fit_batch(
@@ -101,9 +109,9 @@ def _fit_batch(
 ) -> GlmFitBatchResult:
     n, p = X.shape
     Y, was_1d = _as_2d(Y)
-    n_y, k = Y.shape
+    k, n_y = Y.shape
     if n_y != n:
-        raise ValueError(f"X has {n} rows but Y has {n_y}")
+        raise ValueError(f"X has {n} rows but Y has {n_y} columns")
 
     if family == "poisson":
         mu = Y + 0.1
@@ -118,14 +126,14 @@ def _fit_batch(
     dev_old = np.full(k, np.inf)
     converged = np.zeros(k, dtype=bool)
     n_iter = np.zeros(k, dtype=int)
-    beta = np.zeros((p, k))
+    beta = np.zeros((k, p))
     X_outer_flat = (X[:, :, None] * X[:, None, :]).reshape(n, p * p)  # iteration-independent
 
     # `mu` is carried forward as loop state (rather than recomputed via exp(eta)
     # at the top of every iteration) and every elementwise op below is
     # restricted to the not-yet-converged columns -- at real dataset scale
     # (hundreds of genes/targets x hundreds of thousands of cells), each full
-    # (n, k) elementwise pass costs real wall-clock time, and IRLS otherwise
+    # (k, n) elementwise pass costs real wall-clock time, and IRLS otherwise
     # redundantly recomputes exp(eta) == mu twice per iteration.
     for it in range(1, maxit + 1):
         active = ~converged
@@ -134,14 +142,15 @@ def _fit_batch(
             break
         all_active = n_active == k  # avoid a full-array fancy-index *copy* in
         # the (extremely common) case where every column is still active --
-        # a boolean-indexing copy of the whole (n, k) array every iteration
+        # a boolean-indexing copy of the whole (k, n) array every iteration
         # was measured to cost more than the work it saves once most/all
         # columns converge together, which is the typical case here since
         # every gene/target shares the same design matrix.
 
-        Y_a = Y if all_active else Y[:, active]
-        eta_a = eta if all_active else eta[:, active]
-        mu_a = mu if all_active else mu[:, active]
+        # Row slices: each response is contiguous, so this copy is sequential.
+        Y_a = Y if all_active else Y[active]
+        eta_a = eta if all_active else eta[active]
+        mu_a = mu if all_active else mu[active]
 
         if family == "poisson":
             dmu_deta_a = mu_a
@@ -154,7 +163,7 @@ def _fit_batch(
         z_a = eta_a + (Y_a - mu_a) / dmu_deta_a
 
         beta_a = _batched_wls_solve(X, X_outer_flat, w_a, z_a)
-        eta_new_a = X @ beta_a
+        eta_new_a = beta_a @ X.T  # (k_a, p) @ (p, n) -> (k_a, n)
 
         mu_new_a = (
             np.clip(np.exp(eta_new_a), _MU_FLOOR, None)
@@ -174,9 +183,9 @@ def _fit_batch(
             n_iter[:] = it
             converged[:] = newly_converged_a
         else:
-            beta[:, active] = beta_a
-            eta[:, active] = eta_new_a
-            mu[:, active] = mu_new_a
+            beta[active] = beta_a
+            eta[active] = eta_new_a
+            mu[active] = mu_new_a
             dev_old[active] = dev_new_a
             n_iter[active] = it
             converged[active] = newly_converged_a
@@ -185,8 +194,8 @@ def _fit_batch(
 
     if was_1d:
         return GlmFitBatchResult(
-            coefs=beta[:, 0],
-            fitted_values=mu_final[:, 0],
+            coefs=beta[0],
+            fitted_values=mu_final[0],
             deviance=dev_old[0],
             n_iter=n_iter[0],
             converged=converged[0],

@@ -56,12 +56,13 @@ result = run_discovery_analysis(
     seed=0,
 )
 # result: DataFrame with one row per pair --
-#   response_id, grna_target, p_value, fold_change, log_2_fold_change, z_orig, stage
+#   response_id, grna_target, p_value, fold_change, se_fold_change,
+#   pct_change, pct_change_ci_low, pct_change_ci_high, z_orig, stage
 ```
 
 See [TUTORIAL.md](TUTORIAL.md) for a complete, runnable walkthrough
 (including how to build each input from scratch) and for guidance on
-picking `target_chunk_size` and `max_memory_gb` for your dataset.
+picking `target_chunk_size` for your dataset.
 
 ## API reference
 
@@ -81,7 +82,7 @@ run_discovery_analysis(
     resampling_approximation: str = "skew_normal",
     seed: int | None = None,
     target_chunk_size: int = 200,
-    max_memory_gb: float = 4.0,
+    chunk_memory_gb: float = 1.0,
 ) -> pd.DataFrame
 ```
 
@@ -95,8 +96,8 @@ run_discovery_analysis(
 | `side` | `"left"` \| `"both"` \| `"right"` | Test sidedness, matching sceptre's own convention. Use `"left"` for expected-repression screens (e.g. CRISPRi enhancer knockdown), `"both"` for a two-sided test. |
 | `resampling_approximation` | `"skew_normal"` \| `"no_approximation"` | `"skew_normal"` (default, matching sceptre): pairs whose initial empirical p-value (`B1=499` draws) is `<= 0.02` get a skew-normal tail fit from a further `B2=4999` draws, giving p-values far smaller than `1/(B1+1)` could resolve. `"no_approximation"` fits no curve and instead draws a third, larger empirical batch, sized by R's own rule: `B3 = ceil(mult * n_pairs / multiple_testing_alpha)`, `mult = 10` two-sided and `5` one-sided. That grows linearly in the number of pairs and is much slower -- see [Scope and limitations](#scope-and-limitations). Any other value raises `ValueError`. |
 | `seed` | `int \| None` | Seeds the `numpy.random.Generator` used for all CRT draws in the run. Note this does **not** reproduce sceptre's own R/C++ RNG stream bit-for-bit (different algorithm and seeding scheme) -- see [Scope and limitations](#scope-and-limitations). |
-| `target_chunk_size` | `int` | How many gRNA targets to fit and CRT-draw at once. This is an **upper bound, not a mandate** -- it is reduced automatically to respect `max_memory_gb`, so no value here can exhaust memory. Lower it to trade batching width for memory; raise it for a modest speed gain if the budget allows. Default `200`. |
-| `max_memory_gb` | `float` | Ceiling on the working arrays pysceptre holds at once, and the single number that answers "how much memory will this run need?". Both stages size their chunks to stay under it. Two costs are linear in chunk size and both count against it: the dense `(n_cells, k)` arrays IRLS needs (the response plus `mu`, weights and working response -- unavoidable, since IRLS is defined on a dense working response) and the CRT draws a chunk holds. Reductions emit a warning naming which part is expensive, and never change results. Default `4.0`. |
+| `target_chunk_size` | `int` | How many gRNA targets to fit and CRT-draw at once. An **upper bound, not a mandate** -- it is reduced automatically to respect `chunk_memory_gb`, so no value here can exhaust memory. Default `200`. |
+| `chunk_memory_gb` | `float` | Budget for the arrays a *chunk* holds, which sizes how many genes or targets are processed together. **Not** a cap on the process's memory -- the input, retained state and allocator overhead sit outside it. **You should not normally need to change this.** The default is both the fastest and the leanest setting measured: a larger budget produces chunks past the point where batching still pays, costing memory for no throughput (on moi5, 4 GB gave 8.42 GB peak against 3.78 GB at 1 GB, for the same runtime). Default `1.0`. |
 
 **Returns** a `pd.DataFrame`, one row per input pair, with columns:
 
@@ -105,7 +106,10 @@ run_discovery_analysis(
 | `response_id`, `grna_target` | Echoed from `pairs`. |
 | `p_value` | The test p-value (see `stage`). |
 | `fold_change` | Estimated fold change of the treated group vs. complement control (deterministic given the data -- no resampling randomness). |
-| `log_2_fold_change` | `log2(fold_change)`. |
+| `pct_change` | Effect size as a percent change from baseline, `(fold_change - 1) * 100`. |
+| `pct_change_ci_low`, `pct_change_ci_high` | Two-sided 95% Wald interval on `pct_change`, from `se_fold_change`. Deterministic, unlike the resampled p-value, so it is a useful independent read on pairs sitting near a significance threshold. Note it is a normal approximation, not sceptre's test. |
+| `log2(fold_change)` | Not returned -- a pure transform of a column already present. Compute it if you need it. |
+| `se_fold_change` | Standard error of `fold_change`, on the same ratio scale, so `fold_change ± 1.96 × se_fold_change` is a Wald interval around 1 (no effect). Deterministic, unlike the resampled p-value. |
 | `z_orig` | The observed test statistic (before resampling). |
 | `stage` | `1` = reported from the initial `B1=499`-draw empirical p-value (not significant enough to escalate). `2` = escalated to a skew-normal tail fit on `B2=4999` further draws. `3` = an empirical p-value from a further batch, reached either because `resampling_approximation="no_approximation"` (so no curve is fit, and the `B3` draws are used) or because a skew-normal fit was attempted and *rejected* (see `check_sn_tail`/`check_for_outliers` in `test_statistic/skew_normal.py`), in which case the already-drawn `B2=4999` statistics are used. |
 
@@ -170,29 +174,14 @@ importable and unit-tested, for anyone extending or debugging the pipeline:
 
 ## Performance
 
-Real-dataset numbers (586k-cell, 292-gene, 3,026-target synthetic benchmark
-shaped like the moi5 dataset this was validated against -- see
-`scripts/benchmark_pairs.py`):
+Benchmarked on the `day0_grna20` single-cell CRISPR screen: 567,690 cells
+after QC, 237 genes appearing in pairs, 3,071 gRNA targets, 34,886 QC-passing
+pairs, two-sided, CRT resampling. Timings and the comparison against R sceptre
+are in `paper/results.md`, each reported with the hardware it was measured on.
 
-| Stage | Time |
-|---|---|
-| Gene GLM fits (`fit_all_genes`) | ~5.4 min |
-| gRNA-target GLM fits + CRT draws (`fit_all_targets`, chunked) | ~48 min |
-| Per-pair test statistic + escalation (~35k pairs) | ~8 min |
-| **Total** | **~1 hour** |
-
-For comparison, on the real moi5 dataset (244 genes, 131k cells, 2,875
-targets, 33,066 pairs) an end-to-end run took **28 minutes** (~51 ms/pair).
-
-Getting here from an initial direct port (which had a few genuine
-performance bugs -- an accidentally-dense CRT sampler, unbatched per-target
-GLM fits, and an OpenBLAS multi-threading pathology for many small matmuls,
-among others) is itself informative for anyone optimizing similar code; see
-git history / `scripts/benchmark_pairs.py` for the profiling trail.
-
-If you don't have `numba` installed, the CRT sampler falls back to a slower
-pure-numpy path -- install the `fast` extra (`pip install -e ".[fast]"`) to
-get the full performance above.
+Reproduce with `scripts/benchmark_vs_r.R` (R side, which also exports the
+exact inputs) and `scripts/benchmark_pysceptre.py` (pysceptre side), or inside
+the pinned container in `docker/`.
 
 ## Validation
 

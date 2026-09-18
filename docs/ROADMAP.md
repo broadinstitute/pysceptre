@@ -33,10 +33,56 @@ R does not hit this because it processes one target at a time.
   `B_total * chunk_size * median_n_trt` exceeds a memory budget, and
   auto-shrink `target_chunk_size` on this path.
 - **Stream (proper fix):** an empirical p-value needs only a running count of
-  `#{null >= obs}`, so draws never need to be materialized at once. Slice B3
-  into batches and update counters for every gene paired with the target.
-  Bounded memory, no statistical change. Restructures the per-target loop, so
-  it is its own PR.
+  `#{null >= obs}`, so draws never need to be materialized at once. Slice the
+  draws into batches and update counters for every gene paired with the
+  target. Bounded memory, no statistical change. Restructures the per-target
+  loop, so it is its own PR.
+
+**Reprioritised — this is worth more than originally scoped.** It was filed as
+a `no_approximation` fix, but profiling the moi5 run shows draws dominate the
+target stage on the *default* `skew_normal` path too: 16.5 MB of the 20.7 MB
+per target, so a 193-target chunk holds 3.2 GB of draws out of a 3.99 GB
+working set. Streaming would cut the dominant memory term for **every**
+analysis, not just the pathological one. It is currently the single
+highest-value memory change available.
+
+### T1.4 `chunk_memory_gb` under-predicts actual RSS — PARTLY ADDRESSED
+
+Measured on moi5: a 4.0 GB budget produced a 9.58 GB peak RSS -- roughly 2.4x.
+The guard is behaving correctly (it capped the chunk at 193 targets); the
+budget simply counts *logical array bytes* and ignores two things:
+
+- construction transients -- `crt_index_sampler_fast` was measured growing RSS
+  by 674 MB while materializing 158 MB of logical draws, about 4x;
+- allocator retention -- freed arenas are not promptly returned to the OS, so
+  a high-water mark accumulates across stages.
+
+**Partly addressed.** The knob was renamed from `max_memory_gb` to
+`chunk_memory_gb`, because it governs chunk sizing rather than process memory
+and the old name invited exactly this confusion; its default dropped from 4.0
+to 1.0, which measured both faster and leaner; and the h5ad input removed the
+largest ungoverned term. Peak on moi5 went 9.77 GB -> 3.78 GB.
+
+What remains: the per-column factor still under-predicts at small chunk sizes
+because roughly 1 GB of the gene stage is a floor from per-gene
+precomputation churn that no chunk size reduces, and freed arenas are not
+returned to the OS so the peak is cumulative across phases rather than the
+largest phase.
+
+A user asking for 4 GB should not get 9.6 GB. Two options: document it
+explicitly as a logical-bytes budget rather than an RSS guarantee, or apply a
+calibrated safety factor. **Measure the budget-to-RSS relationship across
+several budget values before choosing a factor** -- do not guess a constant.
+
+Accounting for the moi5 peak, for reference:
+
+| component | |
+|---|---|
+| target stage working set | 3.99 GB (193 x 20.7 MB) |
+| gene stage working set | 1.02 GB |
+| retained response CSR | 0.27 GB |
+| parquet load transient | ~0.36 GB plus COO/CSR copies |
+| unaccounted (transients + allocator) | ~4 GB |
 
 ### T1.2 R ground truth for `no_approximation`
 
@@ -57,6 +103,11 @@ variance and stays non-negative for the real `D`; an earlier NaN report came
 from a benchmark using a random `D` that violated the invariant.
 
 ## Tier 2 — performance
+
+**Benchmarking is paused** while pysceptre keeps changing -- see
+`paper/status.md`. The work below is still worth doing; measuring it on the
+container is what waits, so that one rebuild covers several changes.
+
 
 Ranked by measured win over effort.
 
@@ -120,9 +171,11 @@ Output is bit-for-bit identical, row order included.
 ### Note on the performance figures
 
 `README.md`'s performance table does not reproduce. Running
-`scripts/benchmark_pairs.py` unmodified -- the same script the table cites, at
-its own scale of 586,309 cells / 292 genes / 3,026 targets / 34,177 pairs --
-took **11.0 minutes** (662 s) against the table's **~1 hour**:
+the synthetic benchmark the table cites -- 586,309 cells / 292 genes /
+3,026 targets / 34,177 pairs -- took **11.0 minutes** (662 s) against the
+table's **~1 hour**. (That script has since been removed: its constants were
+copied from the real day0_grna20 dataset, which we now hold, so simulating it
+was pointless.)
 
 | | this run | README table |
 |---|---|---|
@@ -202,12 +255,16 @@ extra pattern numba uses.
 
 ## Tier 4 — scope extensions
 
+Reprioritised: the preprint now drives this tier. The calibration check is
+committed; the rest waits on dataset and scope decisions tracked in
+`paper/status.md`.
+
 Each changes what the package is. Listed, not sized — these need a scientific
 call on whether they are wanted.
 
 | Item | Ports | Why it matters |
 |---|---|---|
-| Calibration check | `run_calibration_check` | Establishes that p-values are calibrated before discoveries are trusted. Strongest candidate. |
+| **Calibration check** | `run_calibration_check` | **COMMITTED — required for the preprint.** Establishes that p-values are calibrated rather than merely concordant with R. Reuses the existing engine unchanged; only negative-control target construction and reporting are new. See `paper/status.md`. |
 | Positive-control pairs | PC pair handling | R sizes `B3` off `max(discovery, positive_control)`; we collapse that for lack of a PC set. |
 | `singleton` gRNA integration | `grna_integration_strategy` | Currently union-only. |
 | `permutations` mechanism | permutation resampling | Would make `B3=24999` meaningful. |

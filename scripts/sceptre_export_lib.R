@@ -1,63 +1,22 @@
-#!/usr/bin/env Rscript
-# Export a post-QC sceptre object into the parquet bundle pysceptre reads.
+# Shared extraction logic: get an in-memory post-QC sceptre object out of R.
 #
-# Generalises the moi5-specific export_moi5_for_pysceptre.R: it takes any
-# sceptre object plus its backing ondisc matrices, and is driven by flags
-# rather than hardcoded paths.
+# This writes a columnar intermediate, which scripts/make_h5ad.py converts to
+# the h5ad pysceptre actually reads. R is involved only to extract a dataset
+# from ondisc once; it is not part of pysceptre's pipeline.
 #
-# Two deliberate differences from the older script:
-#
-#   * The response matrix is written as a SPARSE TRIPLET, never densified. The
-#     old script did `as.matrix()` on the whole thing, which needed ~38 GiB for
-#     the full moi5 gene set and was OOM-killed. Genes are read one at a time
-#     straight out of the odm (~0.4 ms each) and only their nonzero entries are
-#     kept.
-#   * Output is parquet with a metadata.json sidecar, rather than raw float64
-#     .bin blobs plus .txt label files that carry no dtype, shape or column
-#     information.
-#
-# Usage:
-#   export_sceptre_to_parquet.R --sceptre-object so.rds --response-odm gene.odm \
-#       --grna-odm grna.odm --out-dir out/ [--all-genes] [--discovery-result r.rds]
-#
-# Read the result with scripts/sceptre_parquet.py::load_export.
+# Kept separate from the CLI so the benchmark scripts can export the *exact*
+# object it is about to analyze, rather than re-deriving inputs and hoping they
+# match. They do not: re-running assign_grnas(thresholding, threshold = 5) on
+# the moi5 object reproduced only 39 of 2,974 targets' cell sets, which is
+# enough to break fold-change agreement (a deterministic quantity) from ~1e-15
+# to 0.67.
 
 suppressPackageStartupMessages({
   library(sceptre)
-  library(ondisc)
   library(arrow)
   library(jsonlite)
+  library(Matrix)
 })
-
-parse_args <- function(argv) {
-  opts <- list(all_genes = FALSE, discovery_result = NA_character_)
-  i <- 1
-  while (i <= length(argv)) {
-    key <- argv[[i]]
-    if (key == "--all-genes") {
-      opts$all_genes <- TRUE
-      i <- i + 1
-      next
-    }
-    if (i + 1 > length(argv)) stop(sprintf("%s needs a value", key), call. = FALSE)
-    value <- argv[[i + 1]]
-    switch(key,
-      "--sceptre-object"   = opts$sceptre_object <- value,
-      "--response-odm"     = opts$response_odm <- value,
-      "--grna-odm"         = opts$grna_odm <- value,
-      "--out-dir"          = opts$out_dir <- value,
-      "--discovery-result" = opts$discovery_result <- value,
-      stop(sprintf("unknown argument: %s", key), call. = FALSE)
-    )
-    i <- i + 2
-  }
-  for (required in c("sceptre_object", "response_odm", "out_dir")) {
-    if (is.null(opts[[required]])) {
-      stop(sprintf("--%s is required", gsub("_", "-", required)), call. = FALSE)
-    }
-  }
-  opts
-}
 
 qc_passing_pairs <- function(so) {
   pairs <- so@discovery_pairs_with_info
@@ -70,30 +29,21 @@ qc_passing_pairs <- function(so) {
   )
 }
 
-main <- function() {
-  opts <- parse_args(commandArgs(trailingOnly = TRUE))
-  dir.create(opts$out_dir, showWarnings = FALSE, recursive = TRUE)
-  t_start <- Sys.time()
-
-  cat("Reattaching odm-backed matrices...\n")
-  so <- sceptre:::read_ondisc_backed_sceptre_object(
-    sceptre_object_fp = opts$sceptre_object,
-    response_odm_file_fp = opts$response_odm,
-    grna_odm_file_fp = if (is.null(opts$grna_odm)) opts$response_odm else opts$grna_odm
-  )
-
-  # 1-based indices into the full cell universe; every export below is in
-  # cells_in_use order, so downstream indices are contiguous and 0-based.
+# The .parquet files written here are an intermediate, not the dataset:
+# scripts/make_h5ad.py converts them and deletes them.
+export_sceptre_object <- function(so, out_dir, all_genes = FALSE,
+                                  source_label = "<in-memory>") {
+  dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
   cells_in_use <- so@cells_in_use
   n_cells <- length(cells_in_use)
 
   pairs <- qc_passing_pairs(so)
-  write_parquet(pairs, file.path(opts$out_dir, "pairs.parquet"))
+  write_parquet(pairs, file.path(out_dir, "pairs.parquet"))
   cat("  pairs:", nrow(pairs), "passing QC\n")
 
   response_matrix <- sceptre:::get_response_matrix(so)
   all_gene_ids <- rownames(response_matrix)
-  gene_ids <- if (opts$all_genes) all_gene_ids else sort(unique(pairs$response_id))
+  gene_ids <- if (all_genes) all_gene_ids else sort(unique(pairs$response_id))
   missing <- setdiff(gene_ids, all_gene_ids)
   if (length(missing)) {
     stop(sprintf("%d pair genes absent from the response matrix, e.g. %s",
@@ -119,21 +69,21 @@ main <- function() {
     if (k %% 50 == 0) cat("   ", k, "/", length(gene_rows), "\n")
   }
   triplets <- do.call(rbind, chunks)
-  write_parquet(triplets, file.path(opts$out_dir, "response_matrix.parquet"))
+  write_parquet(triplets, file.path(out_dir, "response_matrix.parquet"))
   density <- n_entries / (length(gene_ids) * n_cells)
   cat("   ", format(n_entries, big.mark = ","), "nonzero entries",
       sprintf("(%.1f%% dense)", 100 * density), "in", format(Sys.time() - t0), "\n")
 
   write_parquet(
     data.frame(gene_index = seq_along(gene_ids) - 1L, response_id = gene_ids),
-    file.path(opts$out_dir, "gene_ids.parquet")
+    file.path(out_dir, "gene_ids.parquet")
   )
 
   cat("Exporting covariate matrix...\n")
   covariate_matrix <- so@covariate_matrix[cells_in_use, , drop = FALSE]
   covariate_df <- as.data.frame(covariate_matrix)
   names(covariate_df) <- colnames(covariate_matrix)
-  write_parquet(covariate_df, file.path(opts$out_dir, "covariate_matrix.parquet"))
+  write_parquet(covariate_df, file.path(out_dir, "covariate_matrix.parquet"))
   cat("   ", nrow(covariate_df), "cells x", ncol(covariate_df), "covariates\n")
 
   cat("Exporting gRNA target -> treated cells...\n")
@@ -148,17 +98,13 @@ main <- function() {
     stop("gRNA cell indices exceed the cells_in_use count -- indexing convention changed",
          call. = FALSE)
   }
-  write_parquet(target_rows, file.path(opts$out_dir, "grna_target_cells.parquet"))
+  write_parquet(target_rows, file.path(out_dir, "grna_target_cells.parquet"))
   cat("   ", length(grna_group_idxs), "targets,", nrow(target_rows), "membership rows\n")
 
   discovery_result <- so@discovery_result
-  if (!is.na(opts$discovery_result)) {
-    loaded <- readRDS(opts$discovery_result)
-    discovery_result <- if (is.data.frame(loaded)) loaded else loaded$discovery_result
-  }
   if (!is.null(discovery_result) && nrow(discovery_result) > 0) {
     write_parquet(as.data.frame(discovery_result),
-                  file.path(opts$out_dir, "discovery_result.parquet"))
+                  file.path(out_dir, "discovery_result.parquet"))
     cat("   R discovery_result:", nrow(discovery_result), "rows\n")
   } else {
     cat("   no R discovery_result present (pass --discovery-result to include one)\n")
@@ -172,7 +118,7 @@ main <- function() {
     n_targets = length(grna_group_idxs),
     n_pairs = nrow(pairs),
     n_nonzero = n_entries,
-    all_genes = opts$all_genes,
+    all_genes = all_genes,
     # Analysis parameters, so a pysceptre run can be set up to match.
     side_code = so@side_code,
     resampling_approximation = so@resampling_approximation,
@@ -184,12 +130,10 @@ main <- function() {
     formula = paste(deparse(so@formula_object), collapse = " "),
     sceptre_version = as.character(packageVersion("sceptre")),
     exported_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%S%z"),
-    source_object = normalizePath(opts$sceptre_object)
+    source_object = source_label
   )
-  write_json(metadata, file.path(opts$out_dir, "metadata.json"),
+  write_json(metadata, file.path(out_dir, "metadata.json"),
              auto_unbox = TRUE, pretty = TRUE)
 
-  cat("\nDone in", format(Sys.time() - t_start), "->", opts$out_dir, "\n")
+  invisible(out_dir)
 }
-
-main()

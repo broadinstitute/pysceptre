@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 
 from .discovery import (
-    _DEFAULT_MAX_MEMORY_GB,
+    _DEFAULT_CHUNK_MEMORY_GB,
     _DEFAULT_TARGET_CHUNK_SIZE,
     run_discovery_ntcells_complement,
 )
@@ -37,7 +37,7 @@ def run_discovery_analysis(
     multiple_testing_alpha: float = 0.1,
     seed: int | None = None,
     target_chunk_size: int = _DEFAULT_TARGET_CHUNK_SIZE,
-    max_memory_gb: float = _DEFAULT_MAX_MEMORY_GB,
+    chunk_memory_gb: float = _DEFAULT_CHUNK_MEMORY_GB,
 ) -> pd.DataFrame:
     """response_matrix: (n_genes, n_cells) dense ndarray or scipy.sparse matrix.
     gene_ids: row labels for response_matrix, in order.
@@ -51,10 +51,12 @@ def run_discovery_analysis(
         batch/hold in memory at once (see pipeline/discovery.py) -- lower this
         if you hit memory pressure, raise it for a modest speed gain if you
         have memory to spare.
-    max_memory_gb: ceiling on the working arrays pysceptre holds at once.
-        Both stages size their chunks to stay under it, so `target_chunk_size`
-        is an upper bound rather than a mandate and no value passed for it can
-        exhaust memory. Reductions are warned about and do not change results.
+    chunk_memory_gb: budget for the arrays a chunk holds, which sizes how many
+        genes or targets are processed together. Not a cap on the process's
+        memory -- the input, retained state and allocator overhead sit outside
+        it. You should not normally need to change this; the default is the
+        fastest and leanest setting measured. Reductions to
+        `target_chunk_size` are warned about and do not change results.
 
     Targets sceptre's complement-control-group + CRT discovery-analysis path
     (the only valid combination for high-MOI data -- see pipeline/discovery.py).
@@ -85,7 +87,7 @@ def run_discovery_analysis(
         side_code=side_code,
         seed=seed,
         target_chunk_size=target_chunk_size,
-        max_memory_gb=max_memory_gb,
+        chunk_memory_gb=chunk_memory_gb,
     )
 
 

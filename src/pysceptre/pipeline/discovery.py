@@ -29,19 +29,46 @@ from ..glm.nb_theta import estimate_theta
 from ..precompute.pieces import compute_precomputation_pieces
 from ..test_statistic.resampling import run_low_level_test_full
 
-# Ceiling on the working arrays pysceptre allocates at once, in GB. Both
-# stages size their chunk so they stay under it, so this is the single number
-# that answers "how much memory will this run need?".
+# Budget for the arrays a *chunk* holds, in GB. It sizes how many genes or
+# targets are processed together; it is NOT a cap on the process's memory,
+# which also carries the input, retained state and allocator overhead.
 #
-# 4.0 leaves real analyses effectively unchunked (a 244-gene, 131k-cell moi5
-# run needs ~0.02 GB of retained state and fits its whole gene set in one
-# chunk) while bounding the pathological cases: an unbounded target fit was
-# measured at 13.1 GB, and no_approximation draws at ~1 TB.
-_DEFAULT_MAX_MEMORY_GB = 4.0
+# Users are not expected to set this. 1.0 is both the fastest and the leanest
+# setting measured on moi5 -- a larger budget produces chunks past the point
+# where batching still pays, so it costs memory for no throughput:
+#
+#   budget   wall     peak RSS
+#    1 GB    315.7 s   3.78 GB
+#    2 GB    400.2 s   6.87 GB
+#    3 GB    430.1 s   7.36 GB
+#    4 GB    314.4 s   8.42 GB
+#
+# It exists as a parameter for datasets far outside that shape, and to bound
+# the pathological cases: an unbounded target fit measured 13.1 GB, and
+# no_approximation draws reach ~1 TB.
+_DEFAULT_CHUNK_MEMORY_GB = 1.0
 
-# Dense (n_cells, k) arrays an IRLS chunk needs: the responses plus mu,
-# weights and working response.
-_IRLS_ARRAYS_PER_COLUMN = 4
+# Dense (n_cells,)-sized arrays one IRLS column costs, measured rather than
+# counted from the source. Counting the obvious ones -- the responses plus mu,
+# weights and working response -- gives 4, which under-predicts peak RSS
+# badly: the IRLS loop also holds eta and per-iteration temporaries, and
+# `fit_all_genes` additionally churns a precomputation per gene.
+#
+# Measured on moi5 (131,055 cells, p=12), growth attributable to
+# `fit_all_genes`:
+#
+#   budget   chunk   predicted at 4   actual   implied arrays/column
+#    0.2 GB     47          0.20 GB   1.23 GB                   25.0
+#    0.5 GB    119          0.50 GB   2.38 GB                   19.1
+#    1.0 GB    238          1.00 GB   2.59 GB                   10.4
+#
+# 10 is the asymptotic figure at useful chunk sizes. Note the actual cost also
+# carries a roughly 1 GB floor from the per-gene precomputation loop, which
+# runs once per gene regardless of chunking and so cannot be reduced by
+# shrinking the chunk -- which is why the implied factor rises at small
+# budgets. The budget therefore bounds the part that scales with the chunk,
+# not total RSS. See ROADMAP T1.4.
+_IRLS_ARRAYS_PER_COLUMN = 10
 _BYTES_PER_FLOAT = 8
 
 
@@ -87,6 +114,15 @@ class TargetPrecomputation:
     synthetic_idxs: list[np.ndarray]
 
 
+# 97.5th percentile of the standard normal, for two-sided 95% intervals.
+_CI_Z = 1.959963984540054
+
+
+def _as_pct(fold_change: float) -> float:
+    """Fold change (1 = no effect) as a percent change from baseline."""
+    return (fold_change - 1.0) * 100.0
+
+
 def _get_row(response_matrix, i: int) -> np.ndarray:
     """Returns gene row i as a dense 1D float array, for either a dense
     ndarray (n_genes, n_cells) or a scipy.sparse matrix in CSR-like format."""
@@ -114,8 +150,8 @@ def irls_bytes_per_column(n_cells: int) -> int:
     return _IRLS_ARRAYS_PER_COLUMN * n_cells * _BYTES_PER_FLOAT
 
 
-def chunk_size_for_budget(bytes_per_item: float, n_items: int, max_memory_gb: float) -> int:
-    """Largest chunk whose working arrays fit `max_memory_gb`, at least 1.
+def chunk_size_for_budget(bytes_per_item: float, n_items: int, chunk_memory_gb: float) -> int:
+    """Largest chunk whose working arrays fit `chunk_memory_gb`, at least 1.
 
     Every per-chunk cost in this module is linear in the chunk size, so one
     budget and one division covers all of them -- there is no need for
@@ -123,10 +159,10 @@ def chunk_size_for_budget(bytes_per_item: float, n_items: int, max_memory_gb: fl
     """
     if bytes_per_item <= 0:
         return max(1, n_items)
-    return max(1, min(n_items, int(max_memory_gb * 1e9 // bytes_per_item)))
+    return max(1, min(n_items, int(chunk_memory_gb * 1e9 // bytes_per_item)))
 
 
-def gene_chunk_size_for_budget(n_cells: int, n_genes: int, max_memory_gb: float) -> int:
+def gene_chunk_size_for_budget(n_cells: int, n_genes: int, chunk_memory_gb: float) -> int:
     """How many genes to densify and fit at once.
 
     Densifying every gene at once is what made a genome-wide run
@@ -139,7 +175,7 @@ def gene_chunk_size_for_budget(n_cells: int, n_genes: int, max_memory_gb: float)
     `np.linalg.solve` whose blocking depends on the batch width -- measured
     spread ~1e-15, which cannot move a rank-based p-value.
     """
-    return chunk_size_for_budget(irls_bytes_per_column(n_cells), n_genes, max_memory_gb)
+    return chunk_size_for_budget(irls_bytes_per_column(n_cells), n_genes, chunk_memory_gb)
 
 
 def fit_all_genes(
@@ -147,40 +183,42 @@ def fit_all_genes(
     gene_ids: list[str],
     covariate_matrix: np.ndarray,
     *,
-    max_memory_gb: float = _DEFAULT_MAX_MEMORY_GB,
+    chunk_memory_gb: float = _DEFAULT_CHUNK_MEMORY_GB,
 ) -> dict[str, GenePrecomputation]:
     """Batched Poisson IRLS across genes (they share the full covariate
     matrix), then per-gene theta estimation and precomputation pieces.
 
-    Genes are fit in chunks that fit `max_memory_gb` rather than all at once;
+    Genes are fit in chunks that fit `chunk_memory_gb` rather than all at once;
     see `gene_chunk_size_for_budget`. Only the fit is transient -- the
     returned precomputations are just coefficients and theta (80 bytes per
     gene), so nothing large is retained.
     """
     n_cells = covariate_matrix.shape[0]
     dfr = covariate_matrix.shape[0] - covariate_matrix.shape[1]
-    chunk = gene_chunk_size_for_budget(n_cells, len(gene_ids), max_memory_gb)
+    chunk = gene_chunk_size_for_budget(n_cells, len(gene_ids), chunk_memory_gb)
 
     out: dict[str, GenePrecomputation] = {}
     for start in range(0, len(gene_ids), chunk):
         chunk_ids = gene_ids[start : start + chunk]
-        Y = np.empty((n_cells, len(chunk_ids)))
+        # Gene-major: each gene is a contiguous row, both to write here and to
+        # read back below. See glm/irls.py::_as_2d on the convention.
+        Y = np.empty((len(chunk_ids), n_cells))
         for j in range(len(chunk_ids)):
-            Y[:, j] = _get_row(response_matrix, start + j)
+            Y[j] = _get_row(response_matrix, start + j)
 
         fit = fit_poisson_glm_batch(covariate_matrix, Y)
 
         for j, gene_id in enumerate(chunk_ids):
-            y_j = Y[:, j]
-            theta_est, method = estimate_theta(y=y_j, mu=fit.fitted_values[:, j], dfr=dfr)
+            y_j = Y[j]
+            theta_est, method = estimate_theta(y=y_j, mu=fit.fitted_values[j], dfr=dfr)
             lo, hi = _THETA_BOUNDS
             theta = max(min(theta_est, hi), lo)
             # Built here only to read off the conditioning diagnostics, then
             # dropped -- see GenePrecomputation. It is rebuilt per gene per
             # target chunk in run_discovery_ntcells_complement.
-            pieces = compute_precomputation_pieces(y_j, covariate_matrix, fit.coefs[:, j], theta)
+            pieces = compute_precomputation_pieces(y_j, covariate_matrix, fit.coefs[j], theta)
             out[gene_id] = GenePrecomputation(
-                fitted_coefs=fit.coefs[:, j],
+                fitted_coefs=fit.coefs[j],
                 theta=theta,
                 theta_method=method,
                 theta_clamped=not (lo <= theta_est <= hi),
@@ -301,16 +339,17 @@ def fit_all_targets(
     share the full covariate matrix), then a CRT draw per target."""
     n_cells = covariate_matrix.shape[0]
     target_ids = list(grna_target_cells.keys())
-    Y = np.zeros((n_cells, len(target_ids)))
+    # Target-major, matching the gene fit and glm/irls.py's convention.
+    Y = np.zeros((len(target_ids), n_cells))
     for k, target_id in enumerate(target_ids):
-        Y[grna_target_cells[target_id], k] = 1.0
+        Y[k, grna_target_cells[target_id]] = 1.0
 
     fit = fit_binomial_glm_batch(covariate_matrix, Y)
 
     out: dict[str, TargetPrecomputation] = {}
     B_total = B1 + B2 + B3
     for k, target_id in enumerate(target_ids):
-        fitted_probabilities = fit.fitted_values[:, k]
+        fitted_probabilities = fit.fitted_values[k]
         synthetic_idxs = crt_index_sampler_fast(fitted_probabilities, B_total, rng)
         out[target_id] = TargetPrecomputation(
             trt_idxs=grna_target_cells[target_id],
@@ -357,21 +396,26 @@ def estimate_draw_memory_bytes(B_total: int, n_trt_values, chunk_size: int) -> f
 
 
 def target_chunk_size_for_budget(
-    n_cells: int, B_total: int, n_trt_values, n_targets: int, max_memory_gb: float
+    n_cells: int, B_total: int, n_trt_values, n_targets: int, chunk_memory_gb: float
 ) -> int:
     """Largest target chunk whose fit arrays *and* CRT draws fit the budget."""
     return chunk_size_for_budget(
-        target_bytes_per_item(n_cells, B_total, n_trt_values), n_targets, max_memory_gb
+        target_bytes_per_item(n_cells, B_total, n_trt_values), n_targets, chunk_memory_gb
     )
 
 
 def _resolve_target_chunk_size(
-    n_cells: int, B_total: int, n_trt_values, n_targets: int, chunk_size: int, max_memory_gb: float
+    n_cells: int,
+    B_total: int,
+    n_trt_values,
+    n_targets: int,
+    chunk_size: int,
+    chunk_memory_gb: float,
 ) -> int:
     """Clamp the requested chunk size to the memory budget, warning if it moves.
 
     `chunk_size` is an upper bound, not a mandate: whatever a caller asks for,
-    the working arrays stay under `max_memory_gb`. Chunk size affects only
+    the working arrays stay under `chunk_memory_gb`. Chunk size affects only
     peak memory and batching width, not which draws are taken --
     `fit_all_targets` draws per target in a fixed order, so the RNG stream is
     unchanged by where boundaries fall (`test_memory_guard.py` pins this).
@@ -383,7 +427,7 @@ def _resolve_target_chunk_size(
     """
     fitted = min(
         chunk_size,
-        target_chunk_size_for_budget(n_cells, B_total, n_trt_values, n_targets, max_memory_gb),
+        target_chunk_size_for_budget(n_cells, B_total, n_trt_values, n_targets, chunk_memory_gb),
     )
     if fitted >= chunk_size:
         return chunk_size
@@ -393,7 +437,7 @@ def _resolve_target_chunk_size(
     draw_part = _draw_bytes_per_target(B_total, n_trt_values)
     message = (
         f"reducing target_chunk_size from {chunk_size} to {fitted} to stay "
-        f"within max_memory_gb={max_memory_gb}: each target needs about "
+        f"within chunk_memory_gb={chunk_memory_gb}: each target needs about "
         f"{_format_bytes(per_target)} "
         f"({_format_bytes(fit_part)} of dense binomial-fit arrays over "
         f"{n_cells:,} cells, plus {_format_bytes(draw_part)} of CRT draws for "
@@ -427,11 +471,12 @@ def run_discovery_ntcells_complement(
     side_code: int = 0,
     seed: int | None = None,
     target_chunk_size: int = _DEFAULT_TARGET_CHUNK_SIZE,
-    max_memory_gb: float = _DEFAULT_MAX_MEMORY_GB,
+    chunk_memory_gb: float = _DEFAULT_CHUNK_MEMORY_GB,
 ) -> pd.DataFrame:
     """pairs: DataFrame with columns 'response_id', 'grna_target' -- the
     QC-passed pairs to test. Returns a DataFrame with one row per pair:
-    response_id, grna_target, p_value, fold_change, log_2_fold_change, z_orig, stage.
+    response_id, grna_target, p_value, fold_change, se_fold_change, pct_change,
+    pct_change_ci_low, pct_change_ci_high, z_orig, stage.
 
     Targets are fit and CRT-drawn in chunks of `target_chunk_size` rather than
     all at once: each target's B1+B2+B3 synthetic index sets are individually
@@ -443,7 +488,7 @@ def run_discovery_ntcells_complement(
     falling back to a slow one-target-at-a-time loop.
 
     `target_chunk_size` is an upper bound, not a mandate: it is reduced
-    automatically so the working arrays stay under `max_memory_gb`, so no
+    automatically so the working arrays stay under `chunk_memory_gb`, so no
     chunk size a caller passes can blow up memory. Both per-chunk costs are
     linear in the chunk size -- the dense binomial-fit arrays and the CRT
     draws -- which is why one budget covers both. That matters most for
@@ -454,7 +499,7 @@ def run_discovery_ntcells_complement(
     rng = np.random.default_rng(seed)
 
     gene_precomps = fit_all_genes(
-        response_matrix, gene_ids, covariate_matrix, max_memory_gb=max_memory_gb
+        response_matrix, gene_ids, covariate_matrix, chunk_memory_gb=chunk_memory_gb
     )
 
     pairs_by_target = {target_id: group for target_id, group in pairs.groupby("grna_target")}
@@ -466,7 +511,7 @@ def run_discovery_ntcells_complement(
         [len(grna_target_cells[t]) for t in target_ids_needed],
         len(target_ids_needed),
         target_chunk_size,
-        max_memory_gb,
+        chunk_memory_gb,
     )
 
     gene_row_index = {gene_id: i for i, gene_id in enumerate(gene_ids)}
@@ -515,12 +560,20 @@ def run_discovery_ntcells_complement(
                     fit_parametric_curve=fit_parametric_curve,
                     side_code=side_code,
                 )
+                half_width = _CI_Z * result.se_fold_change
                 rows[(gene_id, target_id)] = {
                     "response_id": gene_id,
                     "grna_target": target_id,
                     "p_value": result.p_value,
                     "fold_change": result.fold_change,
-                    "log_2_fold_change": np.log2(result.fold_change),
+                    "se_fold_change": result.se_fold_change,
+                    # The effect size people actually read, with its interval.
+                    # `log2(fold_change)` is not returned: it is a pure
+                    # transform of a column already present, so it would be
+                    # bytes rather than information.
+                    "pct_change": _as_pct(result.fold_change),
+                    "pct_change_ci_low": _as_pct(result.fold_change - half_width),
+                    "pct_change_ci_high": _as_pct(result.fold_change + half_width),
                     "z_orig": result.z_orig,
                     "stage": result.stage,
                 }

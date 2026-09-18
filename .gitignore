@@ -23,3 +23,7 @@ tests/validation/*.log
 # Local copies of real screen data pulled from GCS for validation/benchmarking.
 # Never commit these -- see the note above.
 test_data/
+
+# Docker build output
+docker/build.log
+docker/build_push.log

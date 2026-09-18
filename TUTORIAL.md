@@ -82,7 +82,8 @@ print(result.head())
 ```
 
 Output columns: `response_id`, `grna_target`, `p_value`, `fold_change`,
-`log_2_fold_change`, `z_orig`, `stage` (see [README.md](README.md#api-reference)
+`se_fold_change`, `pct_change`, `pct_change_ci_low`, `pct_change_ci_high`,
+`z_orig`, `stage` (see [README.md](README.md#api-reference)
 for what each means, in particular `stage`, which tells you whether a pair's
 p-value came from the initial empirical draws or a skew-normal tail fit).
 
@@ -107,7 +108,7 @@ result = run_discovery_analysis(
     pairs=pairs, side="left", seed=0,
 )
 hit = result[(result.response_id == strong_gene) & (result.grna_target == strong_target)]
-print(hit)  # expect a very small p_value, log_2_fold_change well below 0, stage == 2
+print(hit)  # expect a very small p_value, pct_change well below 0, stage == 2
 ```
 
 ## 5. Tuning for your dataset's scale
@@ -116,9 +117,8 @@ print(hit)  # expect a very small p_value, log_2_fold_change well below 0, stage
   logistic fits + CRT draws are held in memory simultaneously. If you're
   running out of memory at real dataset scale (thousands of targets, 500k+
   cells), lower this. If you have memory to spare, raising it gives a modest
-  speed gain from better batching. See `scripts/benchmark_pairs.py` for how
-  to measure this on synthetic data shaped like your real dataset before
-  committing to a full run.
+  speed gain from better batching. You should not normally need to set it --
+  `chunk_memory_gb` bounds it automatically.
 - **Install the `fast` extra** (`pip install -e ".[fast]"`) to get
   `numba`-accelerated CRT sampling. This is close to a strict improvement
   with no downside at real dataset scale; without it, `pysceptre` still
@@ -131,19 +131,3 @@ print(hit)  # expect a very small p_value, log_2_fold_change well below 0, stage
   a 38,606-gene x 131k-cell matrix needed ~38 GiB and OOM-killed the
   process, versus ~256 MiB after subsetting to the 244 genes actually
   tested).
-
-## 6. Benchmarking against your own dataset's shape
-
-`scripts/benchmark_pairs.py` builds a synthetic dataset with the same
-dimensions as a real target dataset (cell count, gene count, target count,
-pair count) and times each pipeline stage. Edit the `N_CELLS`, `N_GENES`,
-`N_TARGETS`, `N_PAIRS` constants at the top to match your real data's shape,
-then run:
-
-```bash
-python scripts/benchmark_pairs.py
-```
-
-This is the recommended way to get a realistic time estimate *before*
-committing to a full real-data run, and to catch memory issues (like the one
-above) on synthetic data first.

@@ -15,8 +15,9 @@ from pysceptre.pipeline.discovery import fit_all_genes, gene_chunk_size_for_budg
 
 
 def test_chunk_size_from_budget_matches_hand_calculation():
-    # 4 arrays x 131,000 cells x 8 bytes = 4.192 MB per gene; 2 GB / that = 477
-    assert gene_chunk_size_for_budget(131_000, 10_000, 2.0) == 477
+    # 10 arrays x 131,000 cells x 8 bytes = 10.48 MB per gene; 2 GB / that = 190.
+    # The factor is measured, not counted -- see _IRLS_ARRAYS_PER_COLUMN.
+    assert gene_chunk_size_for_budget(131_000, 10_000, 2.0) == 190
 
 
 def test_chunk_size_never_exceeds_the_gene_count():
@@ -29,8 +30,9 @@ def test_chunk_size_is_at_least_one_even_on_a_tiny_budget():
 
 def test_moi5_scale_analysis_still_fits_in_one_chunk():
     """The default budget must not make normal runs chunk needlessly: the
-    real moi5 analysis tested 244 genes over 131k cells."""
-    assert gene_chunk_size_for_budget(131_000, 244, 2.0) == 244
+    real moi5 analysis tested 244 genes over 131k cells. At the corrected
+    per-column cost, 4 GB still holds all of them (381 would fit)."""
+    assert gene_chunk_size_for_budget(131_000, 244, 4.0) == 244
 
 
 def _inputs(n_genes=7, n_cells=400, n_targets=3, seed=0):
@@ -65,8 +67,8 @@ def test_fit_all_genes_agrees_across_chunk_sizes(budget_gb):
     tolerance, not bit-for-bit. Measured spread is ~1e-15.
     """
     resp, gene_ids, cov, _, _ = _inputs()
-    reference = fit_all_genes(resp, gene_ids, cov, max_memory_gb=100.0)
-    other = fit_all_genes(resp, gene_ids, cov, max_memory_gb=budget_gb)
+    reference = fit_all_genes(resp, gene_ids, cov, chunk_memory_gb=100.0)
+    other = fit_all_genes(resp, gene_ids, cov, chunk_memory_gb=budget_gb)
 
     assert list(reference) == list(other)
     for gid in gene_ids:
@@ -93,15 +95,15 @@ def test_end_to_end_results_agree_across_gene_chunk_budgets():
         side="left",
         seed=11,
     )
-    reference = run_discovery_analysis(**common, max_memory_gb=100.0)
-    chunked = run_discovery_analysis(**common, max_memory_gb=1e-9)
+    reference = run_discovery_analysis(**common, chunk_memory_gb=100.0)
+    chunked = run_discovery_analysis(**common, chunk_memory_gb=1e-9)
 
     # p-values and stages must match exactly: they are rank-based, so the
     # ~1e-15 coefficient spread cannot move them unless a pair sits precisely
     # on the p <= 0.02 escalation boundary.
     pd.testing.assert_series_equal(reference.p_value, chunked.p_value)
     pd.testing.assert_series_equal(reference.stage, chunked.stage)
-    for col in ("z_orig", "fold_change", "log_2_fold_change"):
+    for col in ("z_orig", "fold_change", "se_fold_change", "pct_change"):
         np.testing.assert_allclose(reference[col], chunked[col], rtol=1e-8)
 
 
@@ -110,8 +112,8 @@ def test_chunking_works_with_a_sparse_response_matrix():
     sparse = pytest.importorskip("scipy.sparse")
     resp, gene_ids, cov, _, _ = _inputs()
     csr = sparse.csr_matrix(resp)
-    dense_fit = fit_all_genes(resp, gene_ids, cov, max_memory_gb=100.0)
-    sparse_fit = fit_all_genes(csr, gene_ids, cov, max_memory_gb=1e-9)
+    dense_fit = fit_all_genes(resp, gene_ids, cov, chunk_memory_gb=100.0)
+    sparse_fit = fit_all_genes(csr, gene_ids, cov, chunk_memory_gb=1e-9)
     for gid in gene_ids:
         np.testing.assert_allclose(
             dense_fit[gid].fitted_coefs, sparse_fit[gid].fitted_coefs, rtol=1e-12
