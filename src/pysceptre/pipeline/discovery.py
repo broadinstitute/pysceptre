@@ -27,13 +27,13 @@ import numpy as np
 import pandas as pd
 from scipy import sparse
 
-from ..crt.permutations import draws_for_target, permutation_draws
+from ..crt.permutations import permutation_draws
 from ..crt.sampler import crt_index_sampler_fast
 from ..glm.irls import fit_binomial_glm_batch, fit_poisson_glm_batch
 from ..glm.nb_theta import estimate_theta
 from ..precompute.pieces import compute_precomputation_pieces
 from ..test_statistic.resampling import run_low_level_test_full
-from ..test_statistic.score_stat import draws_to_matrix, stack_pieces
+from ..test_statistic.score_stat import ListDraws, PermutationSliceDraws, stack_pieces
 
 # Budget for the arrays a *chunk* holds, in GB. It sizes how many genes or
 # targets are processed together; it is NOT a cap on the process's memory,
@@ -497,19 +497,22 @@ def _target_draw_job(job: tuple[int, str]) -> tuple[str, TargetPrecomputation]:
     st = _TARGET_STATE
     fitted_probabilities = st["fitted_values"][k]
     perms = st["permutations"]
+    trt_idxs = st["grna_target_cells"][target_id]
     if perms is None:
         rng = np.random.default_rng(target_seed_sequence(st["seed"], target_id))
         synthetic_idxs = crt_index_sampler_fast(fitted_probabilities, st["B_total"], rng)
+        draws = ListDraws(synthetic_idxs, st["n_cells"])
     else:
         # Permutations: every target reads the same draws, taking a prefix
-        # the size of its own treated set. No per-target randomness, which is
-        # what makes the mechanism cheap and also what makes it unable to be
-        # composition-invariant. See crt/permutations.py.
-        synthetic_idxs = draws_for_target(perms, len(st["grna_target_cells"][target_id]))
+        # the size of its own treated set. Held by reference rather than
+        # copied -- a target costs nothing until a stage is actually reached,
+        # which is the point of sharing the draws and was being thrown away
+        # by materializing them per target. See crt/permutations.py.
+        draws = PermutationSliceDraws(perms, len(trt_idxs), st["n_cells"])
     return target_id, TargetPrecomputation(
-        trt_idxs=st["grna_target_cells"][target_id],
+        trt_idxs=trt_idxs,
         fitted_probabilities=fitted_probabilities,
-        draws=draws_to_matrix(synthetic_idxs, st["n_cells"]),
+        draws=draws,
     )
 
 

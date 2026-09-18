@@ -132,6 +132,114 @@ def row_slice(draws: sparse.csr_matrix, lo: int, hi: int) -> sparse.csr_matrix:
     )
 
 
+class StagedDraws:
+    """A target's resamples, materialized one stage at a time.
+
+    The staged test asks for `[0, B1)` for every pair, and for `[B1, B1+B2)`
+    and beyond only when a pair escalates. Building the whole draw matrix up
+    front therefore does work that is usually thrown away: on a real
+    permutation run, **33,621 of 34,886 pairs stopped at stage 1** and 8
+    reached stage 3, yet every target had all 30,497 rows materialized.
+
+    Slices are memoized, so the cost is paid once per target per stage
+    actually reached rather than once per pair -- a target's draws are shared
+    by every gene paired with it.
+
+    Subclasses differ only in where the indices come from. The CRT holds its
+    own per-target draws; permutations hold a reference into one array shared
+    by every target, which is what makes them cheap to keep unmaterialized.
+    """
+
+    __slots__ = ("n_cells", "n_draws", "_cache")
+
+    def __init__(self, n_cells: int, n_draws: int):
+        self.n_cells = n_cells
+        self.n_draws = n_draws
+        self._cache: dict[tuple[int, int], sparse.csr_matrix] = {}
+
+    def _index_arrays(self, lo: int, hi: int) -> list[np.ndarray]:
+        raise NotImplementedError
+
+    def slice(self, lo: int, hi: int) -> sparse.csr_matrix:
+        lo, hi = max(0, int(lo)), min(int(hi), self.n_draws)
+        if hi <= lo:
+            return sparse.csr_matrix((0, self.n_cells))
+        key = (lo, hi)
+        hit = self._cache.get(key)
+        if hit is None:
+            hit = draws_to_matrix(self._index_arrays(lo, hi), self.n_cells)
+            self._cache[key] = hit
+        return hit
+
+
+class ListDraws(StagedDraws):
+    """CRT draws: a list of ragged index arrays, one per resample.
+
+    Lazy like the permutation source, though the saving is smaller. The CRT
+    sampler produces every draw up front, so the index arrays exist whatever
+    happens and only the CSR construction can be deferred -- but that is
+    still most of the cost, because the stages beyond the first are rarely
+    reached.
+
+    Measured on 6,000 real pairs, fresh process per run, two runs each:
+
+        eager   305.3 s, 305.3 s   peak 5.78 GB, 5.83 GB
+        lazy    275.7 s, 274.2 s   peak 5.79 GB, 5.88 GB
+
+    1.11x faster at indistinguishable memory. An earlier reading claimed
+    deferral cost 2.2 GB here; that was an artefact of comparing two
+    configurations inside one process, where `ru_maxrss` reports a
+    process-lifetime high-water mark and whichever ran second inherited the
+    first's peak. Measure variants in separate processes.
+    """
+
+    __slots__ = ("_idxs",)
+
+    def __init__(self, synthetic_idxs: list[np.ndarray], n_cells: int):
+        super().__init__(n_cells, len(synthetic_idxs))
+        self._idxs = synthetic_idxs
+
+    def _index_arrays(self, lo: int, hi: int) -> list[np.ndarray]:
+        return self._idxs[lo:hi]
+
+
+class PermutationSliceDraws(StagedDraws):
+    """Permutation draws: a prefix of each row of one shared array.
+
+    Holds a *reference* to the shared permutations rather than a copy, so a
+    target costs nothing until a stage is actually reached. That is the whole
+    point of the mechanism -- every target reads the same draws -- and it was
+    being thrown away by materializing per target.
+    """
+
+    __slots__ = ("_perms", "_n_trt")
+
+    def __init__(self, perms: np.ndarray, n_trt: int, n_cells: int):
+        super().__init__(n_cells, perms.shape[0])
+        self._perms = perms
+        self._n_trt = n_trt
+
+    def _index_arrays(self, lo: int, hi: int) -> list[np.ndarray]:
+        return [np.sort(row[: self._n_trt]) for row in self._perms[lo:hi]]
+
+
+def as_staged_draws(draws, n_cells: int) -> StagedDraws:
+    """Accept a `StagedDraws`, a CSR matrix, or a list of index arrays.
+
+    The list and matrix forms are kept because they are the natural things to
+    write by hand in a test; the analysis always passes a `StagedDraws`.
+    """
+    if isinstance(draws, StagedDraws):
+        return draws
+    if sparse.issparse(draws):
+        csr = draws.tocsr()
+        return ListDraws(
+            [csr.indices[csr.indptr[i] : csr.indptr[i + 1]] for i in range(csr.shape[0])],
+            csr.shape[1],
+        )
+    return ListDraws(list(draws), n_cells)
+
+
 def stack_pieces(a: np.ndarray, w: np.ndarray, D: np.ndarray) -> np.ndarray:
     """`a`, `w` and `D`'s rows as one `(n_cells, p + 2)` dense array.
 
