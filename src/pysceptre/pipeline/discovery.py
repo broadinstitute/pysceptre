@@ -64,13 +64,18 @@ _DEFAULT_CHUNK_MEMORY_GB = 1.0
 # neither is more correct. But it means "the fit for gene X" is not a
 # well-defined quantity until you say what else was in the run.
 #
-# Fitting each gene alone makes it well-defined. Measured cost on day0 (237
-# genes, 567,690 cells, p=11): 29.17 s against 24.96 s batched -- 17% of the
-# gene-fitting stage, which is itself ~3% of a run, so about 0.5% overall. For
-# that we get a fit that depends only on the gene's own counts and the
-# covariates, which is what makes results reusable across analyses.
+# Fitting each gene alone makes it well-defined, and it is not even a
+# trade-off once the fits are parallelized -- which they can be precisely
+# because they are independent. Measured on day0 (237 genes, 567,690 cells,
+# p=11):
 #
-# This is also the shape that parallelizes: independent fits, no shared batch.
+#     batched, serial      24.96 s
+#     per-gene, serial     29.34 s
+#     per-gene, 8 workers  10.38 s
+#
+# So the reproducible form is 2.4x faster than the batched one it replaced.
+# Batching traded a well-defined answer for 17% on one stage, and gave that
+# back the moment the stage was parallelized.
 _GENE_BATCH_WIDTH = 1
 
 # Retained as the memory bound for the per-gene path and for callers of
@@ -224,6 +229,61 @@ def gene_chunk_size_for_budget(n_cells: int, n_genes: int, chunk_memory_gb: floa
     return chunk_size_for_budget(irls_bytes_per_column(n_cells), n_genes, chunk_memory_gb)
 
 
+_GENE_FIT_STATE: dict = {}
+
+
+def _gene_fit_job(job: tuple[int, list[str], list[int]]) -> dict[str, GenePrecomputation]:
+    """Fit one slab of genes. With `_GENE_BATCH_WIDTH = 1` that is one gene.
+
+    Independent by construction -- a gene's fit uses only its own counts and
+    the shared covariate matrix -- which is precisely what makes fitting them
+    individually parallelizable, and is the other half of that decision. Only
+    the gene ids and their row indices cross a process boundary; the matrix
+    and covariates are inherited.
+    """
+    _, chunk_ids, chunk_rows = job
+    st = _GENE_FIT_STATE
+    response_matrix = st["response_matrix"]
+    covariate_matrix = st["covariate_matrix"]
+    dfr = st["dfr"]
+    n_cells = covariate_matrix.shape[0]
+
+    contiguous = chunk_rows == list(range(chunk_rows[0], chunk_rows[0] + len(chunk_rows)))
+    if contiguous and hasattr(response_matrix, "rows"):
+        # Backed input over a contiguous gene range: one contiguous slice of
+        # the stored CSC buffers, so a single read instead of k.
+        block = response_matrix.rows(chunk_rows[0], chunk_rows[0] + len(chunk_rows))
+        Y = np.asarray(block.toarray(), dtype=float)
+    else:
+        Y = np.empty((len(chunk_ids), n_cells))
+        for j, row in enumerate(chunk_rows):
+            Y[j] = _get_row(response_matrix, row)
+
+    fit = fit_poisson_glm_batch(covariate_matrix, Y)
+
+    out: dict[str, GenePrecomputation] = {}
+    for j, gene_id in enumerate(chunk_ids):
+        y_j = Y[j]
+        theta_est, method = estimate_theta(y=y_j, mu=fit.fitted_values[j], dfr=dfr)
+        lo, hi = _THETA_BOUNDS
+        theta = max(min(theta_est, hi), lo)
+        # Built here only to read off the conditioning diagnostics, then
+        # dropped -- see GenePrecomputation. It is rebuilt per gene per target
+        # chunk in run_discovery_ntcells_complement.
+        pieces = compute_precomputation_pieces(y_j, covariate_matrix, fit.coefs[j], theta)
+        out[gene_id] = GenePrecomputation(
+            fitted_coefs=fit.coefs[j],
+            theta=theta,
+            theta_method=method,
+            theta_clamped=not (lo <= theta_est <= hi),
+            glm_converged=bool(fit.converged[j]),
+            min_eigenvalue=pieces.min_eigenvalue,
+            max_eigenvalue=pieces.max_eigenvalue,
+            n_covariates=pieces.D.shape[0],
+        )
+    return out
+
+
 def fit_all_genes(
     response_matrix,
     gene_ids: list[str],
@@ -232,6 +292,7 @@ def fit_all_genes(
     chunk_memory_gb: float = _DEFAULT_CHUNK_MEMORY_GB,
     gene_rows: list[int] | None = None,
     batch_width: int | None = None,
+    n_jobs: int = 1,
 ) -> dict[str, GenePrecomputation]:
     """Batched Poisson IRLS across genes (they share the full covariate
     matrix), then per-gene theta estimation and precomputation pieces.
@@ -240,6 +301,11 @@ def fit_all_genes(
     see `gene_chunk_size_for_budget`. Only the fit is transient -- the
     returned precomputations are just coefficients and theta (80 bytes per
     gene), so nothing large is retained.
+
+    `n_jobs` distributes the fits. They are independent -- a gene's fit uses
+    only its own counts and the shared covariate matrix -- which is what
+    fitting them individually buys, so this is free parallelism and cannot
+    change a result.
 
     `batch_width` pins how many genes share one BLAS call, overriding the
     budget. The pipeline passes 1, so each fit depends only on its own gene --
@@ -269,44 +335,21 @@ def fit_all_genes(
     if len(rows) != len(gene_ids):
         raise ValueError(f"gene_rows has {len(rows)} entries for {len(gene_ids)} gene_ids")
 
+    jobs = [
+        (start, gene_ids[start : start + chunk], rows[start : start + chunk])
+        for start in range(0, len(gene_ids), chunk)
+    ]
+    _GENE_FIT_STATE.update(
+        response_matrix=response_matrix,
+        covariate_matrix=covariate_matrix,
+        dfr=dfr,
+    )
     out: dict[str, GenePrecomputation] = {}
-    for start in range(0, len(gene_ids), chunk):
-        chunk_ids = gene_ids[start : start + chunk]
-        # Gene-major: each gene is a contiguous row, both to write here and to
-        # read back below. See glm/irls.py::_as_2d on the convention.
-        chunk_rows = rows[start : start + len(chunk_ids)]
-        contiguous = chunk_rows == list(range(chunk_rows[0], chunk_rows[0] + len(chunk_rows)))
-        if contiguous and hasattr(response_matrix, "rows"):
-            # Backed input over a contiguous gene range: one contiguous slice
-            # of the stored CSC buffers, so a single read instead of k.
-            block = response_matrix.rows(chunk_rows[0], chunk_rows[0] + len(chunk_rows))
-            Y = np.asarray(block.toarray(), dtype=float)
-        else:
-            Y = np.empty((len(chunk_ids), n_cells))
-            for j, row in enumerate(chunk_rows):
-                Y[j] = _get_row(response_matrix, row)
-
-        fit = fit_poisson_glm_batch(covariate_matrix, Y)
-
-        for j, gene_id in enumerate(chunk_ids):
-            y_j = Y[j]
-            theta_est, method = estimate_theta(y=y_j, mu=fit.fitted_values[j], dfr=dfr)
-            lo, hi = _THETA_BOUNDS
-            theta = max(min(theta_est, hi), lo)
-            # Built here only to read off the conditioning diagnostics, then
-            # dropped -- see GenePrecomputation. It is rebuilt per gene per
-            # target chunk in run_discovery_ntcells_complement.
-            pieces = compute_precomputation_pieces(y_j, covariate_matrix, fit.coefs[j], theta)
-            out[gene_id] = GenePrecomputation(
-                fitted_coefs=fit.coefs[j],
-                theta=theta,
-                theta_method=method,
-                theta_clamped=not (lo <= theta_est <= hi),
-                glm_converged=bool(fit.converged[j]),
-                min_eigenvalue=pieces.min_eigenvalue,
-                max_eigenvalue=pieces.max_eigenvalue,
-                n_covariates=pieces.D.shape[0],
-            )
+    try:
+        for produced in _map_jobs(_gene_fit_job, jobs, n_jobs):
+            out.update(produced)
+    finally:
+        _GENE_FIT_STATE.clear()
 
     _warn_about_degenerate_gene_fits(out)
     return out
@@ -691,12 +734,17 @@ def parallel_backend() -> str:
     return "thread"
 
 
-def _map_gene_jobs(jobs: list, n_jobs: int):
-    """Run `_gene_job` over `jobs`, sequentially or in parallel."""
+def _map_jobs(fn, jobs: list, n_jobs: int):
+    """Run `fn` over `jobs`, sequentially or in parallel.
+
+    `fn` must be a module-level function that reads its bulk inputs from a
+    module global, so that under the process backend only the small job
+    descriptor crosses the boundary.
+    """
     workers = min(resolve_n_jobs(n_jobs), len(jobs))
     if workers <= 1 or len(jobs) <= 1:
         for job in jobs:
-            yield _gene_job(job)
+            yield fn(job)
         return
 
     backend = parallel_backend()
@@ -711,12 +759,12 @@ def _map_gene_jobs(jobs: list, n_jobs: int):
         with ProcessPoolExecutor(
             max_workers=workers, mp_context=ctx, initializer=_limit_blas_threads
         ) as ex:
-            yield from ex.map(_gene_job, jobs)
+            yield from ex.map(fn, jobs)
     else:
         from concurrent.futures import ThreadPoolExecutor
 
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            yield from ex.map(_gene_job, jobs)
+            yield from ex.map(fn, jobs)
 
 
 def run_discovery_ntcells_complement(
@@ -785,6 +833,7 @@ def run_discovery_ntcells_complement(
         chunk_memory_gb=_GENE_CHUNK_MEMORY_GB,
         gene_rows=needed_gene_rows,
         batch_width=_GENE_BATCH_WIDTH,
+        n_jobs=n_jobs,
     )
 
     pairs_by_target = {target_id: group for target_id, group in pairs.groupby("grna_target")}
@@ -855,7 +904,7 @@ def run_discovery_ntcells_complement(
             fit_parametric_curve=fit_parametric_curve,
             side_code=side_code,
         )
-        for produced in _map_gene_jobs(gene_jobs, n_jobs):
+        for produced in _map_jobs(_gene_job, gene_jobs, n_jobs):
             rows.update(produced)
         _WORKER_STATE.clear()
 

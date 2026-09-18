@@ -211,3 +211,30 @@ def test_seeding_does_not_use_pythons_salted_string_hash():
     """
     key = target_seed_sequence(0, "target_alpha").spawn_key[0]
     assert key == 11_214_916_989_929_217_540, "the per-target key derivation changed"
+
+
+def test_gene_fits_do_not_depend_on_the_worker_count(world):
+    """Parallel gene fitting is free: independent fits, nothing shared.
+
+    Worth pinning separately from the end-to-end worker-count test, because
+    this is the stage where a shared accumulator or a reused buffer would be
+    easiest to introduce by accident and hardest to notice -- the fits would
+    still look plausible.
+    """
+    from pysceptre.pipeline.discovery import _GENE_BATCH_WIDTH, fit_all_genes
+
+    counts, genes, X, _ = world
+    ids = genes[:8]
+    rows = list(range(len(ids)))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        serial = fit_all_genes(
+            counts, ids, X, gene_rows=rows, batch_width=_GENE_BATCH_WIDTH, n_jobs=1
+        )
+        parallel = fit_all_genes(
+            counts, ids, X, gene_rows=rows, batch_width=_GENE_BATCH_WIDTH, n_jobs=4
+        )
+    assert set(serial) == set(parallel)
+    for g in ids:
+        np.testing.assert_array_equal(serial[g].fitted_coefs, parallel[g].fitted_coefs)
+        assert serial[g].theta == parallel[g].theta
