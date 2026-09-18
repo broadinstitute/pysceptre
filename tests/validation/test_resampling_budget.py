@@ -14,6 +14,7 @@ import pandas as pd
 import pytest
 
 from pysceptre.pipeline.api import _resampling_budget, run_discovery_analysis
+from pysceptre.test_statistic.resampling import run_low_level_test_full
 
 
 def test_skew_normal_matches_rs_crt_values():
@@ -142,3 +143,61 @@ def test_invalid_side_raises():
             pairs=pairs,
             side="two-sided",
         )
+
+
+def test_no_approximation_matches_r_exactly(ground_truth):
+    """The B3 path, value-for-value against R on R's own draws.
+
+    This was the one code path with no reference comparison: every other
+    fixture exercises `skew_normal`, which fits a curve to the B2 draws, so
+    the B3 route to stage 3 had only been checked for self-consistency.
+
+    The comparison is **exact**, not distributional, and that is the point.
+    Everywhere else the CRT draws differ between implementations, because
+    pysceptre seeds `numpy.random.Generator` and sceptre seeds
+    `boost::mt19937`. Here R's own draws are fed back in, and an empirical
+    p-value is then a deterministic function of those draws and `z_orig` --
+    no RNG is left in the calculation, so anything other than equality is a
+    porting error rather than Monte Carlo noise.
+    """
+    na = ground_truth["no_approximation_pair"]
+    sp = ground_truth["signal_pair"]
+    target = next(t for t in ground_truth["targets"] if t["target_id"] == na["target_id"])
+
+    result = run_low_level_test_full(
+        y=np.array(sp["y"], dtype=float),
+        mu=np.array(sp["mu"]),
+        a=np.array(sp["a"]),
+        w=np.array(sp["w"]),
+        D=np.array(sp["D"]),
+        trt_idxs=np.array(target["trt_idxs_1based"]) - 1,
+        synthetic_idxs=[np.array(i) for i in na["synthetic_idxs_0based"]],
+        B1=na["B1"],
+        B2=na["B2"],
+        B3=na["B3"],
+        fit_parametric_curve=False,
+        side_code=0,
+    )
+
+    assert result.stage == 3, "no_approximation must never fit a curve"
+    assert result.sn_params is None
+    np.testing.assert_allclose(result.z_orig, na["z_orig"], rtol=1e-10)
+    np.testing.assert_allclose(result.fold_change, na["fold_change"], rtol=1e-10)
+    np.testing.assert_allclose(result.se_fold_change, na["se_fold_change"], rtol=1e-10)
+    # Given identical draws this is deterministic, so it must match to the bit
+    # of a float rather than approximately.
+    np.testing.assert_allclose(result.p_value, na["p_value"], rtol=1e-12)
+
+
+def test_no_approximation_p_sits_on_the_b3_grid(ground_truth):
+    """An empirical p-value from B3 draws can only take values k/(B3+1).
+
+    Pinning this separately from the value comparison above documents *why*
+    `no_approximation` is slow: resolving a p-value of 1e-5 needs B3 on the
+    order of 1e5 draws, which is what makes R size B3 as
+    `n_pairs / multiple_testing_alpha`.
+    """
+    na = ground_truth["no_approximation_pair"]
+    grid = round(na["p_value"] * (na["B3"] + 1))
+    np.testing.assert_allclose(na["p_value"], grid / (na["B3"] + 1), rtol=1e-12)
+    assert na["p_value"] >= 1.0 / (na["B3"] + 1)

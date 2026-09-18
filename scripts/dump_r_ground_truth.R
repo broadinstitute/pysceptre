@@ -191,6 +191,57 @@ signal_pair <- list(
   resampling_dist = as.numeric(signal_result$resampling_dist)
 )
 
+# ---- no_approximation: the one code path with no value-for-value reference
+# `skew_normal` fits a curve to B2 draws; `no_approximation` fits none and
+# takes an empirical p-value from a third, larger batch of B3 draws. Every
+# fixture above uses the former, so the B3 route to stage 3 was validated only
+# for self-consistency.
+#
+# B2 = 0 here, which is what pysceptre's `_resampling_budget` produces for this
+# mode (R sets B3 = ceil(mult * n_pairs / alpha) and leaves B2 unused; verified
+# R accepts B2 = 0L). B3 is fixed at 1200 rather than computed from n_pairs, so
+# the fixture stays a fixed size regardless of how many pairs are dumped.
+#
+# The comparison this enables is **exact**, not distributional: given the same
+# draws, an empirical p-value is a deterministic function of them and z_orig,
+# with no RNG left in the calculation. The draws are therefore dumped too.
+na_B1 <- 499L
+na_B2 <- 0L
+na_B3 <- 1200L
+na_synthetic_ptr <- sc("crt_index_sampler_fast")(
+  fitted_probabilities = signal_target$fitted_probabilities, B = na_B1 + na_B2 + na_B3
+)
+na_synthetic_idxs <- sc("synth_idx_list_to_r_list")(na_synthetic_ptr)
+na_result <- sc("run_low_level_test_full_v4")(
+  y = signal_y,
+  mu = signal_pieces$mu,
+  a = signal_pieces$a,
+  w = signal_pieces$w,
+  D = signal_pieces$D,
+  trt_idxs = signal_target$trt_idxs_1based,
+  n_trt = signal_target$n_trt,
+  use_all_cells = TRUE,
+  synthetic_idxs = na_synthetic_ptr,
+  B1 = na_B1, B2 = na_B2, B3 = na_B3,
+  fit_parametric_curve = FALSE,
+  return_resampling_dist = TRUE,
+  side_code = side_code
+)
+no_approximation_pair <- list(
+  gene_id = "signal_gene",
+  target_id = signal_target$target_id,
+  B1 = na_B1, B2 = na_B2, B3 = na_B3,
+  # Already 0-based out of the C++ sampler; do NOT subtract one (see the
+  # per-target export above, where doing so turned every 0 into a -1).
+  synthetic_idxs_0based = lapply(na_synthetic_idxs, as.integer),
+  p_value = na_result$p,
+  z_orig = na_result$z_orig,
+  fold_change = na_result$fc,
+  se_fold_change = na_result$se,
+  stage = na_result$stage,
+  resampling_dist = as.numeric(na_result$resampling_dist)
+)
+
 # ---- standalone unit-level ground truth for isolated formula validation
 set.seed(seed + 1L)
 null_stats_for_sn <- rnorm(4999, mean = 0.1, sd = 1.05) + rgamma(4999, shape = 2, rate = 4) - 0.5
@@ -236,6 +287,7 @@ out <- list(
   targets = target_results,
   pairs = pair_results,
   signal_pair = signal_pair,
+  no_approximation_pair = no_approximation_pair,
   standalone = standalone
 )
 

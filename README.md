@@ -77,6 +77,13 @@ result = run_discovery_analysis(
 #   pct_change, pct_change_ci_low, pct_change_ci_high, z_orig, stage
 ```
 
+[`examples/scanpy_interop.py`](examples/scanpy_interop.py) runs a whole screen
+inside an ordinary `scanpy` workflow -- QC and covariates out of `obs`, gRNA
+assignments out of the gRNA modality's `var`, discovery and calibration, then
+results back onto the same object and on to PCA and clustering, with no R at
+any point. Run it with `uv run --extra examples python
+examples/scanpy_interop.py`.
+
 See [TUTORIAL.md](TUTORIAL.md) for a complete, runnable walkthrough
 (including how to build each input from scratch) and for guidance on
 picking `target_chunk_size` for your dataset.
