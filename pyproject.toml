@@ -48,11 +48,12 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "ruff>=0.6", "pre-commit>=3.0"]
 fast = ["numba>=0.58"]
-# Dev-only, for the scripts/ dataset-export and benchmark path: `anndata` reads
-# and writes the h5ad input, `pyarrow` the result parquet. Nothing under src/
+# Dev-only, for the scripts/ dataset-export and benchmark path: `mudata` reads
+# and writes the two-assay .h5mu input, `pyarrow` the result parquet, and
+# `matplotlib` draws the calibration QQ plot. Nothing under src/
 # imports either, so this stays out of the runtime dependencies -- installing
 # pysceptre to call `run_discovery_analysis` on in-memory arrays needs neither.
-io = ["anndata>=0.10", "pyarrow>=14"]
+io = ["mudata>=0.3", "anndata>=0.10", "pyarrow>=14", "matplotlib>=3.7"]
 
 [project.urls]
 Homepage = "https://github.com/broadinstitute/pysceptre"

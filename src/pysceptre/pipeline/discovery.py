@@ -184,6 +184,7 @@ def fit_all_genes(
     covariate_matrix: np.ndarray,
     *,
     chunk_memory_gb: float = _DEFAULT_CHUNK_MEMORY_GB,
+    gene_rows: list[int] | None = None,
 ) -> dict[str, GenePrecomputation]:
     """Batched Poisson IRLS across genes (they share the full covariate
     matrix), then per-gene theta estimation and precomputation pieces.
@@ -192,19 +193,42 @@ def fit_all_genes(
     see `gene_chunk_size_for_budget`. Only the fit is transient -- the
     returned precomputations are just coefficients and theta (80 bytes per
     gene), so nothing large is retained.
+
+    `gene_rows` gives each gene's row in `response_matrix`, for when `gene_ids`
+    is a *subset* of the matrix's rows rather than all of them in order. The
+    fits are per-column independent, so fitting a subset gives the same result
+    for the genes fit -- which is why the caller can safely skip genes no pair
+    mentions.
+
+    "The same" to floating-point precision, not bit-for-bit: a different
+    subset means a different batch width, so `(k, n) @ (n, p*p)` is a
+    differently-shaped matmul that BLAS may block and accumulate differently.
+    Measured exactly 0.0 on macOS/Accelerate and nonzero in the last bits on
+    Linux/OpenBLAS. Don't assert bitwise equality across batch widths.
     """
     n_cells = covariate_matrix.shape[0]
     dfr = covariate_matrix.shape[0] - covariate_matrix.shape[1]
     chunk = gene_chunk_size_for_budget(n_cells, len(gene_ids), chunk_memory_gb)
+    rows = list(range(len(gene_ids))) if gene_rows is None else list(gene_rows)
+    if len(rows) != len(gene_ids):
+        raise ValueError(f"gene_rows has {len(rows)} entries for {len(gene_ids)} gene_ids")
 
     out: dict[str, GenePrecomputation] = {}
     for start in range(0, len(gene_ids), chunk):
         chunk_ids = gene_ids[start : start + chunk]
         # Gene-major: each gene is a contiguous row, both to write here and to
         # read back below. See glm/irls.py::_as_2d on the convention.
-        Y = np.empty((len(chunk_ids), n_cells))
-        for j in range(len(chunk_ids)):
-            Y[j] = _get_row(response_matrix, start + j)
+        chunk_rows = rows[start : start + len(chunk_ids)]
+        contiguous = chunk_rows == list(range(chunk_rows[0], chunk_rows[0] + len(chunk_rows)))
+        if contiguous and hasattr(response_matrix, "rows"):
+            # Backed input over a contiguous gene range: one contiguous slice
+            # of the stored CSC buffers, so a single read instead of k.
+            block = response_matrix.rows(chunk_rows[0], chunk_rows[0] + len(chunk_rows))
+            Y = np.asarray(block.toarray(), dtype=float)
+        else:
+            Y = np.empty((len(chunk_ids), n_cells))
+            for j, row in enumerate(chunk_rows):
+                Y[j] = _get_row(response_matrix, row)
 
         fit = fit_poisson_glm_batch(covariate_matrix, Y)
 
@@ -498,8 +522,22 @@ def run_discovery_ntcells_complement(
     """
     rng = np.random.default_rng(seed)
 
+    # Fit only the genes some pair mentions. `gene_ids` labels every row of
+    # `response_matrix`, which for an all-genes dataset is far more than the
+    # analysis touches: on moi5 a calibration check tests 9,045 of 38,606
+    # genes, so fitting all of them is 4.3x the necessary work. The fits are
+    # per-column independent, so this changes no result. It was invisible while
+    # the export carried only the genes under test -- the export was doing the
+    # filtering, and widening it exposed the omission.
+    tested_genes = set(pairs["response_id"])
+    needed_gene_ids = [g for g in gene_ids if g in tested_genes]
+    needed_gene_rows = [i for i, g in enumerate(gene_ids) if g in tested_genes]
     gene_precomps = fit_all_genes(
-        response_matrix, gene_ids, covariate_matrix, chunk_memory_gb=chunk_memory_gb
+        response_matrix,
+        needed_gene_ids,
+        covariate_matrix,
+        chunk_memory_gb=chunk_memory_gb,
+        gene_rows=needed_gene_rows,
     )
 
     pairs_by_target = {target_id: group for target_id, group in pairs.groupby("grna_target")}

@@ -1,8 +1,8 @@
 #!/usr/bin/env Rscript
 # Extract a post-QC sceptre object out of R.
 #
-# Writes a columnar intermediate; run scripts/make_h5ad.py on the output
-# directory to produce the dataset.h5ad pysceptre reads. h5ad is not written
+# Writes a columnar intermediate; run scripts/make_h5mu.py on the output
+# directory to produce the dataset.h5mu pysceptre reads. h5mu is not written
 # directly from R because rhdf5 writes length-1 attributes as arrays where
 # anndata requires scalars, and R is the wrong side of the boundary to chase
 # the on-disk spec from.
@@ -26,7 +26,7 @@
 #   export_sceptre_dataset.R --sceptre-object so.rds --response-odm gene.odm \
 #       --grna-odm grna.odm --out-dir out/ [--all-genes] [--discovery-result r.rds]
 #
-# Convert with scripts/make_h5ad.py, then read with sceptre_io.load_export.
+# Convert with scripts/make_h5mu.py, then read with sceptre_io.load_export.
 
 suppressPackageStartupMessages({
   library(sceptre)

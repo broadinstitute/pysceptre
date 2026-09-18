@@ -4,11 +4,18 @@ Standalone Python port of the statistical engine behind
 [`sceptre`](https://github.com/Katsevich-Lab/sceptre)'s discovery analysis for
 single-cell CRISPR screens.
 
-**Scope: one validated analysis path, not a general sceptre reimplementation.**
-Complement control group + CRT (conditional randomization test) resampling, the
-high-MOI path. Permutations, non-complement control groups, low-MOI,
-`assign_grnas()`, `run_qc()`, and R's formula DSL are all deliberately out of
+**Scope: two validated analysis paths, not a general sceptre reimplementation.**
+Discovery analysis and the calibration check, both on the complement control
+group + CRT (conditional randomization test) resampling, high-MOI path.
+Permutations, non-complement control groups, low-MOI, `assign_grnas()`,
+`run_qc()`, the power check, and R's formula DSL are all deliberately out of
 scope — see "Scope and limitations" in `README.md` before adding any of them.
+
+**One carve-out from "no `run_qc()`".** The calibration check *constructs* its
+pairs, and sceptre only ever samples combinations that already clear
+`n_nonzero_trt_thresh` / `n_nonzero_cntrl_thresh`, so pairwise nonzero-count
+filtering is inseparable from building the pairs and lives in
+`pipeline/calibration.py`. Cell-level and gRNA-level QC stay out of scope.
 
 `README.md` is the user-facing reference (full API table, validation numbers,
 performance figures). This file is the contributor-facing complement: don't
@@ -31,7 +38,7 @@ src-layout — the importable package lives under `src/`, so it is only on
                         test compares against R ground truth, not just internal
                         consistency.
 - `scripts/`          — dataset export (`export_sceptre_dataset.R` +
-                        `make_h5ad.py`), the R-comparison benchmark setup, and the
+                        `make_h5mu.py`), the R-comparison benchmark setup, and the
                         validation runners. **Not shipped in the wheel**.
 
 `run_discovery_analysis` is also re-exported at the top level
@@ -166,6 +173,42 @@ Python 3.10+ (`requires-python`). Verified passing on 3.10, 3.11, 3.12, 3.13.
   `/mnt/disks/sw-dev-disk/...` cloud-VM paths; don't reintroduce absolute
   paths here.
 
+- **The dataset is MuData (`.h5mu`) with two assays, and the `grna` assay's
+  `var` is load-bearing.** sceptre keeps gRNA assignments at exactly two
+  resolutions: `grna_group_idxs`, one entry per *target* (the union of that
+  target's gRNAs), and `indiv_nt_grna_idxs`, one entry per individual
+  *non-targeting* gRNA. Targeting gRNAs are never kept individually — they are
+  only ever used as a union — and NTCs are, because the calibration check
+  regroups them into synthetic targets. **`"non-targeting"` is not a key in the
+  target-keyed table** (2,974 keys against 2,975 distinct targets on moi5), so
+  a target-keyed export silently drops every NTC and makes the calibration
+  check impossible. Both kinds are stored as rows of one annotated `var` with a
+  `unit_kind` of `target` or `ntc_grna`. Don't collapse them back.
+
+- **Calibration QC is a filter on construction, not a reported column.**
+  A discovery result reports failures in-band (`pass_qc = False`, NaN p-value:
+  34,256 rows of which 1,121 fail on moi5). A calibration result has no
+  `pass_qc` column at all, because every row passed by construction (33,135
+  rows, zero failures). Don't "add the missing column".
+
+- **R's calibration pair selection is not reproducible, and this is not a bug
+  to chase.** Nothing in sceptre's calibration path calls `set.seed` and
+  `sceptre_object` has no seed slot. Two R runs of the same object here gave
+  the *identical* 100 groups but shared only ~20 of each group's 331 genes.
+  Pair-by-pair comparison against R therefore requires feeding R's own
+  `grna_target` column back through
+  `calibration.negative_control_pairs_from_names`; the constructor itself is
+  validated distributionally, which is what a calibration check measures.
+
+- **`sample_combinations_v2` is C++ and its rule was recovered by probing it,
+  not by reading it.** An installed sceptre exposes only `.Call(...)`, but the
+  function is callable, so the group count was derived empirically (sceptre
+  0.10.3) as `max(100, ceil(5 * n_calibration_pairs / (n_genes * p_hat)))`,
+  verified on eight cases in `tests/validation/test_calibration_pairs.py`.
+  R *enumerates* every combination instead when `choose(n_ntc, size) <= 100`.
+  If those tests start failing, sceptre changed the rule — re-derive it the
+  same way rather than patching the expectations.
+
 - **`uv.lock` is committed but CI installs unlocked.** The lockfile exists so
   `uv sync` reproduces a known-good dev environment; the test matrix still
   runs `uv pip install -e ".[dev,fast]"` and resolves fresh against the
@@ -177,7 +220,8 @@ Python 3.10+ (`requires-python`). Verified passing on 3.10, 3.11, 3.12, 3.13.
   in the wheel.
 
 - **The `io` extra is dev-only and nothing under `src/` imports it.**
-  `anndata` (h5ad) and `pyarrow` (result parquet) are used by `scripts/`, not
+  `mudata` (the two-assay .h5mu) and `pyarrow` (result parquet) are used by
+  `scripts/`, not
   by the package: `run_discovery_analysis` takes in-memory arrays and needs
   neither. Keep them out of `dependencies` -- a user who already has their
   data in memory should not be made to install zarr, which `anndata` pulls in.

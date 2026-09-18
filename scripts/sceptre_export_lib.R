@@ -1,7 +1,7 @@
 # Shared extraction logic: get an in-memory post-QC sceptre object out of R.
 #
-# This writes a columnar intermediate, which scripts/make_h5ad.py converts to
-# the h5ad pysceptre actually reads. R is involved only to extract a dataset
+# This writes a columnar intermediate, which scripts/make_h5mu.py converts to
+# the .h5mu pysceptre actually reads. R is involved only to extract a dataset
 # from ondisc once; it is not part of pysceptre's pipeline.
 #
 # Kept separate from the CLI so the benchmark scripts can export the *exact*
@@ -30,7 +30,7 @@ qc_passing_pairs <- function(so) {
 }
 
 # The .parquet files written here are an intermediate, not the dataset:
-# scripts/make_h5ad.py converts them and deletes them.
+# scripts/make_h5mu.py converts them and deletes them.
 export_sceptre_object <- function(so, out_dir, all_genes = FALSE,
                                   source_label = "<in-memory>") {
   dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
@@ -70,7 +70,9 @@ export_sceptre_object <- function(so, out_dir, all_genes = FALSE,
   }
   triplets <- do.call(rbind, chunks)
   write_parquet(triplets, file.path(out_dir, "response_matrix.parquet"))
-  density <- n_entries / (length(gene_ids) * n_cells)
+  # as.numeric first: 38,606 genes x 131,055 cells overflows R's 32-bit integer
+  # multiply and silently yields NA.
+  density <- n_entries / (as.numeric(length(gene_ids)) * as.numeric(n_cells))
   cat("   ", format(n_entries, big.mark = ","), "nonzero entries",
       sprintf("(%.1f%% dense)", 100 * density), "in", format(Sys.time() - t0), "\n")
 
@@ -86,20 +88,80 @@ export_sceptre_object <- function(so, out_dir, all_genes = FALSE,
   write_parquet(covariate_df, file.path(out_dir, "covariate_matrix.parquet"))
   cat("   ", nrow(covariate_df), "cells x", ncol(covariate_df), "covariates\n")
 
-  cat("Exporting gRNA target -> treated cells...\n")
-  # sceptre stores these already relative to cells_in_use, 1-based.
+  # gRNA assignments as ONE matrix with an annotation frame, rather than a
+  # table per kind. Columns are "assignment units"; the annotation says what
+  # each unit is, exactly as a var frame annotates a matrix's columns.
+  #
+  # The two kinds exist because sceptre stores two, and only two:
+  #
+  #   grna_group_idxs     one entry per TARGET, the union of that target's
+  #                       gRNAs. "non-targeting" is deliberately absent -- 2,974
+  #                       keys against 2,975 distinct targets on moi5.
+  #   indiv_nt_grna_idxs  one entry per individual NON-TARGETING gRNA (1,499).
+  #
+  # So per-gRNA resolution exists for NTCs and nowhere else; sceptre keeps it
+  # precisely because the calibration check regroups individual NTC gRNAs into
+  # synthetic targets, and discards it for targeting gRNAs, which are only ever
+  # used as a union. Exporting the union table alone therefore drops every NTC
+  # -- not by oversight, but because "non-targeting" is not a key in it.
+  #
+  # Both kinds are already relative to cells_in_use and 1-based, and both go
+  # through this one code path: re-deriving assignments independently is what
+  # once reproduced only 39 of 2,974 targets.
+  cat("Exporting gRNA assignments...\n")
   grna_group_idxs <- so@grna_assignments$grna_group_idxs
-  target_rows <- do.call(rbind, lapply(names(grna_group_idxs), function(target) {
-    idxs <- grna_group_idxs[[target]]
-    if (length(idxs) == 0) return(NULL)
-    data.frame(grna_target = target, cell_index = as.integer(idxs) - 1L)
-  }))
-  if (max(target_rows$cell_index) >= n_cells) {
+  indiv_nt <- so@grna_assignments$indiv_nt_grna_idxs
+
+  as_rows <- function(idx_list) {
+    if (is.null(idx_list) || length(idx_list) == 0) return(NULL)
+    do.call(rbind, lapply(names(idx_list), function(unit) {
+      idxs <- idx_list[[unit]]
+      if (length(idxs) == 0) return(NULL)
+      data.frame(unit_id = unit, cell_index = as.integer(idxs) - 1L)
+    }))
+  }
+  assignment_rows <- rbind(as_rows(grna_group_idxs), as_rows(indiv_nt))
+  if (max(assignment_rows$cell_index) >= n_cells) {
     stop("gRNA cell indices exceed the cells_in_use count -- indexing convention changed",
          call. = FALSE)
   }
-  write_parquet(target_rows, file.path(out_dir, "grna_target_cells.parquet"))
-  cat("   ", length(grna_group_idxs), "targets,", nrow(target_rows), "membership rows\n")
+  write_parquet(assignment_rows, file.path(out_dir, "grna_assignments.parquet"))
+
+  annotation <- rbind(
+    data.frame(unit_id = names(grna_group_idxs),
+               grna_target = names(grna_group_idxs),
+               unit_kind = "target"),
+    if (!is.null(indiv_nt) && length(indiv_nt) > 0)
+      data.frame(unit_id = names(indiv_nt),
+                 grna_target = "non-targeting",
+                 unit_kind = "ntc_grna")
+  )
+  write_parquet(annotation, file.path(out_dir, "grna_annotation.parquet"))
+  cat("   ", length(grna_group_idxs), "targets +", length(indiv_nt), "NTC gRNAs =",
+      nrow(annotation), "units,", nrow(assignment_rows), "membership rows\n")
+  if (is.null(indiv_nt) || length(indiv_nt) == 0) {
+    cat("    no individual NTC gRNAs; the calibration check is not runnable from this export\n")
+  }
+
+  # The calibration check's pairs and results, when the object has been through
+  # run_calibration_check. Worth carrying because R's pair selection is
+  # unseeded and so cannot be reproduced by re-running: these are the only
+  # record of which pairs a given result was computed on, and without them a
+  # pair-by-pair comparison against that result is impossible.
+  ncp <- so@negative_control_pairs
+  if (!is.null(ncp) && nrow(ncp) > 0) {
+    # R names the column grna_group here but grna_target everywhere else.
+    if ("grna_group" %in% names(ncp)) names(ncp)[names(ncp) == "grna_group"] <- "grna_target"
+    write_parquet(as.data.frame(ncp), file.path(out_dir, "negative_control_pairs.parquet"))
+    cat("   R negative_control_pairs:", nrow(ncp), "rows\n")
+  }
+  calibration_result <- so@calibration_result
+  if (!is.null(calibration_result) && nrow(calibration_result) > 0) {
+    cr <- as.data.frame(calibration_result)
+    if ("grna_group" %in% names(cr)) names(cr)[names(cr) == "grna_group"] <- "grna_target"
+    write_parquet(cr, file.path(out_dir, "calibration_result.parquet"))
+    cat("   R calibration_result:", nrow(cr), "rows\n")
+  }
 
   discovery_result <- so@discovery_result
   if (!is.null(discovery_result) && nrow(discovery_result) > 0) {
@@ -127,6 +189,26 @@ export_sceptre_object <- function(so, out_dir, all_genes = FALSE,
     control_group_complement = so@control_group_complement,
     multiple_testing_alpha = so@multiple_testing_alpha,
     B1 = so@B1, B2 = so@B2, B3 = so@B3,
+    # Pairwise QC thresholds. The calibration check needs these because it
+    # samples only (gene, synthetic-target) pairs that already pass them --
+    # unlike discovery, where the pairs are given and failures are reported
+    # in-band with pass_qc = FALSE.
+    n_nonzero_trt_thresh = so@n_nonzero_trt_thresh,
+    n_nonzero_cntrl_thresh = so@n_nonzero_cntrl_thresh,
+    n_ok_discovery_pairs = so@n_ok_discovery_pairs,
+    # R's `p_hat` in construct_negative_control_pairs_v2: the fraction of
+    # discovery pairs clearing pairwise QC, which sizes how many synthetic
+    # negative-control groups get built. pysceptre cannot recompute it, because
+    # it is only ever handed pairs that already passed, so it is recorded here.
+    # Confirmed load-bearing on day0: R built 625 groups, and the rule
+    # reproduces 625 only with this rate (0.9571); assuming 1.0 gives 598.
+    discovery_pass_qc_rate = if (!is.null(so@discovery_pairs_with_info) &&
+                                 nrow(so@discovery_pairs_with_info) > 0)
+      mean(so@discovery_pairs_with_info$pass_qc) else NA_real_,
+    # R's default group size: median gRNAs per real target, capped at the
+    # number of NTC gRNAs available.
+    calibration_group_size = sceptre:::compute_calibration_group_size(so@grna_target_data_frame),
+    n_ntc_grnas = length(so@grna_assignments$indiv_nt_grna_idxs),
     formula = paste(deparse(so@formula_object), collapse = " "),
     sceptre_version = as.character(packageVersion("sceptre")),
     exported_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%S%z"),

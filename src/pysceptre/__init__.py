@@ -8,11 +8,11 @@ See README.md for scope, limitations, and validation against the R package.
 
 from importlib.metadata import PackageNotFoundError, version
 
-from .pipeline.api import run_discovery_analysis
+from .pipeline.api import run_calibration_check, run_discovery_analysis
 
 try:
     __version__ = version("pysceptre")
 except PackageNotFoundError:  # not installed (e.g. running from a source tree)
     __version__ = "unknown"
 
-__all__ = ["run_discovery_analysis", "__version__"]
+__all__ = ["run_discovery_analysis", "run_calibration_check", "__version__"]

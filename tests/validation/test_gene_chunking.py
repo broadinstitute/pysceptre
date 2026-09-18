@@ -118,3 +118,81 @@ def test_chunking_works_with_a_sparse_response_matrix():
         np.testing.assert_allclose(
             dense_fit[gid].fitted_coefs, sparse_fit[gid].fitted_coefs, rtol=1e-12
         )
+
+
+def test_fitting_a_subset_matches_fitting_all_genes():
+    """Skipping untested genes must be a saving, not a change of result.
+
+    `run_discovery_ntcells_complement` fits only the genes some pair mentions.
+    That is safe because the batched IRLS solves each column independently --
+    `A` is (k, p, p) and `b` is (k, p), solved per k -- so which other genes
+    share the batch cannot affect a gene's own fit.
+
+    **Compared to a tolerance, not bitwise.** Changing the subset changes the
+    batch width, so `(k, n) @ (n, p*p)` is a differently-shaped matmul and BLAS
+    may block and accumulate it differently. The results then differ in the
+    last bits, and by how much depends on the BLAS: measured exactly 0.0 on
+    macOS/Accelerate and nonzero on Linux/OpenBLAS, which is how an earlier
+    version of this test passed locally and failed CI on 3.10 and 3.11. The
+    invariant that matters is that the fits agree to floating-point precision.
+
+    The data is negative-binomial with a real dispersion rather than Poisson.
+    Under Poisson the dispersion MLE is unidentified, theta runs to
+    `_THETA_BOUNDS` (measured 179.5 and 199.8 against a bound of 200), and the
+    ill-conditioned fit amplifies exactly the rounding this test should be
+    insensitive to.
+    """
+    rng = np.random.default_rng(0)
+    n_genes, n_cells, p = 24, 300, 4
+    X = np.column_stack([np.ones(n_cells), rng.normal(size=(n_cells, p - 1))])
+    mu = 20.0
+    theta = 5.0
+    Y = rng.negative_binomial(theta, theta / (theta + mu), size=(n_genes, n_cells)).astype(float)
+    gene_ids = [f"g{i}" for i in range(n_genes)]
+
+    every = fit_all_genes(Y, gene_ids, X, chunk_memory_gb=1.0)
+
+    subset_rows = [1, 4, 5, 6, 17, 23]  # scattered, and not starting at 0
+    subset_ids = [gene_ids[i] for i in subset_rows]
+    some = fit_all_genes(Y, subset_ids, X, chunk_memory_gb=1.0, gene_rows=subset_rows)
+
+    assert set(some) == set(subset_ids)
+    for gene_id in subset_ids:
+        np.testing.assert_allclose(
+            some[gene_id].fitted_coefs, every[gene_id].fitted_coefs, rtol=1e-9, atol=1e-12
+        )
+        assert some[gene_id].theta == pytest.approx(every[gene_id].theta, rel=1e-6)
+
+
+def test_subset_fitting_reads_the_right_genes():
+    """The saving must not come from fitting the wrong rows.
+
+    A tolerance-based comparison would not catch an off-by-one in the row
+    mapping if neighbouring genes happened to fit similarly, so this checks
+    the mapping directly: each gene's fit must match fitting that gene alone.
+    """
+    rng = np.random.default_rng(1)
+    n_genes, n_cells = 8, 200
+    X = np.column_stack([np.ones(n_cells), rng.normal(size=(n_cells, 2))])
+    theta = 5.0
+    # Distinct means per gene, so mixing two rows up changes the answer.
+    mu = np.linspace(5.0, 60.0, n_genes)[:, None]
+    Y = rng.negative_binomial(theta, theta / (theta + mu), size=(n_genes, n_cells)).astype(float)
+    ids = [f"g{i}" for i in range(n_genes)]
+
+    for row in (0, 3, 7):
+        alone = fit_all_genes(Y, [ids[row]], X, gene_rows=[row])
+        both = fit_all_genes(
+            Y, [ids[row], ids[(row + 1) % n_genes]], X, gene_rows=[row, (row + 1) % n_genes]
+        )
+        np.testing.assert_allclose(
+            alone[ids[row]].fitted_coefs, both[ids[row]].fitted_coefs, rtol=1e-9, atol=1e-12
+        )
+
+
+def test_fit_all_genes_rejects_mismatched_row_mapping():
+    rng = np.random.default_rng(0)
+    X = np.column_stack([np.ones(50), rng.normal(size=(50, 2))])
+    Y = rng.poisson(5.0, size=(3, 50)).astype(float)
+    with pytest.raises(ValueError, match="gene_rows has 2 entries for 3 gene_ids"):
+        fit_all_genes(Y, ["a", "b", "c"], X, gene_rows=[0, 1])
