@@ -210,6 +210,39 @@ importable and unit-tested, for anyone extending or debugging the pipeline:
 | `pysceptre.test_statistic.resampling` | Ties the above into the `B1 -> B2 -> B3` staged escalation for one pair -- `run_low_level_test_full`. |
 | `pysceptre.pipeline.discovery` | Orchestration: `fit_all_genes`, `fit_all_targets`, `run_discovery_ntcells_complement`. |
 
+## Reproducibility and incremental analysis
+
+A pair's result depends on `(seed, response_id, grna_target)` and the data,
+and on nothing else about the run. Each target draws its CRT resamples from
+its own stream keyed on the target's *name*, so results do not depend on the
+order targets are processed, the chunk size, the worker count, or **which
+other pairs are in the analysis**.
+
+That makes an incremental workflow safe: run a subset, check it, then run the
+full set and reuse what you already have. The pairs in common come back
+identical rather than merely similar.
+
+Two limits, both worth knowing exactly:
+
+| change between runs | shared pairs |
+|---|---|
+| more or fewer targets or pairs; different order; different `target_chunk_size` or `n_jobs` | **bitwise identical** |
+| a different set of *genes* | identical to ~1e-16 |
+
+The second is batched linear algebra, not randomness: gene GLMs are fitted in
+batches, and changing the batch width changes the order of floating-point
+additions. Measured at one unit in the last place (1.11e-16 on `fold_change`,
+3 of 72 pairs) on OpenBLAS, and exactly zero on Apple Accelerate. It cannot
+be removed without fitting genes one at a time, which is the batching this
+package exists to do.
+
+**Adjusted p-values are a different matter and must be recomputed.** A
+Benjamini-Hochberg adjustment depends on every p-value in the set, so adding
+pairs changes the adjusted value, and possibly the call, for pairs already
+tested. That is multiple testing behaving correctly. `run_discovery_analysis`
+returns raw p-values and applies no correction, so cache those and run the
+adjustment over the union each time.
+
 ## Scope and limitations
 
 - **Complement control group only, high-MOI/CRT resampling only.** This is

@@ -14,7 +14,8 @@ of it.
 
 Usage:
   benchmark_n_jobs.py <export_dir> [--steps discovery,calibration]
-      [--jobs 1,2,4,8] [--chunk-memory-gb G] [--out results.json]
+      [--jobs 1,2,4,8] [--budgets 1,2,4,8] [--chunk-memory-gb G]
+      [--out results.json]
 """
 
 from __future__ import annotations
@@ -104,6 +105,7 @@ def main() -> None:
 
     steps = value("--steps", lambda v: v.split(","), ["discovery", "calibration"])
     jobs = value("--jobs", lambda v: [int(x) for x in v.split(",")], [1, 2, 4, 8])
+    budgets = value("--budgets", lambda v: [float(x) for x in v.split(",")], None)
     chunk_memory_gb = value("--chunk-memory-gb", float, None)
     out_path = value("--out", str, None)
 
@@ -115,8 +117,9 @@ def main() -> None:
     for step in steps:
         print(f"== {step} ==")
         rows, baseline, reference = [], None, None
-        for n in jobs:
-            result, wall = run_step(step, export, n, chunk_memory_gb)
+        grid = [(n, b) for b in (budgets or [chunk_memory_gb]) for n in jobs]
+        for n, b in grid:
+            result, wall = run_step(step, export, n, b)
             if baseline is None:
                 baseline, reference = wall, result["p_value"].to_numpy()
                 identical = True
@@ -125,6 +128,7 @@ def main() -> None:
             rows.append(
                 {
                     "n_jobs": n,
+                    "chunk_memory_gb": b,
                     "wall_seconds": wall,
                     "speedup": baseline / wall,
                     "peak_rss_gb": peak_rss_gb(),
@@ -133,7 +137,8 @@ def main() -> None:
                 }
             )
             print(
-                f"  n_jobs={n:<3} {wall:8.1f}s ({wall / 60:5.2f} min)  "
+                f"  budget={b if b else 'default':<7} n_jobs={n:<3} "
+                f"{wall:8.1f}s ({wall / 60:5.2f} min)  "
                 f"speedup {baseline / wall:5.2f}x  peak {peak_rss_gb():5.2f} GB  "
                 f"identical={identical}"
             )

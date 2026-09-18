@@ -17,6 +17,7 @@ per-gene loop; likewise all targets share it for the logistic fit.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import sys
 import warnings
@@ -359,6 +360,44 @@ def _warn_about_degenerate_gene_fits(gene_precomps: dict[str, GenePrecomputation
         )
 
 
+def target_seed_sequence(seed, target_id: str) -> np.random.SeedSequence:
+    """A stream keyed by the target's *name*, not its position.
+
+    Every target draws from its own independent substream, derived from
+    `(seed, target_id)`. This is what makes a result reproducible in the sense
+    that matters in practice: **adding or removing targets or pairs does not
+    move any other target's numbers.**
+
+    The alternative, spawning by position, is enough to make results
+    independent of worker count and chunk size but not of composition -- insert
+    one target at the front and every later target draws different numbers.
+    Keying on identity removes that.
+
+    `hashlib` rather than `hash()`: Python salts string hashing per process
+    unless PYTHONHASHSEED is fixed, so `hash("target_1")` differs between runs
+    and would make the seeding irreproducible in exactly the situation this
+    function exists to prevent.
+    """
+    key = int.from_bytes(
+        hashlib.blake2b(str(target_id).encode("utf-8"), digest_size=8).digest(), "big"
+    )
+    # `seed` is expected to be already-resolved entropy (see `resolve_entropy`),
+    # so that `seed=None` reads OS entropy once per run rather than once per
+    # target -- which would be thousands of reads, and would muddle "one
+    # unseeded run" with "one unseeded target".
+    return np.random.SeedSequence(entropy=seed, spawn_key=(key,))
+
+
+def resolve_entropy(seed) -> int:
+    """Turn `seed` into concrete entropy, once per run.
+
+    `seed=None` means "pick something"; picking it here rather than per target
+    keeps an unseeded run internally coherent and makes the chosen value a
+    single thing that could be reported or logged.
+    """
+    return np.random.SeedSequence(seed).entropy
+
+
 def fit_all_targets(
     grna_target_cells: dict[str, np.ndarray],
     covariate_matrix: np.ndarray,
@@ -366,10 +405,17 @@ def fit_all_targets(
     B1: int,
     B2: int,
     B3: int,
-    rng: np.random.Generator,
+    seed,
 ) -> dict[str, TargetPrecomputation]:
     """One batched binomial IRLS call across all targets (indicator columns
-    share the full covariate matrix), then a CRT draw per target."""
+    share the full covariate matrix), then a CRT draw per target.
+
+    Each target's draw comes from its own stream, keyed by its name rather
+    than drawn from one shared generator in sequence -- see
+    `target_seed_sequence`. That makes the draws independent of the order
+    targets are processed in and of which other targets are present, and is
+    what lets them be computed in parallel at all.
+    """
     n_cells = covariate_matrix.shape[0]
     target_ids = list(grna_target_cells.keys())
     # Target-major, matching the gene fit and glm/irls.py's convention.
@@ -383,7 +429,8 @@ def fit_all_targets(
     B_total = B1 + B2 + B3
     for k, target_id in enumerate(target_ids):
         fitted_probabilities = fit.fitted_values[k]
-        synthetic_idxs = crt_index_sampler_fast(fitted_probabilities, B_total, rng)
+        target_rng = np.random.default_rng(target_seed_sequence(seed, target_id))
+        synthetic_idxs = crt_index_sampler_fast(fitted_probabilities, B_total, target_rng)
         out[target_id] = TargetPrecomputation(
             trt_idxs=grna_target_cells[target_id],
             fitted_probabilities=fitted_probabilities,
@@ -666,7 +713,11 @@ def run_discovery_ntcells_complement(
     `n_pairs / multiple_testing_alpha` and reaches 1.65M draws (5.2 GB) per
     target at moi5 scale.
     """
-    rng = np.random.default_rng(seed)
+    # No single shared generator: each target seeds its own from its name, so
+    # results do not depend on target order or on which other targets are in
+    # the run. See `target_seed_sequence`. Entropy is resolved once here so an
+    # unseeded run still draws it a single time.
+    entropy = resolve_entropy(seed)
 
     # Fit only the genes some pair mentions. `gene_ids` labels every row of
     # `response_matrix`, which for an all-genes dataset is far more than the
@@ -708,7 +759,7 @@ def run_discovery_ntcells_complement(
         chunk_ids = target_ids_needed[chunk_start : chunk_start + target_chunk_size]
         chunk_cells = {t: grna_target_cells[t] for t in chunk_ids}
         target_precomps = fit_all_targets(
-            chunk_cells, covariate_matrix, B1=B1, B2=B2, B3=B3, rng=rng
+            chunk_cells, covariate_matrix, B1=B1, B2=B2, B3=B3, seed=entropy
         )
 
         # Gene-outer inside the chunk so each gene's pieces are rebuilt once
