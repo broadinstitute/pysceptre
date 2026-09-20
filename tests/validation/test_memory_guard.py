@@ -138,7 +138,39 @@ def test_the_warning_breaks_the_cost_into_fit_and_draws():
         _resolve_target_chunk_size(BENCH_CELLS, SKEW_NORMAL_B, N_TRT, 3026, 200, 4.0)
     message = str(rec[0].message)
     assert "dense binomial-fit arrays" in message
-    assert "CRT draws" in message
+    assert "resamples" in message
+
+
+def test_permutations_are_not_charged_for_a_fit_they_never_build():
+    """The fit arrays dominate the per-target cost, and permutations skip them.
+
+    `fit_all_targets` runs no logistic fit on that path, so budgeting for one
+    caps the chunk far below what memory allows -- and since each gene's
+    precomputation pieces are rebuilt once per chunk, a narrower chunk costs
+    real time rather than merely wasting headroom.
+    """
+    with_fit = target_bytes_per_item(BENCH_CELLS, SKEW_NORMAL_B, N_TRT)
+    without = target_bytes_per_item(BENCH_CELLS, SKEW_NORMAL_B, N_TRT, include_fit=False)
+    assert without < with_fit
+    assert without == estimate_draw_memory_bytes(SKEW_NORMAL_B, N_TRT, 1)
+
+    narrow = target_chunk_size_for_budget(BENCH_CELLS, SKEW_NORMAL_B, N_TRT, 3026, 4.0)
+    wide = target_chunk_size_for_budget(
+        BENCH_CELLS, SKEW_NORMAL_B, N_TRT, 3026, 4.0, include_fit=False
+    )
+    assert wide > narrow
+    assert without * wide <= 4e9
+
+
+def test_the_permutation_warning_does_not_blame_a_fit():
+    """Docs accuracy applies to warnings: it must not name memory it never used."""
+    with pytest.warns(UserWarning) as rec:
+        _resolve_target_chunk_size(
+            REAL_CELLS, int(NO_APPROX_B), N_TRT, 2875, 200, 4.0, include_fit=False
+        )
+    message = str(rec[0].message)
+    assert "dense binomial-fit arrays" not in message
+    assert "no binomial fit on the permutation path" in message
 
 
 # --- results must not depend on any of this -------------------------------

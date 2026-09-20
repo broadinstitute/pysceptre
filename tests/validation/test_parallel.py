@@ -21,11 +21,13 @@ import multiprocessing as mp
 import os
 import sys
 import warnings
+from unittest import mock
 
 import numpy as np
 import pandas as pd
 import pytest
 
+from pysceptre.pipeline import discovery
 from pysceptre.pipeline.api import run_discovery_analysis
 from pysceptre.pipeline.discovery import (
     parallel_backend,
@@ -183,3 +185,38 @@ def test_backed_matrix_survives_a_fork(tmp_path):
 
     for i, row in enumerate(got):
         np.testing.assert_array_equal(np.asarray(row), expected[i], err_msg=f"gene {i} corrupted")
+
+
+def test_n_jobs_one_really_means_one_thread():
+    """A single-worker run must not quietly use a second core.
+
+    Chunk preparation is prefetched onto a thread of its own, which is a
+    1.31x win at `n_jobs=8` and, if left ungated, a 1.43x "win" at
+    `n_jobs=1` that is only the extra thread: 831.0 s against 579.1 s on
+    day0. `n_jobs` has to mean what it says -- a cgroup-limited container, a
+    single-core benchmark and every matched-core comparison against R depend
+    on it, and a contaminated single-core figure looks entirely plausible.
+
+    `_map_jobs` imports `ThreadPoolExecutor` locally, so patching the module
+    global catches the prefetch and nothing else.
+    """
+    Y, genes, X, targets, pairs = _dataset()
+    kwargs = dict(
+        response_matrix=Y,
+        gene_ids=genes,
+        covariate_matrix=X,
+        grna_target_cells=targets,
+        pairs=pairs,
+        seed=0,
+        target_chunk_size=2,  # several chunks, so prefetching is possible at all
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        with mock.patch.object(discovery, "ThreadPoolExecutor") as pool:
+            run_discovery_analysis(n_jobs=1, **kwargs)
+            assert not pool.called, "n_jobs=1 started a prefetch thread"
+        with mock.patch.object(
+            discovery, "ThreadPoolExecutor", wraps=discovery.ThreadPoolExecutor
+        ) as pool:
+            run_discovery_analysis(n_jobs=2, **kwargs)
+            assert pool.called, "n_jobs=2 did not prefetch"

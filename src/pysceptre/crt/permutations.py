@@ -33,9 +33,17 @@ need results that survive extending an analysis should use the CRT. The
 tradeoff belongs to the caller, so it is documented rather than decided
 here.
 
-The cost profile is the mirror of the CRT's: sampling is nearly free, one
-call instead of one per target, but R pairs permutations with
-`B3 = 24,999` against the CRT's `0`, so the escalation batch is far larger.
+The cost profile is the mirror of the CRT's. Sampling is nearly free -- one
+call instead of one per target -- and, less obviously, **the per-target
+logistic fit disappears with it**: those fitted probabilities exist only for
+`crt_index_sampler_fast` to draw from, and permutation draws never consult
+them, so `fit_all_targets` skips the fit entirely. R draws the same line,
+calling `perform_grna_precomputation` from `crt_glm_factored_out` and
+`discovery_ntcells_crt` but not from `perm_test_glm_factored_out`.
+
+Against that, R pairs permutations with `B3 = 24,999` where the CRT gets
+`0`, so the escalation batch is far larger -- but only for pairs that
+escalate, which on a real run is 1,265 of 34,886.
 """
 
 from __future__ import annotations
@@ -92,6 +100,18 @@ def draws_for_target(perms: np.ndarray, n_trt: int) -> list[np.ndarray]:
     Matches the shape the CRT sampler returns, so everything downstream --
     `draws_to_matrix`, the staged test, the statistic -- is shared between
     the two mechanisms rather than duplicated.
+
+    **Deliberately not sorted**, matching R, which reads `curr_vect[j]` for
+    `j < n_trt` straight off the shared array and sorts nothing. The prefix
+    of a random ordering is already a uniformly random subset; sorting it
+    only fixes the order the statistic sums in. An earlier version sorted so
+    that the CSR would be canonical, which cost 1.3M `np.sort` calls -- 7.9 s
+    of a 180 s profile, about 5% -- for no change to the mathematics.
+
+    scipy does not require sorted indices: `csr_matvecs` sums a row's
+    nonzeros in stored order. It does mean the sum is taken in a different
+    order, so permutation results moved once by ~1e-14 when this changed.
+    That is floating-point associativity, not a different estimate.
     """
     if n_trt > perms.shape[1]:
         raise ValueError(
@@ -99,4 +119,4 @@ def draws_for_target(perms: np.ndarray, n_trt: int) -> list[np.ndarray]:
             f"{perms.shape[1]}; they are sized by the largest target, so this "
             "means the draws were built for a different target set"
         )
-    return [np.sort(row[:n_trt]) for row in perms]
+    return [row[:n_trt] for row in perms]

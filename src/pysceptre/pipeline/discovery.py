@@ -21,19 +21,26 @@ import hashlib
 import os
 import sys
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from functools import partial
 
 import numpy as np
 import pandas as pd
-from scipy import sparse
 
 from ..crt.permutations import permutation_draws
 from ..crt.sampler import crt_index_sampler_fast
-from ..glm.irls import fit_binomial_glm_batch, fit_poisson_glm_batch
+from ..glm.irls import fit_binomial_glm_batch, fit_poisson_glm_batch, x_outer_flat
 from ..glm.nb_theta import estimate_theta
 from ..precompute.pieces import compute_precomputation_pieces
 from ..test_statistic.resampling import run_low_level_test_full
-from ..test_statistic.score_stat import ListDraws, PermutationSliceDraws, stack_pieces
+from ..test_statistic.score_stat import (
+    ListDraws,
+    PermutationPrefixSums,
+    PermutationSliceDraws,
+    StagedDraws,
+    stack_pieces,
+)
 
 # Budget for the arrays a *chunk* holds, in GB. It sizes how many genes or
 # targets are processed together; it is NOT a cap on the process's memory,
@@ -157,13 +164,16 @@ class GenePrecomputation:
 @dataclass
 class TargetPrecomputation:
     trt_idxs: np.ndarray  # 0-based
-    fitted_probabilities: np.ndarray
-    # The target's B1+B2+B3 CRT draws as a (B, n_cells) 0/1 CSR matrix. Held
-    # in this form rather than as a list of index arrays because every gene
-    # paired with this target needs exactly the same flattening, which used to
-    # be redone once per *pair*: 2,451 rebuilds of a target-fixed structure in
-    # one profiled run.
-    draws: sparse.csr_matrix
+    # `None` under permutations, where no logistic fit is performed: the
+    # probabilities exist only to draw from, and permutation draws do not
+    # come from them. Kept on the CRT path because the sampler needs them.
+    fitted_probabilities: np.ndarray | None
+    # The target's B1+B2+B3 resamples, as `(B, n_cells)` 0/1 CSR rows built
+    # one stage at a time. Held per target rather than per pair because every
+    # gene paired with this target needs exactly the same flattening, which
+    # used to be redone once per *pair*: 2,451 rebuilds of a target-fixed
+    # structure in one profiled run.
+    draws: StagedDraws
 
 
 # 97.5th percentile of the standard normal, for two-sided 95% intervals.
@@ -247,6 +257,7 @@ def _gene_fit_job(job: tuple[int, list[str], list[int]]) -> dict[str, GenePrecom
     response_matrix = st["response_matrix"]
     covariate_matrix = st["covariate_matrix"]
     dfr = st["dfr"]
+    xo = st["x_outer_flat"]
     n_cells = covariate_matrix.shape[0]
 
     contiguous = chunk_rows == list(range(chunk_rows[0], chunk_rows[0] + len(chunk_rows)))
@@ -260,7 +271,7 @@ def _gene_fit_job(job: tuple[int, list[str], list[int]]) -> dict[str, GenePrecom
         for j, row in enumerate(chunk_rows):
             Y[j] = _get_row(response_matrix, row)
 
-    fit = fit_poisson_glm_batch(covariate_matrix, Y)
+    fit = fit_poisson_glm_batch(covariate_matrix, Y, X_outer_flat=xo)
 
     out: dict[str, GenePrecomputation] = {}
     for j, gene_id in enumerate(chunk_ids):
@@ -294,6 +305,7 @@ def fit_all_genes(
     gene_rows: list[int] | None = None,
     batch_width: int | None = None,
     n_jobs: int = 1,
+    x_outer_flat_shared: np.ndarray | None = None,
 ) -> dict[str, GenePrecomputation]:
     """Batched Poisson IRLS across genes (they share the full covariate
     matrix), then per-gene theta estimation and precomputation pieces.
@@ -344,6 +356,10 @@ def fit_all_genes(
         response_matrix=response_matrix,
         covariate_matrix=covariate_matrix,
         dfr=dfr,
+        # Built once by the caller and shared by every fit; see
+        # `glm.irls.x_outer_flat`. Inherited by forked workers, shared by
+        # threads, so it crosses no boundary either way.
+        x_outer_flat=x_outer_flat_shared,
     )
     out: dict[str, GenePrecomputation] = {}
     try:
@@ -492,11 +508,16 @@ _TARGET_STATE: dict = {}
 
 
 def _target_draw_job(job: tuple[int, str]) -> tuple[str, TargetPrecomputation]:
-    """One target's CRT draw. Independent, since each seeds from its own name."""
+    """One target's resamples.
+
+    Independent of every other target: the CRT seeds from the target's own
+    name, and permutations read a prefix of one shared array.
+    """
     k, target_id = job
     st = _TARGET_STATE
-    fitted_probabilities = st["fitted_values"][k]
+    fitted_values = st["fitted_values"]
     perms = st["permutations"]
+    fitted_probabilities = None if fitted_values is None else fitted_values[k]
     trt_idxs = st["grna_target_cells"][target_id]
     if perms is None:
         rng = np.random.default_rng(target_seed_sequence(st["seed"], target_id))
@@ -526,9 +547,14 @@ def fit_all_targets(
     seed,
     n_jobs: int = 1,
     permutations: np.ndarray | None = None,
+    x_outer_flat_shared: np.ndarray | None = None,
 ) -> dict[str, TargetPrecomputation]:
-    """One batched binomial IRLS call across all targets (indicator columns
-    share the full covariate matrix), then a CRT draw per target.
+    """Per-target resamples, plus the logistic fit the CRT draws them from.
+
+    On the CRT path that is one batched binomial IRLS call across all
+    targets (indicator columns share the full covariate matrix), then a draw
+    per target. On the permutation path the fit is skipped -- nothing reads
+    it there -- and each target takes a prefix of the shared draws.
 
     Each target's draw comes from its own stream, keyed by its name rather
     than drawn from one shared generator in sequence -- see
@@ -538,12 +564,30 @@ def fit_all_targets(
     """
     n_cells = covariate_matrix.shape[0]
     target_ids = list(grna_target_cells.keys())
-    # Target-major, matching the gene fit and glm/irls.py's convention.
-    Y = np.zeros((len(target_ids), n_cells))
-    for k, target_id in enumerate(target_ids):
-        Y[k, grna_target_cells[target_id]] = 1.0
 
-    fit = fit_binomial_glm_batch(covariate_matrix, Y)
+    # **Skipped entirely under permutations, matching R.** The logistic fit
+    # exists to give `crt_index_sampler_fast` the per-cell probabilities to
+    # draw from; permutation draws are uniform subsets and never consult it,
+    # and `fitted_probabilities` has no other reader. R makes the same
+    # split -- `perform_grna_precomputation` is called only from
+    # `crt_glm_factored_out` and `discovery_ntcells_crt`, never from
+    # `perm_test_glm_factored_out` -- and doing it anyway was the largest
+    # single term in a permutation profile at **36% of runtime**, for a
+    # result that was then thrown away.
+    #
+    # It is also the expensive shape: the responses are indicator columns,
+    # ~0.1% dense, held as float64 because the IRLS needs them dense, so the
+    # discarded work is a dense fit over all 3,026 tested targets x 567,690
+    # cells, taken a chunk at a time.
+    fitted_values = None
+    if permutations is None:
+        # Target-major, matching the gene fit and glm/irls.py's convention.
+        Y = np.zeros((len(target_ids), n_cells))
+        for k, target_id in enumerate(target_ids):
+            Y[k, grna_target_cells[target_id]] = 1.0
+        fitted_values = fit_binomial_glm_batch(
+            covariate_matrix, Y, X_outer_flat=x_outer_flat_shared
+        ).fitted_values
 
     # The draws parallelize now that each target seeds from its own name --
     # under a shared generator the order of consumption was the answer, so
@@ -559,7 +603,7 @@ def fit_all_targets(
     # allocation and bandwidth contention on those 33 MB buffers.
     _TARGET_STATE.update(
         permutations=permutations,
-        fitted_values=fit.fitted_values,
+        fitted_values=fitted_values,
         grna_target_cells=grna_target_cells,
         seed=seed,
         B_total=B1 + B2 + B3,
@@ -581,9 +625,11 @@ _DEFAULT_TARGET_CHUNK_SIZE = 200
 _BYTES_PER_INDEX = 8  # int64 cell index
 
 
-def target_bytes_per_item(n_cells: int, B_total: int, n_trt_values) -> float:
+def target_bytes_per_item(
+    n_cells: int, B_total: int, n_trt_values, *, include_fit: bool = True
+) -> float:
     """Bytes one target costs a chunk: its share of the dense binomial fit
-    plus the CRT draws it holds.
+    plus the resamples it holds.
 
     The fit term is the wasteful one -- the responses are indicators with
     roughly `n_trt` ones per column (396 of 586,309 in the benchmark,
@@ -591,8 +637,17 @@ def target_bytes_per_item(n_cells: int, B_total: int, n_trt_values) -> float:
     Measured unbounded peak was 13.1 GB at `target_chunk_size=200` over 586k
     cells. The draw term is what explodes under `no_approximation`, where
     `B_total` reaches 1.65M and a single target needs 5.2 GB.
+
+    `include_fit=False` for permutations, which never build those arrays at
+    all. Charging for absent memory is not merely conservative: on day0 the
+    fit term is 45.4 MB per target over 567,690 cells against 135.9 MB of
+    draws, so dropping it took the chunk from 5 to 7 at
+    `chunk_memory_gb=1.0`. Since each gene's precomputation pieces are
+    rebuilt once per chunk, a wider chunk is fewer rebuilds rather than
+    merely spare headroom.
     """
-    return irls_bytes_per_column(n_cells) + _draw_bytes_per_target(B_total, n_trt_values)
+    fit = irls_bytes_per_column(n_cells) if include_fit else 0.0
+    return fit + _draw_bytes_per_target(B_total, n_trt_values)
 
 
 def _draw_bytes_per_target(B_total: int, n_trt_values) -> float:
@@ -608,16 +663,24 @@ def _draw_bytes_per_target(B_total: int, n_trt_values) -> float:
 
 
 def estimate_draw_memory_bytes(B_total: int, n_trt_values, chunk_size: int) -> float:
-    """Bytes of CRT draws held at once, for one chunk of targets."""
+    """Bytes of resamples held at once, for one chunk of targets."""
     return _draw_bytes_per_target(B_total, n_trt_values) * chunk_size
 
 
 def target_chunk_size_for_budget(
-    n_cells: int, B_total: int, n_trt_values, n_targets: int, chunk_memory_gb: float
+    n_cells: int,
+    B_total: int,
+    n_trt_values,
+    n_targets: int,
+    chunk_memory_gb: float,
+    *,
+    include_fit: bool = True,
 ) -> int:
-    """Largest target chunk whose fit arrays *and* CRT draws fit the budget."""
+    """Largest target chunk whose fit arrays *and* resamples fit the budget."""
     return chunk_size_for_budget(
-        target_bytes_per_item(n_cells, B_total, n_trt_values), n_targets, chunk_memory_gb
+        target_bytes_per_item(n_cells, B_total, n_trt_values, include_fit=include_fit),
+        n_targets,
+        chunk_memory_gb,
     )
 
 
@@ -628,6 +691,8 @@ def _resolve_target_chunk_size(
     n_targets: int,
     chunk_size: int,
     chunk_memory_gb: float,
+    *,
+    include_fit: bool = True,
 ) -> int:
     """Clamp the requested chunk size to the memory budget, warning if it moves.
 
@@ -644,20 +709,26 @@ def _resolve_target_chunk_size(
     """
     fitted = min(
         chunk_size,
-        target_chunk_size_for_budget(n_cells, B_total, n_trt_values, n_targets, chunk_memory_gb),
+        target_chunk_size_for_budget(
+            n_cells, B_total, n_trt_values, n_targets, chunk_memory_gb, include_fit=include_fit
+        ),
     )
     if fitted >= chunk_size:
         return chunk_size
 
-    per_target = target_bytes_per_item(n_cells, B_total, n_trt_values)
-    fit_part = irls_bytes_per_column(n_cells)
+    per_target = target_bytes_per_item(n_cells, B_total, n_trt_values, include_fit=include_fit)
     draw_part = _draw_bytes_per_target(B_total, n_trt_values)
+    fit_clause = (
+        f"{_format_bytes(irls_bytes_per_column(n_cells))} of dense "
+        f"binomial-fit arrays over {n_cells:,} cells, plus "
+        if include_fit
+        else "no binomial fit on the permutation path, only "
+    )
     message = (
         f"reducing target_chunk_size from {chunk_size} to {fitted} to stay "
         f"within chunk_memory_gb={chunk_memory_gb}: each target needs about "
         f"{_format_bytes(per_target)} "
-        f"({_format_bytes(fit_part)} of dense binomial-fit arrays over "
-        f"{n_cells:,} cells, plus {_format_bytes(draw_part)} of CRT draws for "
+        f"({fit_clause}{_format_bytes(draw_part)} of resamples for "
         f"B1+B2+B3 = {B_total:,}). Chunk size affects only peak memory and "
         f"batching width, not results."
     )
@@ -682,6 +753,12 @@ def _resolve_target_chunk_size(
 _WORKER_STATE: dict = {}
 
 
+def _prefix_nulls(prefix: PermutationPrefixSums, n_trt: int, lo: int, hi: int):
+    """Adapter so the per-target closure stays picklable under the process
+    backend, where a lambda over the loop variable would not be."""
+    return prefix.statistics(lo, hi, n_trt)
+
+
 def _gene_job(job: tuple[str, list[str]]) -> dict[tuple[str, str], dict]:
     """One gene's pairs against the current chunk's targets.
 
@@ -700,9 +777,21 @@ def _gene_job(job: tuple[str, list[str]]) -> dict[tuple[str, str], dict]:
     # matmul.
     stacked = stack_pieces(pieces.a, pieces.w, pieces.D)
 
+    # Permutations share their draws across targets, so this gene's segment
+    # sums for *every* target are one prefix scan along those shared rows --
+    # see `PermutationPrefixSums`. Built once here and read by each target,
+    # in place of a matmul per target. The CRT has no shared ordering to scan
+    # along, so it keeps the matmul.
+    perms = st["permutations"]
+    prefix = PermutationPrefixSums(stacked, perms) if perms is not None else None
+
     out: dict[tuple[str, str], dict] = {}
     for target_id in targets_here:
         target = st["target_precomps"][target_id]
+        null_fn = None
+        if prefix is not None:
+            n_trt = len(target.trt_idxs)
+            null_fn = partial(_prefix_nulls, prefix, n_trt)
         result = run_low_level_test_full(
             y=y,
             mu=pieces.mu,
@@ -717,6 +806,7 @@ def _gene_job(job: tuple[str, list[str]]) -> dict[tuple[str, str], dict]:
             B3=st["B3"],
             fit_parametric_curve=st["fit_parametric_curve"],
             side_code=st["side_code"],
+            null_statistics_fn=null_fn,
         )
         half_width = _CI_Z * result.se_fold_change
         out[(gene_id, target_id)] = {
@@ -883,10 +973,17 @@ def run_discovery_ntcells_complement(
     tested_genes = set(pairs["response_id"])
     needed_gene_ids = [g for g in gene_ids if g in tested_genes]
     needed_gene_rows = [i for i, g in enumerate(gene_ids) if g in tested_genes]
+    # One per run. Every fit in the analysis -- 237 gene fits and one per
+    # target chunk, ~454 calls on day0 -- reads the same design matrix, and
+    # this is the only part of the IRLS setup that depends on nothing else.
+    # See `glm.irls.x_outer_flat`.
+    shared_x_outer = x_outer_flat(covariate_matrix)
+
     gene_precomps = fit_all_genes(
         response_matrix,
         needed_gene_ids,
         covariate_matrix,
+        x_outer_flat_shared=shared_x_outer,
         # One gene per BLAS call, so a fit depends on nothing but that gene.
         # See `_GENE_BATCH_WIDTH`. The caller's `chunk_memory_gb` governs
         # target chunking only, which is result-neutral.
@@ -921,26 +1018,73 @@ def run_discovery_ntcells_complement(
             np.random.default_rng(entropy),
         )
 
-    target_chunk_size = _resolve_target_chunk_size(
-        covariate_matrix.shape[0],
-        B1 + B2 + B3,
-        [len(grna_target_cells[t]) for t in target_ids_needed],
-        len(target_ids_needed),
-        target_chunk_size,
-        chunk_memory_gb,
-    )
+    # **Permutations are not chunked at all**, which makes the loop below
+    # gene-major in effect and matches R's structure: `run_perm_test_in_memory`
+    # is gene-outer and builds each gene's precomputation pieces once, where
+    # chunking rebuilds them once per gene per chunk -- 237 against ~5,600 on
+    # day0.
+    #
+    # Chunking exists to bound what a live target costs, and for permutations
+    # that is now nothing. There is no logistic fit (`fit_all_targets`), the
+    # draws are one shared array held by reference
+    # (`PermutationSliceDraws`), stage 1 is served from a per-gene scan
+    # without materializing anything per target (`PermutationPrefixSums`),
+    # and the escalation stages are rebuilt rather than cached. A target
+    # costs its `trt_idxs` and two pointers.
+    #
+    # The CRT is chunked as before: its draws are genuinely per-target and
+    # large, which is what the budget is for.
+    if permutations is None:
+        target_chunk_size = _resolve_target_chunk_size(
+            covariate_matrix.shape[0],
+            B1 + B2 + B3,
+            [len(grna_target_cells[t]) for t in target_ids_needed],
+            len(target_ids_needed),
+            target_chunk_size,
+            chunk_memory_gb,
+        )
+    elif target_chunk_size == _DEFAULT_TARGET_CHUNK_SIZE:
+        target_chunk_size = max(1, len(target_ids_needed))
+    # An explicitly requested chunk size is still honoured on this path, even
+    # though nothing here needs bounding. It costs only speed, results are
+    # invariant to it either way, and silently ignoring a caller's memory
+    # knob is worse than being slower than necessary -- it is also what
+    # `test_permutations_do_not_depend_on_chunking_or_workers` exercises, and
+    # a knob that no longer moves anything makes that test vacuous.
 
     gene_row_index = {gene_id: i for i, gene_id in enumerate(gene_ids)}
     pairs_by_gene: dict[str, list[str]] = {}
     for gene_id, group in pairs.groupby("response_id"):
         pairs_by_gene[str(gene_id)] = list(group["grna_target"])
 
-    rows: dict[tuple[str, str], dict] = {}
-    for chunk_start in range(0, len(target_ids_needed), target_chunk_size):
-        chunk_ids = target_ids_needed[chunk_start : chunk_start + target_chunk_size]
-        chunk_cells = {t: grna_target_cells[t] for t in chunk_ids}
-        target_precomps = fit_all_targets(
-            chunk_cells,
+    # **A chunk's targets are prepared while the previous chunk's genes are
+    # still being tested.** `fit_all_targets` runs the batched logistic fit in
+    # this process, not in the worker pool, so with it inline every chunk
+    # boundary is a stretch where one core works and the rest wait. Amdahl on
+    # the measured CRT scaling puts that at **46% of runtime serial** -- 8
+    # workers returned 1.88x -- and it is the same fit whose removal took the
+    # permutation path's serial fraction to 14%.
+    #
+    # Prefetching hides it instead of dividing it, and that choice is about
+    # results rather than speed. Splitting the batch across workers would make
+    # the sub-batch width a function of `n_jobs`, and the batched solve is not
+    # bit-for-bit across widths: measured identical when 40 rows are split at
+    # width 20 or 10, but 8.5e-16 at width 5 and 2.6e-15 at width 1, the
+    # stability above 10 being a BLAS blocking artefact rather than a promise.
+    # At a chunk of 14 an 8-way split is width 2, so every p-value would
+    # depend on the worker count. Prefetching leaves the batch exactly as it
+    # was -- same rows, same order, same arithmetic -- so results are
+    # bit-identical and `n_jobs` still cannot move them.
+    #
+    # Draws are unaffected for the same reason they parallelize at all: each
+    # target seeds from its own name (`target_seed_sequence`), so preparing a
+    # chunk earlier cannot change what it draws.
+    #
+    # The cost is one extra chunk of target state alive at a time, so peak
+    # memory carries two chunks rather than one.
+    def _prepare(ids: list[str]) -> dict[str, TargetPrecomputation]:
+        return fit_all_targets(
+            {t: grna_target_cells[t] for t in ids},
             covariate_matrix,
             B1=B1,
             B2=B2,
@@ -948,57 +1092,98 @@ def run_discovery_ntcells_complement(
             seed=entropy,
             n_jobs=n_jobs,
             permutations=permutations,
+            x_outer_flat_shared=shared_x_outer,
         )
 
-        # Gene-outer inside the chunk so each gene's pieces are rebuilt once
-        # per chunk rather than once per pair: 244 genes x ~15 chunks is ~3,660
-        # rebuilds (~0.1 min) against 33,066 for sceptre's per-pair approach
-        # (~0.9 min), while holding one gene's pieces (10.5 MB) instead of
-        # every gene's (2.56 GB).
-        chunk_target_set = set(chunk_ids)
-        gene_jobs = [
-            (gene_id, [t for t in gene_pairs if t in chunk_target_set])
-            for gene_id, gene_pairs in pairs_by_gene.items()
-        ]
-        # Longest first. A gene's job costs roughly one piece rebuild plus one
-        # test per pair, so pair count is a good proxy for duration, and they
-        # vary a lot -- day0 has a median of 154 targets per gene and a max of
-        # 299. A pool pulling tasks in arrival order would hand a worker
-        # several heavy genes at the end of a chunk and leave the rest idle.
-        #
-        # Sorting descending is enough; no explicit bin packing is needed,
-        # because the executor already pulls dynamically. That makes this
-        # Longest-Processing-Time-first scheduling, which is within 4/3 of
-        # optimal makespan. Ordering only affects scheduling: each gene job is
-        # independent and results are collected into a dict, so this cannot
-        # change a number.
-        gene_jobs = sorted((job for job in gene_jobs if job[1]), key=lambda j: -len(j[1]))
+    starts = list(range(0, len(target_ids_needed), target_chunk_size))
+    chunks = [target_ids_needed[i : i + target_chunk_size] for i in starts]
 
-        # Genes within a chunk are independent -- each rebuilds its own pieces
-        # from this chunk's already-drawn synthetic index sets -- so this is
-        # where the work parallelizes. Deliberately NOT over chunks: the RNG is
-        # consumed target-by-target in `fit_all_targets`, so running chunks
-        # concurrently would change every p-value, and chunk-parallelism would
-        # multiply `chunk_memory_gb` by the worker count instead of sharing one
-        # chunk's draws.
-        _WORKER_STATE.update(
-            response_matrix=response_matrix,
-            covariate_matrix=covariate_matrix,
-            gene_precomps=gene_precomps,
-            gene_row_index=gene_row_index,
-            target_precomps=target_precomps,
-            B1=B1,
-            B2=B2,
-            B3=B3,
-            fit_parametric_curve=fit_parametric_curve,
-            side_code=side_code,
-        )
-        for produced in _map_jobs(_gene_job, gene_jobs, n_jobs):
-            rows.update(produced)
-        _WORKER_STATE.clear()
+    rows: dict[tuple[str, str], dict] = {}
+    # **Only when the caller asked for parallelism.** The prefetch runs on a
+    # thread of its own, so enabling it at `n_jobs=1` would quietly make a
+    # single-worker run use two cores -- measured 831.0 s against 579.1 s on
+    # day0, a 1.43x "speedup" that is just the second thread. `n_jobs` has to
+    # mean what it says: a single-core benchmark, a cgroup-limited container
+    # and every matched-core comparison against R depend on it.
+    prefetch = ThreadPoolExecutor(max_workers=1) if (n_jobs > 1 and len(chunks) > 1) else None
+    pending = None
+    try:
+        for chunk_i, chunk_ids in enumerate(chunks):
+            target_precomps = pending.result() if pending is not None else _prepare(chunk_ids)
+            pending = None
+            # Start the next chunk's fit now, so it overlaps this chunk's genes.
+            if prefetch is not None and chunk_i + 1 < len(chunks):
+                pending = prefetch.submit(_prepare, chunks[chunk_i + 1])
 
-        del target_precomps  # free this chunk's synthetic_idxs before the next one
+            # Gene-outer inside the chunk so each gene's pieces are rebuilt once
+            # per chunk rather than once per pair: 244 genes x ~15 chunks is ~3,660
+            # rebuilds (~0.1 min) against 33,066 rebuilds (~0.9 min), while
+            # holding one gene's pieces (10.5 MB) instead of every gene's
+            # (2.56 GB).
+            #
+            # **That comparison is against R's CRT, and only its CRT.**
+            # `crt_glm_factored_out` is target-outer and rebuilds a gene's pieces
+            # inside its gene loop, so it pays one per pair -- this layout beats
+            # it. R's *permutation* workhorse is the other way up:
+            # `run_perm_test_in_memory` is gene-outer and
+            # `perm_test_glm_factored_out` loops targets inside, so R pays one
+            # rebuild per gene, 237 on day0, against roughly 5,600 here. R can
+            # invert the loop because permutations have no per-target state to
+            # hold; the CRT does, which is what forces target chunking, and this
+            # path uses one layout for both mechanisms. Fixing it means not
+            # materializing per-target draws for permutations at all -- see the
+            # cumulative-sum note in `paper/results.md`.
+            chunk_target_set = set(chunk_ids)
+            gene_jobs = [
+                (gene_id, [t for t in gene_pairs if t in chunk_target_set])
+                for gene_id, gene_pairs in pairs_by_gene.items()
+            ]
+            # Longest first. A gene's job costs roughly one piece rebuild plus one
+            # test per pair, so pair count is a good proxy for duration, and they
+            # vary a lot -- day0 has a median of 154 targets per gene and a max of
+            # 299. A pool pulling tasks in arrival order would hand a worker
+            # several heavy genes at the end of a chunk and leave the rest idle.
+            #
+            # Sorting descending is enough; no explicit bin packing is needed,
+            # because the executor already pulls dynamically. That makes this
+            # Longest-Processing-Time-first scheduling, which is within 4/3 of
+            # optimal makespan. Ordering only affects scheduling: each gene job is
+            # independent and results are collected into a dict, so this cannot
+            # change a number.
+            gene_jobs = sorted((job for job in gene_jobs if job[1]), key=lambda j: -len(j[1]))
 
+            # Genes within a chunk are independent -- each rebuilds its own pieces
+            # from this chunk's already-drawn synthetic index sets -- so this is
+            # where the work parallelizes. Deliberately NOT over chunks: the RNG is
+            # consumed target-by-target in `fit_all_targets`, so running chunks
+            # concurrently would change every p-value, and chunk-parallelism would
+            # multiply `chunk_memory_gb` by the worker count instead of sharing one
+            # chunk's draws.
+            _WORKER_STATE.update(
+                response_matrix=response_matrix,
+                covariate_matrix=covariate_matrix,
+                gene_precomps=gene_precomps,
+                permutations=permutations,
+                gene_row_index=gene_row_index,
+                target_precomps=target_precomps,
+                B1=B1,
+                B2=B2,
+                B3=B3,
+                fit_parametric_curve=fit_parametric_curve,
+                side_code=side_code,
+            )
+            for produced in _map_jobs(_gene_job, gene_jobs, n_jobs):
+                rows.update(produced)
+            _WORKER_STATE.clear()
+
+            del target_precomps  # free this chunk's synthetic_idxs before the next one
+
+    finally:
+        if prefetch is not None:
+            # Cancel any in-flight prepare on the way out, including on an
+            # exception, so a failed run does not wait on a chunk nobody
+            # will consume.
+            prefetch.shutdown(wait=False, cancel_futures=True)
     # Emit in the original target-major order, so inverting the loops above is
     # not observable in the output.
     ordered = [

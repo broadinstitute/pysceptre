@@ -104,8 +104,33 @@ def _batched_wls_solve(
     return np.linalg.solve(A, b[:, :, None])[:, :, 0]  # (k, p)
 
 
+def x_outer_flat(X: np.ndarray) -> np.ndarray:
+    """`(n, p*p)` of per-row outer products of `X`, the one input to the IRLS
+    that depends on nothing but the design matrix.
+
+    Hoisted to a function so a caller can build it **once per run** and hand
+    the same array to every fit. It was already hoisted out of the IRLS
+    iteration -- the loop never changes it -- but not out of the call, so a
+    day0 CRT run rebuilt it about 454 times: 237 gene fits at one gene each,
+    plus 217 target chunks. At 567,690 cells and 11 covariates that is a
+    550 MB array and a 550 MB temporary every time, for a matrix that is
+    identical on every call.
+
+    Sharing it is also what makes splitting a fit across workers affordable:
+    sub-batches read one array instead of each constructing its own.
+    """
+    n, p = X.shape
+    return (X[:, :, None] * X[:, None, :]).reshape(n, p * p)
+
+
 def _fit_batch(
-    X: np.ndarray, Y: np.ndarray, family: str, *, eps: float = _EPS, maxit: int = _MAXIT
+    X: np.ndarray,
+    Y: np.ndarray,
+    family: str,
+    *,
+    eps: float = _EPS,
+    maxit: int = _MAXIT,
+    X_outer_flat: np.ndarray | None = None,
 ) -> GlmFitBatchResult:
     n, p = X.shape
     Y, was_1d = _as_2d(Y)
@@ -127,7 +152,10 @@ def _fit_batch(
     converged = np.zeros(k, dtype=bool)
     n_iter = np.zeros(k, dtype=int)
     beta = np.zeros((k, p))
-    X_outer_flat = (X[:, :, None] * X[:, None, :]).reshape(n, p * p)  # iteration-independent
+    # Depends only on X, so a caller that fits repeatedly against the same
+    # design matrix should build it once with `x_outer_flat` and pass it in.
+    if X_outer_flat is None:
+        X_outer_flat = x_outer_flat(X)
 
     # `mu` is carried forward as loop state (rather than recomputed via exp(eta)
     # at the top of every iteration) and every elementwise op below is
@@ -206,16 +234,36 @@ def _fit_batch(
 
 
 def fit_poisson_glm_batch(
-    X: np.ndarray, Y: np.ndarray, *, eps: float = _EPS, maxit: int = _MAXIT
+    X: np.ndarray,
+    Y: np.ndarray,
+    *,
+    eps: float = _EPS,
+    maxit: int = _MAXIT,
+    X_outer_flat: np.ndarray | None = None,
 ) -> GlmFitBatchResult:
-    """X: (n, p) shared design matrix. Y: (n, k) or (n,) response column(s)."""
+    """X: (n, p) shared design matrix. Y: (n, k) or (n,) response column(s).
+
+    `X_outer_flat`: optional, from `x_outer_flat(X)`. Pass it when fitting
+    repeatedly against the same design matrix; it is rebuilt per call
+    otherwise.
+    """
     with threadpool_limits(limits=1, user_api="blas"):
-        return _fit_batch(X, Y, "poisson", eps=eps, maxit=maxit)
+        return _fit_batch(X, Y, "poisson", eps=eps, maxit=maxit, X_outer_flat=X_outer_flat)
 
 
 def fit_binomial_glm_batch(
-    X: np.ndarray, Y: np.ndarray, *, eps: float = _EPS, maxit: int = _MAXIT
+    X: np.ndarray,
+    Y: np.ndarray,
+    *,
+    eps: float = _EPS,
+    maxit: int = _MAXIT,
+    X_outer_flat: np.ndarray | None = None,
 ) -> GlmFitBatchResult:
-    """X: (n, p) shared design matrix. Y: (n, k) or (n,) 0/1 indicator column(s)."""
+    """X: (n, p) shared design matrix. Y: (n, k) or (n,) 0/1 indicator column(s).
+
+    `X_outer_flat`: optional, from `x_outer_flat(X)`. Pass it when fitting
+    repeatedly against the same design matrix; it is rebuilt per call
+    otherwise.
+    """
     with threadpool_limits(limits=1, user_api="blas"):
-        return _fit_batch(X, Y, "binomial", eps=eps, maxit=maxit)
+        return _fit_batch(X, Y, "binomial", eps=eps, maxit=maxit, X_outer_flat=X_outer_flat)

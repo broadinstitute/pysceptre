@@ -119,7 +119,7 @@ run_discovery_analysis(
 | `grna_target_cells` | `dict[str, np.ndarray]` | Maps each gRNA target to the **0-based** indices (into `covariate_matrix`'s cell axis) of cells treated with that target. This is the "union" grna-integration-strategy convention: one entry per target, not per individual gRNA. |
 | `pairs` | `pd.DataFrame` with columns `response_id`, `grna_target` | The QC-passed (gene, target) pairs to test. `pysceptre` does not run `assign_grnas()`/`run_qc()` itself -- feed it pairs that have already passed QC upstream. |
 | `side` | `"left"` \| `"both"` \| `"right"` | Test sidedness, matching sceptre's own convention. Use `"left"` for expected-repression screens (e.g. CRISPRi enhancer knockdown), `"both"` for a two-sided test. |
-| `resampling_mechanism` | `"crt"` \| `"permutations"` | Matches sceptre's own option for high-MOI data. The CRT (default) draws each target's synthetic treated set from that target's own fitted probabilities; permutations draw one set of random subsets, sized by the largest target, and reuse it for every target. **The choice is a real trade, and yours to make** -- see [Reproducibility](#reproducibility-and-incremental-analysis), because permutations cannot offer the invariance the CRT does. R pairs permutations with `B3 = 24999` against the CRT's `0`, so sampling is cheaper but the escalation batch is five times larger. |
+| `resampling_mechanism` | `"crt"` \| `"permutations"` | Matches sceptre's own option for high-MOI data. The CRT (default) draws each target's synthetic treated set from that target's own fitted probabilities; permutations draw one set of random subsets, sized by the largest target, and reuse it for every target. **The choice is a real trade, and yours to make** -- see [Reproducibility](#reproducibility-and-incremental-analysis), because permutations cannot offer the invariance the CRT does. R pairs permutations with `B3 = 24999` against the CRT's `0`, so sampling is cheaper -- and the per-target logistic fit is skipped entirely, since only the CRT draws from it -- but the escalation batch is five times larger. |
 | `resampling_approximation` | `"skew_normal"` \| `"no_approximation"` | `"skew_normal"` (default, matching sceptre): pairs whose initial empirical p-value (`B1=499` draws) is `<= 0.02` get a skew-normal tail fit from a further `B2=4999` draws, giving p-values far smaller than `1/(B1+1)` could resolve. `"no_approximation"` fits no curve and instead draws a third, larger empirical batch, sized by R's own rule: `B3 = ceil(mult * n_pairs / multiple_testing_alpha)`, `mult = 10` two-sided and `5` one-sided. That grows linearly in the number of pairs and is much slower -- see [Scope and limitations](#scope-and-limitations). Any other value raises `ValueError`. |
 | `seed` | `int \| None` | Seeds the `numpy.random.Generator` used for all CRT draws in the run. Note this does **not** reproduce sceptre's own R/C++ RNG stream bit-for-bit (different algorithm and seeding scheme) -- see [Scope and limitations](#scope-and-limitations). |
 | `target_chunk_size` | `int` | How many gRNA targets to fit and CRT-draw at once. An **upper bound, not a mandate** -- it is reduced automatically to respect `chunk_memory_gb`, so no value here can exhaust memory. Default `200`. |
@@ -339,6 +339,45 @@ are in `paper/results.md`, each reported with the hardware it was measured on.
 Reproduce with `scripts/benchmark_vs_r.R` (R side, which also exports the
 exact inputs) and `scripts/benchmark_pysceptre.py` (pysceptre side), or inside
 the pinned container in `docker/`.
+
+### Sizing the machine
+
+**The two mechanisms want different machines, so `n_jobs` is worth setting
+deliberately rather than to the core count.** Measured on day0, one process
+per configuration, Apple M4 Max; `cores` is `(user + sys) / wall`, the mean
+number actually busy.
+
+| `resampling_mechanism` | `n_jobs` | wall | peak RSS | cores |
+|---|---|---|---|---|
+| `"crt"` (default) | 2 | 403.6 s | 4.87 GB | 2.55 |
+| | 4 | **324.1 s** | 5.23 GB | 3.43 |
+| | 8 | 309.8 s | 5.80 GB | 3.90 |
+| `"permutations"` | 4 | 48.2 s | 4.55 GB | 3.81 |
+| | 8 | **31.8 s** | 6.12 GB | 6.62 |
+
+**For the CRT, four workers is the sweet spot.** Going from 4 to 8 buys 4.4%
+while doubling the machine, and occupancy never passes 3.90 however many
+workers you grant -- the path cannot fill a large box, because its limit is
+memory bandwidth in the per-gene working set rather than cores. If you are
+billed per core-hour, 4 costs about half of 8 for the same finish, and 2 is
+cheaper still if an extra 30% of wall time is acceptable. Memory is not the
+constraint at any of these sizes: the CRT peaks at 5.8 GB, well inside what
+a 4-vCPU cloud instance ships with.
+
+**Permutations do use a big machine, so give them one.** They reach 6.62 of
+8 cores and scale 1.52x from four workers to eight, 48.2 s to 31.8 s. The
+extra 1.6 GB of peak is not a reason to prefer four: cloud machine types
+bundle memory with cores -- a GCP `n2-standard-4` is 16 GB against
+`n2-standard-8`'s 32 GB -- so asking for fewer cores gives you *less*
+memory, not a saving to bank. Both configurations fit either machine with
+room to spare, which leaves the 1.52x as the only difference that counts.
+
+**Memory rises with workers, not with `chunk_memory_gb`.** Each worker holds
+one gene's working arrays, so peak tracks `n_jobs`; the chunk budget is a
+weaker lever than it looks. Raising it from 1 GB to 8 GB buys 13% on the CRT
+for 2.3x the memory, and past that it gets *slower* -- 16 GB ran 369 s
+against 8 GB's 353 s. Leave it alone unless you have measured otherwise on
+your own data. Results are identical at every setting either way.
 
 ## Validation
 

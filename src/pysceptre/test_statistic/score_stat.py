@@ -29,6 +29,8 @@ from __future__ import annotations
 import numpy as np
 from scipy import sparse
 
+from ..crt.permutations import draws_for_target
+
 
 def compute_observed_full_statistic(
     a: np.ndarray, w: np.ndarray, D: np.ndarray, trt_idxs: np.ndarray
@@ -113,25 +115,6 @@ def draws_to_matrix(synthetic_idxs: list[np.ndarray], n_cells: int) -> sparse.cs
     )
 
 
-def row_slice(draws: sparse.csr_matrix, lo: int, hi: int) -> sparse.csr_matrix:
-    """Rows `[lo, hi)` of a CSR matrix, without copying its data.
-
-    `draws[lo:hi]` would copy; the staged test takes three consecutive slices
-    of the same draw matrix per pair, so the copies add up. `data` and
-    `indices` are numpy views here and only the small `indptr` is rebuilt.
-    """
-    start, end = int(draws.indptr[lo]), int(draws.indptr[hi])
-    return sparse.csr_matrix(
-        (
-            draws.data[start:end],
-            draws.indices[start:end],
-            draws.indptr[lo : hi + 1] - start,
-        ),
-        shape=(hi - lo, draws.shape[1]),
-        copy=False,
-    )
-
-
 class StagedDraws:
     """A target's resamples, materialized one stage at a time.
 
@@ -210,6 +193,16 @@ class PermutationSliceDraws(StagedDraws):
     target costs nothing until a stage is actually reached. That is the whole
     point of the mechanism -- every target reads the same draws -- and it was
     being thrown away by materializing per target.
+
+    **Deliberately not memoized**, unlike the base class. Stage 1 no longer
+    reaches here at all -- `PermutationPrefixSums` serves it from one
+    per-gene scan -- so what remains is the escalation stages, 1,257 and 8
+    pairs of 34,886 on day0. Caching those buys a rebuild for the occasional
+    second gene that escalates on the same target, and costs a matrix that
+    never goes away: with targets no longer processed in chunks there is no
+    point at which a chunk's caches are dropped, and ~1,000 escalating
+    targets holding a B2 slice each would be tens of GB. Rebuilding is the
+    cheaper mistake to make.
     """
 
     __slots__ = ("_perms", "_n_trt")
@@ -219,8 +212,20 @@ class PermutationSliceDraws(StagedDraws):
         self._perms = perms
         self._n_trt = n_trt
 
+    def slice(self, lo: int, hi: int) -> sparse.csr_matrix:
+        lo, hi = max(0, int(lo)), min(int(hi), self.n_draws)
+        if hi <= lo:
+            return sparse.csr_matrix((0, self.n_cells))
+        return draws_to_matrix(self._index_arrays(lo, hi), self.n_cells)
+
     def _index_arrays(self, lo: int, hi: int) -> list[np.ndarray]:
-        return [np.sort(row[: self._n_trt]) for row in self._perms[lo:hi]]
+        # Delegates rather than repeating the one-line slice, because the
+        # duplicate was real: `draws_for_target` had no caller in the package
+        # while the tests exercised only it, so the tested prefix and the
+        # executed prefix were different code. They were kept in step by
+        # memory, and when the sort was dropped both had to be edited for the
+        # analysis to change at all.
+        return draws_for_target(self._perms[lo:hi], self._n_trt)
 
 
 def as_staged_draws(draws, n_cells: int) -> StagedDraws:
@@ -276,7 +281,19 @@ def compute_null_statistics_from_draws(stacked: np.ndarray, draws: sparse.csr_ma
         return np.empty(0)
     if draws.nnz == 0:
         return np.full(draws.shape[0], np.nan)
-    sums = draws @ stacked  # (B, p + 2)
+    return statistics_from_segment_sums(draws @ stacked)  # (B, p + 2)
+
+
+def statistics_from_segment_sums(sums: np.ndarray) -> np.ndarray:
+    """The null statistics, given each resample's segment sums of `stacked`.
+
+    Split out because there are two ways to obtain those sums and only one
+    way to turn them into statistics. The CRT reaches them through a sparse
+    matmul against a per-target draw matrix; permutations reach them by
+    reading one column out of a per-gene prefix-sum array
+    (`PermutationPrefixSums`). Keeping the arithmetic in one place means the
+    two routes cannot drift.
+    """
     top = sums[:, 0]
     lower_left = sums[:, 1]
     d_rows = sums[:, 2:]
@@ -321,3 +338,88 @@ def compute_null_full_statistics(
     synthetic_idxs will be reused across many (a, w, D) triples."""
     flat_idxs, lengths, B = flatten_synthetic_idxs(synthetic_idxs)
     return compute_null_full_statistics_flat(a, w, D, flat_idxs, lengths, B)
+
+
+class PermutationPrefixSums:
+    """One gene's segment sums along the *shared* permutation rows.
+
+    Every target reads the same permutation rows and differs only in how far
+    along each row it reads: a target with `n_trt` cells takes `row[:n_trt]`.
+    So the segment sums a target needs are a **prefix sum** of the gene's
+    `stacked` values gathered along those rows, and the sums for *every*
+    target are columns of one cumulative sum::
+
+        G = stacked[perms[lo:hi, :m]]   # (B, m, p + 2)
+        C = G.cumsum(axis=1)            # prefix sums along each row
+        sums_for_n_trt = C[:, n_trt - 1] # (B, p + 2), a read
+
+    This is what R's structure implies and pysceptre did not do. The CRT
+    cannot do it -- its draws are genuinely per-target, with no shared
+    ordering to accumulate along -- which is why the per-target matmul
+    existed in the first place.
+
+    The arithmetic is the reason to bother. A gene with `t` targets paid
+    `t` matmuls of `B * n_trt * (p + 2)`; it now pays one gather-and-scan of
+    `B * m * (p + 2)` and `t` reads. At day0's stage 1 (`B = 499`, `m = 692`,
+    `p + 2 = 13`, median `n_trt = 557`) that is 4.5M operations once against
+    3.6M per target.
+
+    **Bounded, and it falls back rather than growing.** The array is
+    `B * m * (p + 2) * 8` bytes, where `m` is the *largest* target, and that
+    is per worker. On day0 (`m = 1,772`, `p + 2 = 13`) the stages are far
+    apart: 92 MB at `B1 = 499`, 921 MB at `B2 = 4999`, 4.6 GB at
+    `B3 = 24999`. Stages past the first are also rare -- 1,257 and 8 pairs of
+    34,886 -- so they are not worth the memory. `statistics` returns `None`
+    above `max_bytes` and the caller uses the per-target draw matrix for that
+    stage, which is the path the CRT uses anyway.
+
+    **`max_bytes` must be set from the real `m`, not a guess.** The first
+    default here was 64 MB, chosen against an `m` of a few hundred, and on
+    day0 it declined *every* stage-1 scan -- so this class never once ran on
+    the dataset it was written for, and the tests missed it because their
+    fixtures used `m = 120`, where the scan is 1.2 MB and the gate cannot
+    fire. A profile caught it: `csr_matvecs` was still 58% of runtime after
+    the change that was supposed to remove it. The default is now 256 MB,
+    which admits stage 1 up to `m` of about 4,900 while still declining
+    day0's stage 2 by a factor of 3.6.
+    """
+
+    __slots__ = ("_stacked", "_perms", "_max_bytes", "_cache")
+
+    def __init__(self, stacked: np.ndarray, perms: np.ndarray, max_bytes: float = 256e6):
+        self._stacked = stacked
+        self._perms = perms
+        self._max_bytes = max_bytes
+        self._cache: dict[tuple[int, int], np.ndarray] = {}
+
+    def _scan(self, lo: int, hi: int) -> np.ndarray | None:
+        key = (lo, hi)
+        hit = self._cache.get(key)
+        if hit is not None:
+            return hit
+        rows = self._perms[lo:hi]
+        if rows.size == 0:
+            return None
+        nbytes = rows.shape[0] * rows.shape[1] * self._stacked.shape[1] * self._stacked.itemsize
+        if nbytes > self._max_bytes:
+            return None
+        scan = np.cumsum(self._stacked[rows], axis=1)
+        self._cache[key] = scan
+        return scan
+
+    def statistics(self, lo: int, hi: int, n_trt: int) -> np.ndarray | None:
+        """Null statistics for `[lo, hi)` for a target of `n_trt` cells.
+
+        `None` means "too large to scan, use the draw matrix instead".
+        """
+        if n_trt <= 0:
+            return None
+        scan = self._scan(lo, hi)
+        if scan is None:
+            return None
+        if n_trt > scan.shape[1]:
+            raise ValueError(
+                f"target needs {n_trt} cells but the shared permutation rows hold "
+                f"only {scan.shape[1]}; the draws were built for a different target set"
+            )
+        return statistics_from_segment_sums(scan[:, n_trt - 1, :])

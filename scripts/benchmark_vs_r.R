@@ -8,7 +8,9 @@
 #
 #   prepare     materialize out of ondisc, set CRT parameters, assign gRNAs,
 #               run QC, save the post-QC object, and EXPORT the dataset
-#   discovery   run_discovery_analysis
+#   discovery   run_discovery_analysis (CRT, as the object was prepared)
+#   discovery_perm
+#               the same, with resampling_mechanism = "permutations"
 #   calibration run_calibration_check
 #   power       run_power_check
 #
@@ -135,6 +137,32 @@ if (step == "prepare") {
 
   if (step == "discovery") {
     so <- timed("discovery", sceptre::run_discovery_analysis(so, parallel = FALSE))
+    result <- so@discovery_result
+  } else if (step == "discovery_perm") {
+    # The same analysis with sceptre's other high-MOI resampling mechanism.
+    #
+    # **Two slots are set directly rather than going through
+    # `set_analysis_parameters`.** That function is rank 2 in sceptre's
+    # status machinery (`perform_status_check_and_update`), which sets every
+    # downstream step back to FALSE -- so calling it on a post-QC object
+    # un-calls `assign_grnas` and `run_qc`, and the run then either refuses
+    # to start or has to re-derive the gRNA assignments. Re-deriving them is
+    # not an option here: it reproduced only 39 of 2,974 targets' cell sets
+    # the last time it was tried, so the R and pysceptre runs would no longer
+    # be analysing the same data.
+    #
+    # With `resampling_approximation` fixed at "skew_normal", the mechanism
+    # controls exactly these two slots (s4_analysis_functs_1.R:114,144):
+    # `B3` is 24999 for permutations against the CRT's 0, and that is a
+    # consequence of the mechanism rather than a choice, so it is left alone.
+    # Everything else -- pairs, formula, side, control group, thresholds, the
+    # assignments themselves -- is the object as prepared.
+    so@run_permutations <- TRUE
+    so@B3 <- 24999L
+    say("B1/B2/B3 =", so@B1, "/", so@B2, "/", so@B3,
+        "| permutations =", so@run_permutations,
+        "| ok pairs =", so@n_ok_discovery_pairs)
+    so <- timed("discovery_perm", sceptre::run_discovery_analysis(so, parallel = FALSE))
     result <- so@discovery_result
   } else if (step == "calibration") {
     so <- timed("calibration", sceptre::run_calibration_check(so, parallel = FALSE))
