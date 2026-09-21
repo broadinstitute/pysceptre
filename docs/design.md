@@ -355,6 +355,17 @@ sides -- the closed form and the simulation that served as its ground truth
 both read it, so that comparison is internally consistent and its conclusion
 stands.
 
+**One consequence recorded here deliberately, because it is not this
+package's to fix.** The simulation that produced that ground truth draws
+counts from the same normalised mean, so it simulated its genes about 16 %
+below the expression the screen actually has, and its *simulated* power is
+presumably biased low for the same reason the closed form's was. That is a
+statement about the simulation pipeline, not about pysceptre, and nothing here
+depends on it: the helpers are validated against R output value for value, and
+the choice of which mean to feed the estimator is the caller's. It is written
+down so that a later comparison of pysceptre's power estimates against those
+sweeps knows both sides carry the same offset.
+
 #### A note on the poscounts convention, for the reproduction path only
 
 The normalised mean's size factors are DESeq2-style "poscounts", and they are
