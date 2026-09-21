@@ -35,6 +35,87 @@ _RESAMPLING_APPROXIMATIONS = ("skew_normal", "no_approximation")
 _RESAMPLING_MECHANISMS = ("crt", "permutations")
 
 
+def _validate_covariate_matrix(covariate_matrix: np.ndarray, n_cells: int | None = None) -> None:
+    """Refuse a design matrix the GLM cannot fit, and say which columns are at fault.
+
+    A rank-deficient design fails inside the batched weighted least squares as
+    `numpy.linalg.LinAlgError: Singular matrix`, eight frames deep and with no
+    mention of covariates. Since `covariate_matrix` is built by the caller --
+    there is no formula DSL to catch an aliased contrast -- that is a likely
+    mistake with an unhelpful symptom, so it is caught here instead.
+
+    Rank comes from the singular values of `R` in a thin QR of the matrix,
+    with the same relative tolerance `numpy.linalg.matrix_rank` uses. The QR
+    is what makes it both cheap and correct: `R` is p x p, so every rank
+    question after it is tiny, and because `Q` has orthonormal columns the
+    rank of any column subset of `R` equals that of the same subset of the
+    matrix.
+
+    **Not the Gram matrix.** `X.T @ X` looks like the natural p x p route and
+    is the thing the fit depends on -- `Zt_wZ` is it reweighted, and positive
+    weights cannot restore rank -- but its eigenvalues are the *squares* of
+    the singular values, so it squares the condition number. A design whose
+    columns span fourteen orders of magnitude, raw UMI counts beside a small
+    covariate say, is full rank and the Gram route rejected it.
+
+    Raises:
+        ValueError: not 2-D, empty, non-finite entries, a row count that
+            disagrees with the data, or rank deficiency.
+    """
+    X = np.asarray(covariate_matrix)
+    if X.ndim != 2:
+        raise ValueError(f"covariate_matrix must be 2-D (n_cells, p), got shape {X.shape}")
+    n, p = X.shape
+    if n == 0 or p == 0:
+        raise ValueError(f"covariate_matrix is empty, shape {X.shape}")
+    if n_cells is not None and n != n_cells:
+        raise ValueError(
+            f"covariate_matrix has {n} rows but the response matrix has {n_cells} cells"
+        )
+    if p > n:
+        raise ValueError(
+            f"covariate_matrix has shape {X.shape}, more columns ({p}) than rows ({n}), so it "
+            "cannot be full rank. It is expected as (n_cells, p); this looks transposed."
+        )
+    X = X.astype(float, copy=False)
+    if not np.all(np.isfinite(X)):
+        bad = np.flatnonzero(~np.all(np.isfinite(X), axis=0)).tolist()
+        raise ValueError(f"covariate_matrix has non-finite values in column(s) {bad[:10]}")
+
+    eps = np.finfo(float).eps
+    r = np.linalg.qr(X, mode="r")
+
+    def _rank(block: np.ndarray) -> int:
+        sv = np.linalg.svd(block, compute_uv=False)
+        if sv.size == 0 or sv[0] <= 0:
+            return 0
+        return int(np.sum(sv > sv[0] * max(n, block.shape[1]) * eps))
+
+    rank = _rank(r)
+    if rank == 0:
+        raise ValueError("covariate_matrix is all zeros")
+    if rank == p:
+        return
+
+    # Which columns are redundant, reported left to right so the first of a collinear set is
+    # kept and the later ones are named -- the same convention R's `lm` follows when it drops
+    # aliased terms, and the more useful one, since column 0 is usually the intercept.
+    kept: list[int] = []
+    for j in range(p):
+        trial = kept + [j]
+        if _rank(r[:, trial]) == len(trial):
+            kept.append(j)
+    redundant = [j for j in range(p) if j not in kept]
+    raise ValueError(
+        f"covariate_matrix is rank deficient: rank {rank} of {p} columns. "
+        f"Column(s) {redundant} are linear combinations of the ones before them, so the "
+        "weighted least squares inside the GLM fit is singular. This is usually an aliased "
+        "contrast (a factor's full dummy set alongside an intercept), a duplicated column, or "
+        "a covariate that is constant within another's levels. Drop the named column(s), or "
+        "build the design with one reference level held out."
+    )
+
+
 def run_discovery_analysis(
     response_matrix,
     gene_ids: list[str],
@@ -103,6 +184,10 @@ def run_discovery_analysis(
     """
     if side not in _SIDE_CODES:
         raise ValueError(f"side must be one of {sorted(_SIDE_CODES)}, got {side!r}")
+    # Before any fitting: a rank-deficient design otherwise surfaces as a bare
+    # LinAlgError from deep inside the batched solve. The calibration and power checks
+    # reach this function too, so one call covers all three entry points.
+    _validate_covariate_matrix(covariate_matrix, n_cells=response_matrix.shape[1])
     if resampling_approximation not in _RESAMPLING_APPROXIMATIONS:
         raise ValueError(
             f"resampling_approximation must be one of "
