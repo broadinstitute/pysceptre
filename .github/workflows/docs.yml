@@ -1,0 +1,53 @@
+# Separate from ci.yml on purpose: a docs failure must never block a merge.
+name: docs
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Least privilege by default; the deploy job widens it for itself.
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  # Runs on every PR. `--strict` turns a broken link or a missing snippet
+  # into a failure, which is what keeps the pointers in the source landing
+  # where the reasoning actually went.
+  docs-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          # Creates and activates .venv, as in ci.yml. Not `--system`:
+          # ubuntu-latest's /usr interpreter is externally managed and uv
+          # refuses to install into it.
+          python-version: "3.12"
+      # griffe reads src/ statically, so the package is never imported and
+      # the heavy extras (numba, io) are not installed here.
+      - run: uv pip install -e ".[docs]"
+      - run: uv run --no-sync mkdocs build --strict
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    # Only from main. PRs build the site but must not publish it.
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: docs-build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

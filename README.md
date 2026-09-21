@@ -17,6 +17,8 @@ is and isn't covered.
 
 ## Why this exists
 
+<!-- --8<-- [start:why] -->
+
 `sceptre`'s own discovery-analysis implementation is correct but processes
 one (gene, gRNA-target) pair, and one resampling draw, largely with R and
 per-cell C++ loops. At real dataset scale (hundreds of thousands of cells,
@@ -27,7 +29,11 @@ too), which is exactly the shape numpy's batched matrix operations are
 built for -- so the rewrite fits one batched IRLS call per resampling stage
 instead of one per gene or target.
 
+<!-- --8<-- [end:why] -->
+
 ## Installation
+
+<!-- --8<-- [start:installation] -->
 
 ```bash
 pip install -e ".[dev,fast]"
@@ -59,7 +65,11 @@ gRNA). `scripts/sceptre_io.load_export` reads one back, and with
 `backed=True` serves genes from disk on demand rather than holding the whole
 matrix.
 
+<!-- --8<-- [end:installation] -->
+
 ## Quick start
+
+<!-- --8<-- [start:quickstart] -->
 
 ```python
 from pysceptre.pipeline.api import run_discovery_analysis
@@ -78,16 +88,18 @@ result = run_discovery_analysis(
 #   pct_change_es, pct_change_es_ci_low, pct_change_es_ci_high, z_orig, stage
 ```
 
-[`examples/scanpy_interop.py`](examples/scanpy_interop.py) runs a whole screen
+[`examples/scanpy_interop.py`](https://github.com/broadinstitute/pysceptre/blob/main/examples/scanpy_interop.py) runs a whole screen
 inside an ordinary `scanpy` workflow -- QC and covariates out of `obs`, gRNA
 assignments out of the gRNA modality's `var`, discovery and calibration, then
 results back onto the same object and on to PCA and clustering, with no R at
 any point. Run it with `uv run --extra examples python
 examples/scanpy_interop.py`.
 
-See [TUTORIAL.md](TUTORIAL.md) for a complete, runnable walkthrough
+See [TUTORIAL.md](https://github.com/broadinstitute/pysceptre/blob/main/TUTORIAL.md) for a complete, runnable walkthrough
 (including how to build each input from scratch) and for guidance on
 picking `target_chunk_size` for your dataset.
+
+<!-- --8<-- [end:quickstart] -->
 
 ## API reference
 
@@ -249,6 +261,8 @@ importable and unit-tested, for anyone extending or debugging the pipeline:
 
 ## Reproducibility and incremental analysis
 
+<!-- --8<-- [start:reproducibility] -->
+
 A pair's result depends on `(seed, response_id, grna_target)` and the data,
 and on nothing else about the run. Each target draws its CRT resamples from
 its own stream keyed on the target's *name*, so results do not depend on the
@@ -290,7 +304,11 @@ tested. That is multiple testing behaving correctly. `run_discovery_analysis`
 returns raw p-values and applies no correction, so cache those and run the
 adjustment over the union each time.
 
+<!-- --8<-- [end:reproducibility] -->
+
 ## Scope and limitations
+
+<!-- --8<-- [start:scope] -->
 
 - **Complement control group only, high-MOI/CRT resampling only.** This is
   the one analysis path this package targets; other sceptre modes
@@ -309,7 +327,7 @@ adjustment over the union each time.
   `pysceptre` uses `numpy.random.Generator` with a different algorithm and
   seeding scheme. Validated against R by matching *distributions* (the
   resulting null-statistic and p-value distributions), not exact draws --
-  see [Validation](#validation).
+  see [Validation](https://github.com/broadinstitute/pysceptre/blob/main/README.md#validation).
 - **`B1`/`B2`/`B3` are not exposed at the top-level API**, but they are no
   longer fixed: `run_discovery_analysis` derives them from
   `resampling_approximation` exactly as R does -- `B1=499` always, then
@@ -329,7 +347,11 @@ adjustment over the union each time.
   by target, not by individual gRNA -- matches sceptre's `"union"` strategy;
   `"singleton"` is not supported.
 
+<!-- --8<-- [end:scope] -->
+
 ## Performance
+
+<!-- --8<-- [start:performance] -->
 
 Benchmarked on the `day0_grna20` single-cell CRISPR screen: 567,690 cells
 after QC, 237 genes appearing in pairs, 3,071 gRNA targets, 34,886 QC-passing
@@ -377,6 +399,8 @@ the chunk budget is a weaker lever than it looks. Raising it from 1 GB to
 *slower* -- 16 GB ran 369 s against 8 GB's 353 s. Leave it alone unless you
 have measured otherwise on your own data. Results are identical at every
 setting either way.
+
+<!-- --8<-- [end:performance] -->
 
 ## Validation
 

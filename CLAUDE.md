@@ -68,6 +68,10 @@ pre-commit run --all-files
 uv build                              # sdist + wheel into dist/
 uvx twine check dist/*                # metadata check before any upload
 
+uv pip install -e ".[docs]"           # mkdocs-material + mkdocstrings
+mkdocs serve                          # docs site at localhost:8000
+mkdocs build --strict                 # what CI runs; a broken link fails it
+
 Rscript scripts/dump_r_ground_truth.R tests/validation/ground_truth.json 4
 ```
 
@@ -130,8 +134,20 @@ Python 3.10+ (`requires-python`). Verified passing on 3.10, 3.11, 3.12, 3.13.
   measured figure there becomes a published claim, machine- and
   dataset-specific, and stale the moment anything moves.
 
-  Existing docstrings and comments do not follow this; migrating them is
-  ROADMAP T3.6, a module at a time.
+  **`docs/design.md` is where the reasoning goes**, and its headings are the
+  anchors a pointer in the source names. Most docstrings and comments do not
+  follow this yet; migrating them is ROADMAP T3.6, a module at a time. The
+  backend selection in `pipeline/discovery.py` is the worked example of the
+  finished shape.
+
+- **The docs site includes `README.md` and `TUTORIAL.md` by marker, not by
+  copy.** `docs/` pages pull sections through `pymdownx.snippets` using the
+  `<!-- --8<-- [start:name] -->` comments in those two files, so the README
+  stays canonical and cannot drift from the site. Don't delete a marker, and
+  don't answer a docs gap by pasting README prose into `docs/`. Links inside
+  a marked section must be absolute URLs -- a relative one resolves
+  differently on GitHub and in the rendered site, and `mkdocs build
+  --strict` will fail the build.
 - **GPL-3.0-only is inherited, not chosen** — upstream `sceptre` is `GPL-3`,
   which in R packaging means version 3 exactly. Don't "modernize" it to
   `-or-later`: that grants more than was received. The SPDX expression is

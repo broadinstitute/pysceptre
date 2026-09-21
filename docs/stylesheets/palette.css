@@ -1,0 +1,15 @@
+/* Okabe-Ito, per the project's colourblind-safe rule. Blue #0072B2 as the
+   primary, vermillion #D55E00 as the accent; both keep their hue for the
+   three common forms of colour vision deficiency. */
+:root {
+  --md-primary-fg-color:        #0072B2;
+  --md-primary-fg-color--light: #56B4E9;
+  --md-primary-fg-color--dark:  #005a8f;
+  --md-accent-fg-color:         #D55E00;
+}
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color:        #56B4E9;
+  --md-primary-fg-color--light: #8fcdf2;
+  --md-primary-fg-color--dark:  #0072B2;
+  --md-accent-fg-color:         #E69F00;
+}

@@ -1,5 +1,7 @@
 # Tutorial
 
+<!-- --8<-- [start:body] -->
+
 This walks through building every input `run_discovery_analysis` needs from
 scratch, running it, and reading the output. It uses small synthetic data
 (no real dataset required) so you can copy-paste and run this directly.
@@ -83,7 +85,7 @@ print(result.head())
 
 Output columns: `response_id`, `grna_target`, `p_value`, `fold_change`,
 `se_fold_change`, `pct_change_es`, `pct_change_es_ci_low`, `pct_change_es_ci_high`,
-`z_orig`, `stage` (see [README.md](README.md#api-reference)
+`z_orig`, `stage` (see [README.md](https://github.com/broadinstitute/pysceptre/blob/main/README.md#api-reference)
 for what each means, in particular `stage`, which tells you whether a pair's
 p-value came from the initial empirical draws or a skew-normal tail fit).
 
@@ -139,3 +141,5 @@ print(hit)  # expect a very small p_value, pct_change_es well below 0, stage == 
   38,606-gene x 131k-cell densify needs ~38 GiB and was OOM-killed once),
   and for a large matrix prefer a backed reader, which serves genes from
   disk on demand.
+
+<!-- --8<-- [end:body] -->

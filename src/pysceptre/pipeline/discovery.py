@@ -656,14 +656,8 @@ _PREFETCH_DEPTH = 3
 # cost dominates and threads win -- and the statistic is a sparse matmul now,
 # which releases the GIL where the old gather did not.
 #
-# Measured on day0, x86_64 Linux, 8 cores:
-#
-#   CRT (217 chunks)      fork 679.7s / 9.46 GB   thread 601.9s / 6.93 GB
-#   permutations (1)      fork  70.3s / 4.61 GB   thread 143.8s / 4.55 GB
-#
-# Only those two points are measured, so the threshold is placed in the wide
-# gap between them rather than fitted: anything from a handful of chunks to
-# a hundred would classify both cases the same way.
+# Placed between two measured points, not fitted. See docs/design.md,
+# "Choosing a parallel backend".
 _THREAD_ABOVE_N_CHUNKS = 8
 
 _BYTES_PER_INDEX = 8  # int64 cell index
@@ -898,36 +892,15 @@ def resolve_n_jobs(n_jobs: int) -> int:
 
 
 def parallel_backend() -> str:
-    """Which backend a worker pool would use here: "fork", "thread" or "none".
+    """The platform default backend for a worker pool: "fork" or "thread".
 
-    **Processes on Linux, threads elsewhere**, and the difference is measured
-    rather than assumed. The per-pair statistic is a large gather
-    (`D[:, flat_idxs]`) followed by `reduceat`; NumPy holds the GIL through
-    much of the gather, so threads scale poorly. On one machine, 8 workers on
-    one real-scale call: **1.85x with threads, 3.54x with processes**.
+    `fork` on Linux, `thread` everywhere else. `PYSCEPTRE_BACKEND` overrides
+    it to either value; a request for `fork` off Linux is refused with a
+    warning, because forking after Apple's Accelerate BLAS can deadlock.
 
-    Processes are reached via `fork`, which shares the response matrix and the
-    chunk's draws copy-on-write. `spawn` is not an option -- a chunk's
-    `synthetic_idxs` runs to hundreds of MB and would be pickled per worker per
-    chunk, costing more than the parallelism saves.
-
-    macOS therefore gets threads: `fork` after Apple's Accelerate BLAS has run
-    can deadlock, because the Grand Central Dispatch pools it relies on are not
-    fork-safe. The lower ceiling is the price of not hanging. Note this means
-    each backend is exercised on one platform only -- CI (Linux) covers fork,
-    local development on a Mac covers threads.
-
-    **`PYSCEPTRE_BACKEND` overrides the choice**, to "fork" or "thread". The
-    evidence above is stale in one respect worth knowing before trusting it:
-    the gather it measured (`D[:, flat_idxs]` plus `reduceat`) no longer
-    exists -- the statistic is a sparse matmul now, and permutations reach it
-    through a prefix scan -- and both release the GIL where the gather did
-    not. Threads may therefore scale better than they did. The override
-    exists so that can be tested rather than assumed, and so a caller who has
-    measured their own machine can act on it.
-
-    The override cannot make macOS safe for `fork`: that restriction is about
-    deadlocking after Accelerate, not about speed.
+    Callers that build one pool per chunk should ask `gene_job_backend`
+    instead, which may override this. See docs/design.md, "Choosing a
+    parallel backend".
     """
     override = os.environ.get("PYSCEPTRE_BACKEND", "").strip().lower()
     if override in ("fork", "thread"):
@@ -947,9 +920,11 @@ def parallel_backend() -> str:
 def gene_job_backend(n_chunks: int) -> str | None:
     """Backend for the per-chunk gene pool, or `None` for the platform default.
 
-    Only meaningful where the default is `fork`: everywhere else the pool is
-    already threads and there is nothing to choose. See
-    `_THREAD_ABOVE_N_CHUNKS` for the measurements.
+    Returns "thread" when the platform default is `fork` and the run has more
+    than `_THREAD_ABOVE_N_CHUNKS` chunks, since one fork per chunk then costs
+    more than the GIL does. `None` everywhere else, including on platforms
+    whose default is already threads. See docs/design.md, "Choosing a
+    parallel backend".
     """
     if parallel_backend() != "fork":
         return None

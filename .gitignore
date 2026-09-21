@@ -27,3 +27,6 @@ test_data/
 # Docker build output
 docker/build.log
 docker/build_push.log
+
+# Built docs site (mkdocs build); the published copy comes from Actions.
+site/

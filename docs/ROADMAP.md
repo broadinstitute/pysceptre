@@ -267,14 +267,23 @@ Apple silicon laptop with 39 GB.
   float64 `.bin` blobs with `.txt` sidecars for labels, which carries no dtype,
   shape, or column metadata. Zarr for the matrices, parquet for the tabular
   files.
-- **T3.5 Docs site on GitHub Pages, built by Actions.**
+- **T3.5 Docs site on GitHub Pages, built by Actions. -- BUILT, NOT YET
+  PUBLISHED.**
+
+  `mkdocs.yml`, the seven pages under `docs/` and `.github/workflows/docs.yml`
+  are in place and `mkdocs build --strict` passes. What remains is a single
+  human decision: the repository is **private**, so turning Pages on is an
+  act of publication. The org is on Enterprise, so a private (org-only) site
+  is available; that choice has not been made, and until it is, the `deploy`
+  job cannot succeed. The `build` job runs on every PR regardless and is
+  useful on its own.
 
   Documentation of the *software*. `paper/` is manuscript material and
   `CLAUDE.md` is contributor instructions -- neither is documentation, so
   neither is in scope, and both should be excluded by an explicit list
   rather than by a glob that happens not to reach them today.
 
-  Pages:
+  Pages, as built:
 
   - **Home** -- what it is, and the one-paragraph version of why it exists.
   - **Installation** -- the `uv` and `pip` paths, the `fast` and `io` extras
@@ -306,23 +315,32 @@ Apple silicon laptop with 39 GB.
     hand-aligned snippets in `README.md` and `TUTORIAL.md`. The docs
     pipeline must render markdown, never rewrite it.
 
-  Until then `README.md` remains the reference and is still readable at
-  ~240 lines.
+  `README.md` and `TUTORIAL.md` remain canonical: the installation, guide,
+  scope and tutorial pages **include their sections by marker**
+  (`pymdownx.snippets`) rather than copying them, so the two cannot drift.
+  `--strict` fails the build on a broken link, which is what makes a
+  source-to-docs pointer verifiable rather than aspirational.
 
-- **T3.6 Move design rationale out of the source and into the docs.**
+  An obvious eighth page, not built: **Validation**. `README.md` has the
+  section and the docs link out to it on GitHub; it was left out only
+  because it was not on this list.
+
+- **T3.6 Move design rationale out of the source and into the docs. --
+  STARTED.**
   Docstrings describe the function; the reasoning and the measurements go to
   the documentation, with a one-line pointer left in the code wherever a
   choice would otherwise look arbitrary. Source should read as code.
 
-  Ahead of T3.5 because the API reference renders docstrings, so a measured
-  figure there becomes a published, machine-specific claim that goes stale
-  silently.
+  `docs/design.md` is the home, with stable anchors for the pointers to
+  point at. Done so far, because the API reference would otherwise have
+  published a figure known to be false: `parallel_backend`,
+  `gene_job_backend` and `_THREAD_ABOVE_N_CHUNKS` in `pipeline/discovery.py`.
 
-  Needs a home in the docs for design decisions with stable anchors, so the
-  pointers have somewhere to point. A module at a time, not a sweep:
-  `glm/irls.py`, `test_statistic/score_stat.py` and `pipeline/discovery.py`
-  carry the most, and each move should check the pointer still lands where
-  the reasoning went.
+  Remaining, a module at a time rather than as a sweep: the rest of
+  `pipeline/discovery.py`, `glm/irls.py` and
+  `test_statistic/score_stat.py` carry the most. Each move should check the
+  pointer still lands where the reasoning went -- `mkdocs build --strict`
+  checks the link, not the meaning.
 
 ## Tier 5 — exploratory (low priority)
 

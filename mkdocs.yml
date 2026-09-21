@@ -1,0 +1,87 @@
+site_name: pysceptre
+site_description: >-
+  Standalone Python port of the statistical engine behind sceptre's discovery
+  analysis for single-cell CRISPR screens.
+repo_url: https://github.com/broadinstitute/pysceptre
+repo_name: broadinstitute/pysceptre
+edit_uri: edit/main/docs/
+
+# Documentation of the *software*. `paper/` is manuscript material and
+# `CLAUDE.md` is contributor instructions; neither is documentation. They are
+# outside `docs/` and so are never picked up. The two files that do live in
+# `docs/` but are not documentation are excluded by name rather than by a
+# glob, so adding a third has to be a deliberate act.
+exclude_docs: |
+  ROADMAP.md
+  PARKED-width1-target-fits.md
+
+theme:
+  name: material
+  palette:
+    # Okabe-Ito blue as the accent, per the project's colourblind-safe rule.
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - toc.follow
+
+extra_css:
+  - stylesheets/palette.css
+
+nav:
+  - Home: index.md
+  - Installation: installation.md
+  - User guide: guide.md
+  - Tutorials: tutorials.md
+  - API reference: api.md
+  - Scope and limitations: scope.md
+  - Design decisions: design.md
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          # griffe reads `src/` statically -- the package is never imported,
+          # so the docs runner needs neither numba nor the io extra.
+          paths: [src]
+          options:
+            docstring_style: google
+            show_source: false
+            show_root_heading: true
+            show_root_full_path: true
+            heading_level: 3
+            members_order: source
+            separate_signature: true
+            show_signature_annotations: true
+            signature_crossrefs: true
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.superfences
+  - pymdownx.details
+  # Pages pull their prose out of README.md and TUTORIAL.md by section marker
+  # rather than copying it: those two files stay canonical, and a copy is how
+  # documentation drifts. `check_paths` turns a missing include into a build
+  # failure instead of a literal `--8<--` in the rendered page.
+  - pymdownx.snippets:
+      base_path: [docs, .]
+      check_paths: true
