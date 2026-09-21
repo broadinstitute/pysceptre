@@ -355,16 +355,26 @@ sides -- the closed form and the simulation that served as its ground truth
 both read it, so that comparison is internally consistent and its conclusion
 stands.
 
-**One consequence recorded here deliberately, because it is not this
-package's to fix.** The simulation that produced that ground truth draws
-counts from the same normalised mean, so it simulated its genes about 16 %
-below the expression the screen actually has, and its *simulated* power is
-presumably biased low for the same reason the closed form's was. That is a
-statement about the simulation pipeline, not about pysceptre, and nothing here
-depends on it: the helpers are validated against R output value for value, and
-the choice of which mean to feed the estimator is the caller's. It is written
-down so that a later comparison of pysceptre's power estimates against those
-sweeps knows both sides carry the same offset.
+**The two sides of that comparison were not on the same scale, which is
+worth knowing before its error profile is taken at face value.** The
+simulation multiplies each cell's size factor back in when it draws counts, so
+it realises gene expression about 4 % below the screen's real level. The
+closed form has no size factors and applies no such scaling, so being fed the
+same normalised mean it was told the genes were about 16 % dim. The gap
+between the two sides is the mean size factor, 1.1389 on day0, so the closed
+form was predicting for genes 13.9 % dimmer than the simulation actually made
+them.
+
+That is a plausible cause of the comparison's reported finding that the
+formula "leans low", with a positive median residual in every bin of predicted
+power. The *ranking* result is scale-insensitive and unaffected; the
+*calibration* part of it should not be read as characterising the estimator
+until the input mismatch is separated out. None of this is pysceptre's to fix
+and nothing here depends on it: the helpers are validated against R output
+value for value, and which mean to feed the estimator is the caller's choice.
+It is written down so a later comparison against those sweeps does not inherit
+the mismatch silently. (An earlier version of this note said the simulation
+itself ran 16 % low, which was wrong: it restores the size factors.)
 
 #### A note on the poscounts convention, for the reproduction path only
 
