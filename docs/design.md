@@ -324,25 +324,47 @@ implies is `mean(exp(Z b))`, the average fitted value.
 `baseline_expression_stats_from_fits` returns exactly that, taken from the
 same negative-binomial fit that produces theta, so the power estimate and the
 test it predicts are on one scale by construction rather than by coincidence.
-It is validated against sceptre's own cached coefficients to a relative 1e-10
-over day0's 272 genes, and pysceptre's fitted values already match sceptre's
-at 1e-6 (`test_glm_fits.py`), so nothing new is being trusted here.
+It is validated against sceptre's own cached fit over day0's 237 genes, and
+the two claims are worth separating because they are not the same size. The
+**fitted values** -- `exp(Z b)`, which is what the mean is taken over -- agree
+to a relative **9.2e-10** across all 134,542,530 gene x cell values. The
+**coefficients** themselves agree less tightly, as correlated design columns
+will: 2.3e-9 on the intercept but **4.5e-7** at worst, on
+`replicate_factorRep 4`. Every one of the eleven columns is compared
+separately, dummies included, because a factor-contrast ordering mismatch
+would shift the baseline by batch while a pooled maximum looked fine.
+pysceptre's fitted values already match sceptre's at 1e-6
+(`test_glm_fits.py`), so nothing new is being trusted here.
 
 **The published comparison did not use that mean, and the difference is
 measurable.** It used a size-factor-normalised mean instead, which
 `baseline_expression_stats` reproduces. On day0, over the 237 genes both
 cover:
 
-| | |
-|---|---|
-| sceptre's model mean / the normalised mean | median **1.1613**, sd 0.0218, range 1.0948 to 1.2235 |
-| correlation of the logs | **0.99995** |
-| the raw mean / the normalised mean | 1.1875 |
-| sceptre's model mean / the raw mean | 0.9786 |
+| | | cell set |
+|---|---|---|
+| sceptre's model mean / the normalised mean | median **1.1613**, sd 0.0218, range 1.0948 to 1.2235 | mixed |
+| correlation of the logs | **0.99995** | mixed |
+| the raw mean / the normalised mean | **1.1875** | all cells, both |
+| sceptre's model mean / the raw mean | 0.9786 | mixed |
 
-So the normalised mean sits about **16 % below** sceptre's scale, and the
-offset is a single factor rather than a reshuffling: the two agree almost
-perfectly on which genes are expressed more than which. Raising
+**Two of those rows mix cell sets, and the mix is the whole of their
+residual.** The model mean is over `cells_in_use`, which is what the fit was
+computed on; the normalised and raw means come from `row_data`, which is over
+every cell in the object. Measured on **one** cell set the model reproduces
+the raw mean *exactly* -- `mean(exp(Z b)) / raw = 1.0000000000`, maximum
+deviation 8.1e-9 -- because a Poisson GLM with an intercept satisfies
+`sum(fitted) == sum(observed)`. The 2.14 % in the last row is entirely
+`raw(all cells) / raw(cells_in_use) = 1.0219`, a property of which cells the
+normalisation ran over and not of the model. Read as a model residual it would
+be simply wrong.
+
+So the clean statement is the **third** row, which compares like with like:
+the normalised mean sits **15.8 % below** the raw mean, and sceptre's scale is
+the raw mean. About 16 %, and the 1.1613 in the first row reads low only
+because its numerator is over a cell set whose mean is 2.2 % smaller. The
+offset is a single factor rather than a reshuffling either way: the two agree
+almost perfectly on which genes are expressed more than which. Raising
 `expression_mean` by that factor raises the closed form's power on 17 of the
 fixture's 18 pairs, the exception being a pair whose power is ~0 under either
 (the non-monotone corner below). So feeding it the normalised mean makes the
