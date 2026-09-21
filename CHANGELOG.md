@@ -33,9 +33,9 @@ Notable changes per release. Dates are the release date.
   failed as a bare `LinAlgError` from inside the batched solve; it is now
   refused before any fitting, naming the redundant columns. Transposed
   matrices, row-count mismatches and non-finite entries are caught there too.
-- **A recipes page** in the documentation: per-gRNA tests, design matrices
-  with interactions, power for pairs that failed QC, and power reported
-  alongside a discovery result.
+- **Four tutorials** in the documentation, beside the existing worked example:
+  per-gRNA tests, design matrices with interactions, power for pairs that
+  failed QC, and power reported alongside a discovery result.
 - **Per-gRNA targeting units and `--all-cells` in the export**, so an export
   can answer questions the discovery pair list does not anticipate. An export
   now carries every gene and every cell by default.

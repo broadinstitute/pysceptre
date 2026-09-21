@@ -282,7 +282,7 @@ before using it on a single pair: the estimate is good enough to plan a screen
 and to triage its negatives, not to close a question about one element-gene
 pair.
 
-<!-- --8<-- [start:recipe-power] -->
+<!-- --8<-- [start:tutorial-power] -->
 
 #### Reporting power alongside a discovery result
 
@@ -357,7 +357,7 @@ with `n_nonzero_trt_thresh` and `n_nonzero_cntrl_thresh` set to the
 thresholds the QC used, so the estimate includes the probability the pair
 would have failed QC at all.
 
-<!-- --8<-- [end:recipe-power] -->
+<!-- --8<-- [end:tutorial-power] -->
 
 ### Lower-level building blocks
 

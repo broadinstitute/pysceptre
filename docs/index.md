@@ -30,8 +30,7 @@ assuming a path works.
 |---|---|
 | [Installation](installation.md) | `uv` and `pip`, the `fast` and `io` extras, tested Python versions |
 | [User guide](guide.md) | a run end to end, and how to read the result frame |
-| [Tutorials](tutorials.md) | a worked example from synthetic inputs |
-| [Recipes](recipes.md) | per-gRNA tests, interaction designs, and power beside a result |
+| [Tutorials](tutorials.md) | a worked example end to end, then per-gRNA tests, interaction designs, and power beside a result |
 | [API reference](api.md) | generated from the source |
 | [Scope and limitations](scope.md) | the paths that are not implemented |
 | [Design decisions](design.md) | why the port differs from R where it does |
