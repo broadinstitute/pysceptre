@@ -71,11 +71,11 @@ Notable changes per release. Dates are the release date.
   where the published comparison used sceptre's permutation test.
 - **The two expression conventions are scored against each other**, and the
   documented default wins at every effect size: MCC 0.941 against 0.910 at a
-  15 % knockdown, widening to 0.925 against 0.856 at 50 %. That is consistent
-  with the principle behind the default rather than independent evidence for
-  it: the ground-truth simulation's own expression scale sits closer to the
-  default's than to the alternative's. `docs/design.md` says why the principle
-  is what decides it.
+  15 % knockdown, widening to 0.925 against 0.856 at 50 %. That is
+  corroboration rather than adjudication: which mean is correct is settled by
+  PerturbPlan's own definition of the input, `avg_library_size *
+  relative_expression`, an expected raw count per cell. See
+  `docs/design.md`.
 
 ### Notes
 

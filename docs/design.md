@@ -205,47 +205,58 @@ over **34,886 pairs**, at the bar a reader acts on rather than as a distance:
 `scripts/score_power_against_simulation.py`, guarded by
 `tests/validation/test_power_against_simulation_day0.py`.
 
-**This is new evidence rather than a re-run of the published comparison.**
-That one scored PerturbPlan's own R on a different screen analysed under
-sceptre's *permutation* test, which an ondisc-backed response matrix forced.
-day0 ran under the **CRT**, which the published work explicitly lists as
-untested. The agreement holds: MCC between 0.91 and 0.96 from a 10 % to a
-50 % knockdown, and it does **not** degrade as the signal grows, which is the
-failure mode the fitted model the published work compared against did show.
+**What this corroborates, and whose result it is.** The finding that
+PerturbPlan's closed form agrees with per-pair simulation is not this
+package's; it was established by scoring their R against a large simulation
+sweep, and it is why the closed form is worth porting at all. This is a second
+instance of that same comparison, so it tests the estimator rather than
+proposing one. It is not a re-run: the original scored a different screen
+analysed under sceptre's *permutation* test, which an ondisc-backed response
+matrix forced, while day0 ran under the **CRT**, which that work explicitly
+lists as untested.
+
+The agreement holds: MCC between 0.91 and 0.96 from a 10 % to a 50 %
+knockdown, and it does **not** degrade as the signal grows, which is the
+failure mode the fitted alternative in the original comparison did show.
 
 **The es = 0.05 row is not a result.** 274 of 34,886 pairs are powered at a
 5 % knockdown, so every rate on that line is a few hundred pairs wide against
 a 34,000-pair negative class, which is why its MCC is 0.536 while its
 sensitivity is 96.4 %. It is kept to show the row exists.
 
-### Which mean is correct, and why the scoring above cannot settle it
+### Which mean is correct: PerturbPlan's own definition settles it
 
-**The fitted mean, and the argument is principled rather than empirical.**
-sceptre models counts as `NB(exp(Z b), theta)`, so the expected count its test
-operates on *is* `exp(Z b)`. A closed form approximating that test has to be
-handed that mean. The alternative comes from DESeq2 "poscounts"
-normalisation, which sceptre uses nowhere. And because a GLM with an intercept
-satisfies `sum(fitted) == sum(observed)`, the fitted mean is exactly the
-gene's average observed count over the cells the fit ran on, which is
-manifestly the right scale for "how much is this gene expressed"; the
-normalised mean sits 16 % below that.
+Not an argument from sceptre, and not an empirical question. **PerturbPlan
+defines what its input means**, in `power_function`:
 
-**The comparison below is consistent with that and is not independent
-evidence of it**, which the first version of this section failed to say. The
-ground truth is a simulation that drew counts as `mean_i * sf_j`, realising
-about **0.959** of the raw mean. So the truth's own expression scale sits
-4.3 % from the fitted mean and 12.2 % from the normalised one: it is closer to
-the convention that then scores better. Some of the margin below is that
-proximity rather than a statement about predicting the real test.
+```r
+expression_mean = avg_library_size * relative_expression
+```
 
-The same caveat weakens the headline table slightly in the other direction:
-the estimator is being scored against genes about 4 % dimmer than the screen
-actually has, so it is a mildly pessimistic ground truth for the fitted mean.
+with `relative_expression = rowSums(counts) / sum(counts)`
+(`obtain_expression_information`). So `expression_mean` is the gene's share of
+all counts times the library size: **the expected raw UMI count for that gene
+in a cell of that depth.** Nothing normalised about it.
 
-The comparison is unlikely ever to settle this. The simulation pipeline has
-since been changed to draw from `exp(X b)` itself, which would make a re-run
-sweep *exactly* the fitted scale and the circularity total. The principle is
-what decides it; the numbers only confirm nothing has gone badly wrong.
+That decides it. The fitted mean is the gene's average observed count over the
+cells the fit ran on -- exactly, since a GLM with an intercept satisfies
+`sum(fitted) == sum(observed)` -- which is the quantity PerturbPlan asks for.
+The size-factor-normalised mean is a DESeq2 poscounts quantity answering a
+different question, and on day0 it sits 16 % below what the formula wants.
+
+It is a happy coincidence rather than a second argument that the fitted mean
+is also on the scale sceptre's test operates on: `exp(Z b)` is both. The two
+routes agree because the expected count is the expected count.
+
+**So the comparison below is corroboration, not adjudication**, which the
+first version of this section got wrong by presenting it as evidence for the
+default. It cannot adjudicate in any case: the ground truth is a simulation
+that drew counts as `mean_i * sf_j`, realising about 0.959 of the raw mean, so
+the truth's own scale sits 4.3 % from the fitted mean and 12.2 % from the
+normalised one. The convention nearer the truth scores better partly for that
+reason. The same proximity makes the headline table mildly *pessimistic*,
+since the estimator is scored against genes about 4 % dimmer than the screen
+has.
 
 With that read, on the same pairs and the same ground truth and only the
 expression input changed:
