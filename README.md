@@ -408,14 +408,20 @@ adjustment over the union each time.
   port of [PerturbPlan](https://github.com/Katsevich-Lab/perturbplan) (MIT)
   rather than of sceptre. It is validated against that package's own output,
   not against sceptre's. Within it: complement control group only, an explicit
-  `cutoff` only (no threshold is derived for you), per-gRNA cell counts
-  required rather than the per-target union, and no minimum-detectable-effect-size
-  path. It is accurate enough to plan a screen and triage its negatives, and
-  **not** accurate enough to settle a question about one element-gene pair --
-  see [Design decisions](https://broadinstitute.github.io/pysceptre/design/#analytical-per-pair-power).
-- **pysceptre cannot yet derive `compute_power_posthoc`'s inputs for you.**
-  You supply `cells_per_grna` and `baseline_expression_stats`; there is no
-  helper that builds either from a response matrix or an export.
+  `cutoff` only, per-gRNA cell counts required rather than the per-target
+  union, and no minimum-detectable-effect-size path. It is accurate enough to
+  plan a screen and triage its negatives, and **not** accurate enough to
+  settle a question about one element-gene pair -- see
+  [Design decisions](https://broadinstitute.github.io/pysceptre/design/#analytical-per-pair-power).
+- **Two ways to build its baseline statistics, and they are not
+  interchangeable.** `baseline_expression_stats_from_fits` takes the mean and
+  theta from the same negative-binomial fit the discovery test uses, so the
+  estimate and the test it predicts are on one expression scale. **Prefer it.**
+  `baseline_expression_stats` instead computes a size-factor-normalised mean,
+  which is what the published comparison used; measured on one screen that
+  mean sits about **16 % below** the scale sceptre's own model works on, which
+  makes the estimate conservative rather than wrong-shaped. Use it only to
+  reproduce those numbers.
 
 <!-- --8<-- [end:scope] -->
 
