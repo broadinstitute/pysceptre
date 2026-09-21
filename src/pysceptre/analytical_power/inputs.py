@@ -15,6 +15,7 @@ plausible numbers, which is why each says what it is reproducing.
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Mapping
 from typing import Protocol
 
@@ -194,10 +195,14 @@ def baseline_expression_stats(
     divided by its size factor, then averaged over cells. `expression_size` is
     the NB size, theta, not the dispersion.
 
-    **Prefer `baseline_expression_stats_from_fits` unless you are reproducing
-    the published comparison.** This function's mean comes from a
+    **This is the wrong scale for `compute_power_posthoc`, and is kept only to
+    reproduce the published comparison.** Use
+    `baseline_expression_stats_from_fits`. The mean here comes from a
     normalisation scheme sceptre does not use, and on day0 it sits about 16%
-    below the mean sceptre's own model implies.
+    below the mean sceptre's own model implies -- which is what
+    `compute_power_posthoc` needs, since its `var_nb` is the variance of the
+    counts themselves and its QC factor asks how many cells hold a nonzero
+    count. Calling this function emits a warning for that reason.
 
     **Two caveats on theta**, because a number that transfers badly here is
     invisible in the output. `fit_all_genes` clamps theta to `(0.01, 1000.0)`,
@@ -205,6 +210,21 @@ def baseline_expression_stats(
     is fitted under whatever `covariate_matrix` was passed, so it matches
     another implementation's only if the design matrices match.
     """
+    # Loud, because this has already gone wrong once in production: a published comparison fed
+    # this column straight to compute_power_posthoc, which applies no per-cell scaling, and so
+    # scored a formula against genes 16% dimmer than the simulation it was compared to. A
+    # docstring did not prevent that; the call site is where the warning has to be.
+    warnings.warn(
+        "baseline_expression_stats returns a SIZE-FACTOR-NORMALISED mean, which is not the "
+        "scale compute_power_posthoc expects: that function's var_nb is the variance of the "
+        "raw counts and its QC factor asks how many cells hold a nonzero count. On day0 this "
+        "mean is 16% below the right one, which understates power. Use "
+        "baseline_expression_stats_from_fits unless you are deliberately reproducing the "
+        "published comparison.",
+        UserWarning,
+        stacklevel=2,
+    )
+
     csc = sparse.csc_matrix(counts)
     n_genes, n_cells = csc.shape
     if len(gene_ids) != n_genes:
@@ -331,12 +351,22 @@ def baseline_expression_stats_from_fits(
 
     **Why not the size-factor-normalised mean.** `baseline_expression_stats`
     computes that instead, because it is what the published comparison used.
-    Measured on day0, it sits about 16% *below* this one, near enough a
-    constant across genes (correlation of logs 0.9999), so it makes the power
-    estimate conservative rather than wrong-shaped. It also drags in a
-    normalisation convention that has nothing to do with sceptre. Prefer this
-    function unless you are reproducing those published numbers; see
-    `docs/design.md`, "Analytical per-pair power".
+    Measured on day0 it sits about 16% *below* this one, near enough a
+    constant across genes (correlation of logs 0.9999).
+
+    That near-constancy makes it tempting to call the difference a
+    conservative rescaling, and **through the test statistic it is**. Through
+    the QC factor it is not. `compute_power_posthoc` multiplies power by
+    `1 - qc_failure_prob`, which is built from `P(count == 0)`, and that is
+    nonlinear in the mean: a 16% dim input overstates the zero probability by
+    0.032 at the median on day0 and 0.073 at worst, inflating the QC discount
+    for 28 of 237 genes at a typical target, the worst by 0.20.
+
+    The QC channel is **inert at the default thresholds of 0**, which is the
+    setting for pairs that already passed QC -- so the "conservative
+    rescaling" reading holds there and only there. It stops holding in exactly
+    the case the thresholds exist for: scoring pairs the screen never tested.
+    See `docs/design.md`, "Analytical per-pair power".
     """
     Z = np.asarray(covariate_matrix, dtype=float)
     if Z.ndim != 2:

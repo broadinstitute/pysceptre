@@ -77,8 +77,21 @@ def compute_power_posthoc(
             sum of squared counts, which no target-level total can supply.
         baseline_expression_stats: one row per gene, columns `response_id`,
             `expression_mean` and `expression_size`. `expression_size` is the
-            NB size -- theta, i.e. `1 / dispersion`. The validated
-            `expression_mean` is the size-factor-normalised mean.
+            NB size -- theta, i.e. `1 / dispersion`.
+
+            **`expression_mean` is E[observed count in a cell]**, on the raw
+            count scale, and the formula says so twice: `var_nb` is the
+            variance of the negative binomial the counts themselves follow,
+            and `qc_failure_prob` asks how many cells have a nonzero *count*.
+            Only a distribution over actual counts has a zero probability.
+            Build it with `inputs.baseline_expression_stats_from_fits`, which
+            is on that scale by construction.
+
+            A size-factor-normalised mean is **not** on this scale and is the
+            mistake to avoid: `inputs.baseline_expression_stats` computes one,
+            and on day0 it sits 16% low. Passing it understates power, and
+            when either nonzero threshold is above 0 it does so twice --
+            through the statistic and again through the QC factor.
         fold_change_mean: a *multiplier*, not an effect size: a 15% knockdown
             is `0.85`.
         fold_change_sd: across-gRNA sd of the fold change. Required, with no
