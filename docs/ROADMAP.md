@@ -105,7 +105,7 @@ from a benchmark using a random `D` that violated the invariant.
 ## Tier 2 — performance
 
 **Benchmarking is paused** while pysceptre keeps changing -- see
-`paper/status.md`. The work below is still worth doing; measuring it on the
+`status.md` in [`pysceptre-paper`](https://github.com/broadinstitute/pysceptre-paper). The work below is still worth doing; measuring it on the
 container is what waits, so that one rebuild covers several changes.
 
 
@@ -278,10 +278,11 @@ Apple silicon laptop with 39 GB.
   job cannot succeed. The `build` job runs on every PR regardless and is
   useful on its own.
 
-  Documentation of the *software*. `paper/` is manuscript material and
-  `CLAUDE.md` is contributor instructions -- neither is documentation, so
-  neither is in scope, and both should be excluded by an explicit list
-  rather than by a glob that happens not to reach them today.
+  Documentation of the *software*. The manuscript now lives in its own
+  repository and `CLAUDE.md` is contributor instructions -- neither is
+  documentation, so neither is in scope, and the two non-documentation
+  files still under `docs/` are excluded by an explicit list rather than
+  by a glob that happens not to reach them today.
 
   Pages, as built:
 
@@ -379,14 +380,14 @@ extra pattern numba uses.
 
 Reprioritised: the preprint now drives this tier. The calibration check is
 committed; the rest waits on dataset and scope decisions tracked in
-`paper/status.md`.
+`status.md` in [`pysceptre-paper`](https://github.com/broadinstitute/pysceptre-paper).
 
 Each changes what the package is. Listed, not sized — these need a scientific
 call on whether they are wanted.
 
 | Item | Ports | Why it matters |
 |---|---|---|
-| **Calibration check** | `run_calibration_check` | **COMMITTED — required for the preprint.** Establishes that p-values are calibrated rather than merely concordant with R. Reuses the existing engine unchanged; only negative-control target construction and reporting are new. See `paper/status.md`. |
+| **Calibration check** | `run_calibration_check` | **COMMITTED — required for the preprint.** Establishes that p-values are calibrated rather than merely concordant with R. Reuses the existing engine unchanged; only negative-control target construction and reporting are new. See `status.md` in [`pysceptre-paper`](https://github.com/broadinstitute/pysceptre-paper). |
 | Positive-control pairs | PC pair handling | R sizes `B3` off `max(discovery, positive_control)`; we collapse that for lack of a PC set. |
 | `singleton` gRNA integration | `grna_integration_strategy` | Currently union-only. |
 | `permutations` mechanism | permutation resampling | Would make `B3=24999` meaningful. |

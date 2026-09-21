@@ -112,7 +112,8 @@ Python 3.10+ (`requires-python`). Verified passing on 3.10, 3.11, 3.12, 3.13.
   in the docs.** A docstring says what something does, what it takes and
   returns, and what a caller must honour. Design decisions, what R does, why
   this differs and what was measured belong in the documentation (ROADMAP
-  T3.5), with the published narrative in `paper/`.
+  T3.5). The narrative lives in a separate repository,
+  [`pysceptre-paper`](https://github.com/broadinstitute/pysceptre-paper): this one is strictly the tool.
 
   Source should read as code, not as a memoir. Where a choice looks
   arbitrary or invites "simplification", leave a **one-line pointer** to the

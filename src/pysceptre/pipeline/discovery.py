@@ -1202,8 +1202,7 @@ def run_discovery_ntcells_complement(
             # invert the loop because permutations have no per-target state to
             # hold; the CRT does, which is what forces target chunking, and this
             # path uses one layout for both mechanisms. Fixing it means not
-            # materializing per-target draws for permutations at all -- see the
-            # cumulative-sum note in `paper/results.md`.
+            # materializing per-target draws for permutations at all.
             chunk_target_set = set(chunk_ids)
             gene_jobs = [
                 (gene_id, [t for t in gene_pairs if t in chunk_target_set])

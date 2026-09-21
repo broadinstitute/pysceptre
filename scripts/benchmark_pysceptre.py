@@ -7,7 +7,7 @@ high-water mark.
 
 Usage: benchmark_pysceptre.py <step> <export_dir> <out_dir> [chunk_memory_gb]
   step: discovery  (calibration and power are not implemented yet -- see
-        paper/status.md; R-side baselines for them already exist)
+        the manuscript repo's status.md; R-side baselines already exist)
   chunk_memory_gb: optional working-set budget. Sweeping it and recording the
         resulting peak RSS is how the budget is calibrated against reality --
         it currently under-predicts (ROADMAP T1.4).
@@ -77,7 +77,7 @@ def main() -> None:
     if step != "discovery":
         raise SystemExit(
             f"step {step!r} is not implemented in pysceptre yet; "
-            "R-side baselines exist for comparison (see paper/status.md)"
+            "R-side baselines exist for comparison"
         )
 
     # Time the load separately from the analysis. R's benchmark does the same

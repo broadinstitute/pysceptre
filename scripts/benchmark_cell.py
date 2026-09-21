@@ -6,7 +6,7 @@ Usage: benchmark_cell.py <label> <export_dir> <out_dir> <mechanism> <n_jobs>
 One configuration, one process, because `ru_maxrss` is a high-water mark for
 the process lifetime: two configurations timed in one process make the
 second inherit the first's peak. That mistake is recorded in
-`paper/status.md`; this script exists so it cannot recur.
+the manuscript repository; this script exists so it cannot recur.
 
 Reports wall, peak RSS and **mean cores** -- `(user + sys) / wall`. Wall
 alone cannot tell a real speedup from one bought by spending more cores, and

@@ -141,5 +141,5 @@ A/B work.
 
 - PR #35 -- prefetching, the run-scoped `X_outer_flat`, the
   `chunk_memory_gb` sweep
-- `paper/status.md` -- the sweep table, and why peak RSS needs `n_jobs`
+- `status.md` in [`pysceptre-paper`](https://github.com/broadinstitute/pysceptre-paper) -- the sweep table, and why peak RSS needs `n_jobs`
   stated beside it

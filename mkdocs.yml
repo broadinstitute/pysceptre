@@ -6,11 +6,10 @@ repo_url: https://github.com/broadinstitute/pysceptre
 repo_name: broadinstitute/pysceptre
 edit_uri: edit/main/docs/
 
-# Documentation of the *software*. `paper/` is manuscript material and
-# `CLAUDE.md` is contributor instructions; neither is documentation. They are
-# outside `docs/` and so are never picked up. The two files that do live in
-# `docs/` but are not documentation are excluded by name rather than by a
-# glob, so adding a third has to be a deliberate act.
+# Documentation of the *software*. The manuscript lives in its own repository
+# and `CLAUDE.md` is contributor instructions; neither is documentation. The
+# two files that do live in `docs/` but are not documentation are excluded by
+# name rather than by a glob, so adding a third has to be a deliberate act.
 exclude_docs: |
   ROADMAP.md
   PARKED-width1-target-fits.md
