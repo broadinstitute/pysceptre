@@ -30,3 +30,9 @@ docker/build_push.log
 
 # Built docs site (mkdocs build); the published copy comes from Actions.
 site/
+
+# Contributor planning notes. Untracked on purpose: a plan carries cluster job
+# ids, paths into private repositories and measurements that belong to the
+# manuscript rather than to the tool, and this repository is public. Keep the
+# reasoning that a reader of the source needs in docs/design.md instead.
+docs/PLAN-*.md

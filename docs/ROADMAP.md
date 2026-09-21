@@ -13,7 +13,7 @@ Two standing constraints apply to everything below:
   nd-arrays. The raw `.bin` + sidecar `.txt` layout the first export scripts wrote is
   legacy (see T3.4).
 
-## Tier 1 — correctness and safety
+## Tier 1 -- correctness and safety
 
 ### T1.1 `no_approximation` can exhaust memory
 
@@ -38,7 +38,7 @@ R does not hit this because it processes one target at a time.
   target. Bounded memory, no statistical change. Restructures the per-target
   loop, so it is its own PR.
 
-**Reprioritised — this is worth more than originally scoped.** It was filed as
+**Reprioritised -- this is worth more than originally scoped.** It was filed as
 a `no_approximation` fix, but profiling a real run shows draws dominate the
 target stage on the *default* `skew_normal` path too: 16.5 MB of the 20.7 MB
 per target, so a 193-target chunk holds 3.2 GB of draws out of a 3.99 GB
@@ -46,7 +46,7 @@ working set. Streaming would cut the dominant memory term for **every**
 analysis, not just the pathological one. It is currently the single
 highest-value memory change available.
 
-### T1.4 `chunk_memory_gb` under-predicts actual RSS — PARTLY ADDRESSED
+### T1.4 `chunk_memory_gb` under-predicts actual RSS -- PARTLY ADDRESSED
 
 Measured: a 4.0 GB budget produced a 9.58 GB peak RSS -- roughly 2.4x.
 The guard is behaving correctly (it capped the chunk at 193 targets); the
@@ -102,7 +102,7 @@ Not an issue: the test statistic itself. `lower_left - lower_right` is a
 variance and stays non-negative for the real `D`; an earlier NaN report came
 from a benchmark using a random `D` that violated the invariant.
 
-## Tier 2 — performance
+## Tier 2 -- performance
 
 **Benchmarking is paused** while pysceptre keeps changing -- see
 `status.md` in `pysceptre-paper` (private). The work below is still worth doing; measuring it on the
@@ -132,7 +132,7 @@ and needed correcting. An empty CSR row sums to zero on its own.
 Measured against the previous implementation on 2,400 pairs: `fold_change`,
 `z_orig` and `stage` bit-identical, and 2,353 of 2,400 p-values bit-identical.
 The 47 that moved moved by at most **8.3e-17**, against a resampling
-resolution of `1/(B1+1) = 2e-3` — so no empirical quantile flipped, and
+resolution of `1/(B1+1) = 2e-3` -- so no empirical quantile flipped, and
 Spearman rho is exactly 1.0. A sparse matmul accumulates in a different order
 than a gather, which is where the last bits come from.
 
@@ -180,7 +180,7 @@ The remaining densification is inherent to IRLS rather than an oversight: the
 working response `z = eta + (y - mu) / mu` and the weights are dense because
 `mu` is, so holding `y` sparse saves nothing. Nothing to do here.
 
-### T2.5 Retained gene precomputation — DONE
+### T2.5 Retained gene precomputation -- DONE
 
 Resolved by storing what upstream stores. `perform_response_precomputation`
 in sceptre returns only `fitted_coefs` and `theta`; `mu`, `w`, `a` and `D` are
@@ -256,7 +256,7 @@ would trade one unattributed table for another. What it needs is the hardware
 it was measured on, or a re-run somewhere documented. This run was a 14-core
 Apple silicon laptop with 39 GB.
 
-## Tier 3 — release
+## Tier 3 -- release
 
 - **T3.1 PyPI publish.** Blocked on account/token and on whether `0.1.0` is the
   version to make public. Prefer a `release.yml` using trusted publishing on
@@ -338,9 +338,9 @@ Apple silicon laptop with 39 GB.
   pointer still lands where the reasoning went -- `mkdocs build --strict`
   checks the link, not the meaning.
 
-## Tier 5 — exploratory (low priority)
+## Tier 5 -- exploratory (low priority)
 
-### T5.1 GPU support for the heavy stages — TABLED
+### T5.1 GPU support for the heavy stages -- TABLED
 
 Tabled deliberately, not forgotten: profiling the CPU path removed most of the
 case for it.
@@ -371,18 +371,18 @@ streaming a prerequisite, `threadpool_limits(1)` is CPU-BLAS-specific and does
 not carry over, and the CPU fallback must keep working via the same optional
 extra pattern numba uses.
 
-## Tier 4 — scope extensions
+## Tier 4 -- scope extensions
 
 Reprioritised: the preprint now drives this tier. The calibration check is
 committed; the rest waits on dataset and scope decisions tracked in
 `status.md` in `pysceptre-paper` (private).
 
-Each changes what the package is. Listed, not sized — these need a scientific
+Each changes what the package is. Listed, not sized -- these need a scientific
 call on whether they are wanted.
 
 | Item | Ports | Why it matters |
 |---|---|---|
-| **Calibration check** | `run_calibration_check` | **COMMITTED — required for the preprint.** Establishes that p-values are calibrated rather than merely concordant with R. Reuses the existing engine unchanged; only negative-control target construction and reporting are new. See `status.md` in `pysceptre-paper` (private). |
+| **Calibration check** | `run_calibration_check` | **COMMITTED -- required for the preprint.** Establishes that p-values are calibrated rather than merely concordant with R. Reuses the existing engine unchanged; only negative-control target construction and reporting are new. See `status.md` in `pysceptre-paper` (private). |
 | Positive-control pairs | PC pair handling | R sizes `B3` off `max(discovery, positive_control)`; we collapse that for lack of a PC set. |
 | `singleton` gRNA integration | `grna_integration_strategy` | Currently union-only. |
 | `permutations` mechanism | permutation resampling | Would make `B3=24999` meaningful. |

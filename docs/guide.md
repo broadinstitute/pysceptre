@@ -11,7 +11,7 @@ difference shows up in the result:
 | | pairs | QC failures |
 |---|---|---|
 | `run_discovery_analysis` | you supply them | reported in-band: `pass_qc = False`, `p_value = NaN` |
-| `run_calibration_check` | constructed from non-targeting gRNAs | cannot occur — pairs are chosen to pass, so there is no `pass_qc` column |
+| `run_calibration_check` | constructed from non-targeting gRNAs | cannot occur -- pairs are chosen to pass, so there is no `pass_qc` column |
 | `run_power_check` | you supply positive controls | reported in-band, like discovery |
 
 The asymmetry is deliberate. A positive control is a claim about one specific

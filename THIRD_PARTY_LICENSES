@@ -1,0 +1,55 @@
+Third-party code incorporated into pysceptre
+============================================
+
+pysceptre as a whole is distributed under GPL-3.0-only (see LICENSE). The
+components below arrived under their own terms, which are reproduced here
+because those licences require the notice to travel with the code. MIT is
+compatible with GPL-3.0-only in this direction: MIT-licensed code may be
+incorporated into a GPL-3 work, and the combined work is GPL-3.
+
+
+perturbplan
+-----------
+
+`src/pysceptre/analytical_power/` is a port of the post-hoc power path of
+PerturbPlan: `compute_power_posthoc`, `compute_distribution_teststat`,
+`compute_zero_prob`, `compute_QC` and `rejection_computation`.
+
+  Upstream:  https://github.com/Katsevich-Lab/perturbplan
+  Version:   0.3.0, commit 43232419fe26fc511e3e4d2d22caffe68b21bd90
+  Authors:   Ziang Niu, Yihui He, Eugene Katsevich
+  Citation:  PerturbPlan, PMID 42239142
+  Licence:   MIT
+
+  YEAR: 2024
+  COPYRIGHT HOLDER: perturbplan authors
+
+  Permission is hereby granted, free of charge, to any person obtaining a
+  copy of this software and associated documentation files (the "Software"),
+  to deal in the Software without restriction, including without limitation
+  the rights to use, copy, modify, merge, publish, distribute, sublicense,
+  and/or sell copies of the Software, and to permit persons to whom the
+  Software is furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in
+  all copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+  DEALINGS IN THE SOFTWARE.
+
+
+sceptre
+-------
+
+The statistical engine pysceptre ports is sceptre's, which is GPL-3 -- the
+same licence as this package, and the reason pysceptre is GPL-3.0-only rather
+than anything more permissive.
+
+  Upstream:  https://github.com/Katsevich-Lab/sceptre
+  Authors:   Timothy Barry, Eugene Katsevich
+  Licence:   GPL-3

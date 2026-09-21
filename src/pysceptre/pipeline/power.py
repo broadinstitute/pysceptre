@@ -69,7 +69,7 @@ def annotate_pairwise_qc(
 
     The counts come from the same sparse matmul the calibration check uses,
     so the two paths cannot drift apart on what "enough cells" means. The
-    control arm is the complement, so its count is a subtraction rather than
+    control group is the complement, so its count is a subtraction rather than
     a second pass.
     """
     targets = list(dict.fromkeys(pairs["grna_target"]))

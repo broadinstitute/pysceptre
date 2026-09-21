@@ -9,7 +9,7 @@ reimplementation.** Discovery analysis, the calibration check and the power
 check, all on the complement control group + CRT (conditional randomization
 test) resampling, high-MOI path. Permutations, non-complement control groups,
 low-MOI, `assign_grnas()`, `run_qc()` and R's formula DSL are all deliberately
-out of scope — see "Scope and limitations" in `README.md` before adding any of them.
+out of scope -- see "Scope and limitations" in `README.md` before adding any of them.
 
 **One carve-out from "no `run_qc()`".** The calibration and power checks
 *construct or receive* their own pairs, so both must decide which are testable
@@ -29,24 +29,32 @@ performance figures). This file is the contributor-facing complement: don't
 duplicate the README here, point at it.
 
 ## Layout
-src-layout — the importable package lives under `src/`, so it is only on
+src-layout -- the importable package lives under `src/`, so it is only on
 `sys.path` once installed (editable is fine).
 
 - `src/pysceptre/`
-  - `glm/`            — batched IRLS (`irls.py`) and NB dispersion (`nb_theta.py`).
-  - `precompute/`     — per-gene precomputation pieces reused across draws.
-  - `crt/`            — the CRT resampling draw (`sampler.py`).
-  - `test_statistic/` — score statistic, empirical p, skew-normal escalation,
-                        fold change, and the per-pair `B1 -> B2 -> B3` staging.
-  - `pipeline/`       — `discovery.py` (orchestration) and `api.py` (the one
-                        public entry point, `run_discovery_analysis`).
-- `tests/validation/` — the whole suite (21 tests; ~20s on a fresh venv while
-                        numba JIT-compiles, ~2s once its cache is warm). Every
-                        test compares against R ground truth, not just internal
-                        consistency.
-- `scripts/`          — dataset export (`export_sceptre_dataset.R` +
-                        `make_h5mu.py`), the R-comparison benchmark setup, and the
-                        validation runners. **Not shipped in the wheel**.
+  - `glm/`              -- batched IRLS (`irls.py`) and NB dispersion (`nb_theta.py`).
+  - `precompute/`       -- per-gene precomputation pieces reused across draws.
+  - `crt/`              -- the CRT resampling draw (`sampler.py`).
+  - `test_statistic/`   -- score statistic, empirical p, skew-normal escalation,
+                           fold change, and the per-pair `B1 -> B2 -> B3` staging.
+  - `pipeline/`         -- `discovery.py` (orchestration) and `api.py` (the one
+                           public entry point, `run_discovery_analysis`).
+  - `analytical_power/` -- the closed-form per-pair power estimate, ported
+                           from PerturbPlan (MIT, `THIRD_PARTY_LICENSES`). Not
+                           from sceptre, and not part of the discovery path.
+- `tests/validation/`   -- the whole suite (21 tests; ~20s on a fresh venv
+                           while numba JIT-compiles, ~2s once its cache is warm).
+                           Every test compares against R ground truth, not just
+                           internal consistency.
+- `docker/`             -- one Dockerfile, the minimal pysceptre runtime
+                           image. Two-stage, distroless, non-root, and it
+                           carries **no R**: the R-plus-pysceptre comparison
+                           image belongs with the comparison, in the private
+                           development archive.
+- `scripts/`            -- dataset export (`export_sceptre_dataset.R` +
+                           `make_h5mu.py`), the R-comparison benchmark setup, and
+                           the validation runners. **Not shipped in the wheel**.
 
 `run_discovery_analysis` is also re-exported at the top level
 (`from pysceptre import run_discovery_analysis`). `README.md` documents the
@@ -80,16 +88,27 @@ Python 3.10+ (`requires-python`). Verified passing on 3.10, 3.11, 3.12, 3.13.
 ## Conventions
 - **Indentation: 4 spaces**, enforced by `ruff format`. Lint and format config
   live in `pyproject.toml` under `[tool.ruff]`, so the CLI and the pre-commit
-  hook cannot disagree. `E501` is off — the formatter owns line length, and
+  hook cannot disagree. `E501` is off -- the formatter owns line length, and
   leaving it on would flag the long porting-rationale prose in the docstrings.
 - **`[tool.ruff.format]` excludes `*.md`.** Recent ruff formats Python inside
   Markdown code blocks, which rewrites the hand-aligned snippets in `README.md`
   and `TUTORIAL.md`. Don't drop the exclude.
-- **Commit messages: UPPERCASE verb prefix** — `ADD`, `FIX`, `UPDATE`,
+- **Commit messages: UPPERCASE verb prefix** -- `ADD`, `FIX`, `UPDATE`,
   `REWRITE`, `RELEASE`, `REMOVE`.
 - **Docs accuracy is a hard rule**: every concrete detail (defaults, versions,
   flags, measured timings) must be confirmable from source. If you can't verify
   it, omit it.
+- **Two words not to use: "arm" and "harness".** Anywhere: code, comments,
+  docstrings, docs, commit messages. Say **group** for the treated or
+  complement side of a comparison (`control group` is sceptre's own parameter
+  name, so it is the precise term as well as the plain one), and name the
+  thing itself, the dumper or the fixture or the suite or the runner, instead
+  of calling it a harness.
+- **No em dashes or en dashes.** Write `--` where you want the pause, which
+  is what `README.md` and every source docstring already do, and a plain
+  hyphen in a compound like `cis-trans`. A numeric range gets `to`, not a
+  dash. This is enforced by reading, not by a hook, so check a Markdown file
+  before committing it: `grep -n -e ' -- ' -e '-' <file>` must print nothing.
 - **Never commit real screen data.** `.gitignore` covers
   `test_data/`, `*.rds`, `*.csv`. Only synthetic, fixed-seed
   fixtures belong in the repo.
@@ -105,7 +124,7 @@ Python 3.10+ (`requires-python`). Verified passing on 3.10, 3.11, 3.12, 3.13.
 
   `cividis` ships with matplotlib (`cmap="cividis"`), so no extra
   dependency. Don't use `viridis` for gradients here, and never `jet`/
-  `rainbow`. Nothing in the repo plots yet — this applies to whatever
+  `rainbow`. Nothing in the repo plots yet -- this applies to whatever
   does first.
 
 - **Docstrings describe the function. Comments stay short. Rationale lives
@@ -117,7 +136,7 @@ Python 3.10+ (`requires-python`). Verified passing on 3.10, 3.11, 3.12, 3.13.
 
   Source should read as code, not as a memoir. Where a choice looks
   arbitrary or invites "simplification", leave a **one-line pointer** to the
-  relevant section rather than the argument itself — enough to say a reason
+  relevant section rather than the argument itself -- enough to say a reason
   exists and where it is. `threadpool_limits` looks pointless until
   something tells you where to read why it is not.
 
@@ -149,7 +168,7 @@ Python 3.10+ (`requires-python`). Verified passing on 3.10, 3.11, 3.12, 3.13.
   a marked section must be absolute URLs -- a relative one resolves
   differently on GitHub and in the rendered site, and `mkdocs build
   --strict` will fail the build.
-- **GPL-3.0-only is inherited, not chosen** — upstream `sceptre` is `GPL-3`,
+- **GPL-3.0-only is inherited, not chosen** -- upstream `sceptre` is `GPL-3`,
   which in R packaging means version 3 exactly. Don't "modernize" it to
   `-or-later`: that grants more than was received. The SPDX expression is
   PEP 639, hence `setuptools>=77` in `[build-system]` and deliberately no
@@ -158,20 +177,20 @@ Python 3.10+ (`requires-python`). Verified passing on 3.10, 3.11, 3.12, 3.13.
 - **`threadpool_limits(limits=1, user_api="blas")` in `glm/irls.py` is
   deliberate, not a leftover.** The IRLS matmuls are "thin" (p is a handful of
   covariates) and called in a tight loop, so multi-threaded OpenBLAS is a net
-  loss — measured 68.7s -> 17.7s for a 150-column batch over 100k cells by
+  loss -- measured 68.7s -> 17.7s for a 150-column batch over 100k cells by
   forcing one thread. Scoped to this module so it doesn't clobber BLAS
   threading process-wide. See the module docstring.
 
   **It is a silent no-op on macOS.** numpy there is built against Apple
-  Accelerate, which `threadpoolctl` cannot introspect —
-  `threadpool_info()` returns `[]` and a matmul takes the same time inside and
-  outside the context manager (measured ratio 0.98). So local benchmarks on a
+  Accelerate, which `threadpoolctl` cannot introspect -- `threadpool_info()`
+  returns `[]` and a matmul takes the same time inside and outside the
+  context manager (measured ratio 0.98). So local benchmarks on a
   Mac do not exercise this path, while CI (ubuntu-latest, OpenBLAS) does.
   Any measurement of this optimization must name the BLAS it was taken on.
 
 - **numba is optional and both code paths must keep working.**
   `crt/sampler.py` try/excepts the import and falls back to a pure-numpy
-  `argsort` grouping. The jitted path is a counting sort — the grouping step
+  `argsort` grouping. The jitted path is a counting sort -- the grouping step
   was the dominant cost of the module at real scale.
 
 - **The CRT sampler's with-replacement draw + `np.unique` dedupe is an
@@ -188,7 +207,7 @@ Python 3.10+ (`requires-python`). Verified passing on 3.10, 3.11, 3.12, 3.13.
   own sizing** (`s4_analysis_functs_1.R`: set in `run_discovery_analysis`,
   then B3 recomputed in `run_qc_pt_2`). `B1=499` always; `skew_normal` gives
   `(4999, 0)`; `no_approximation` gives `(0, ceil(mult * n_pairs / alpha))`.
-  `B3=0` on the `skew_normal` path is **parity with R**, not a stub — R only
+  `B3=0` on the `skew_normal` path is **parity with R**, not a stub -- R only
   uses `B3=24999` for `permutations`, which is out of scope. Don't "fix" it.
 
 - **`stage == 3` is reachable on the default path.** It is entered whenever
@@ -198,19 +217,28 @@ Python 3.10+ (`requires-python`). Verified passing on 3.10, 3.11, 3.12, 3.13.
 
 - **`tests/validation/ground_truth.json` is a committed cache.**
   `tests/validation/conftest.py` regenerates it via `Rscript` *only if the file
-  is missing* — so the suite runs in CI with no R installed, but if you change
+  is missing* -- so the suite runs in CI with no R installed, but if you change
   `scripts/dump_r_ground_truth.R` you must delete the JSON or the tests keep
   silently validating against the stale fixture. Neither the dumper nor the
-  JSON records which `sceptre` version produced the fixture — if that matters
+  JSON records which `sceptre` version produced the fixture -- if that matters
   for a change you're making, regenerate it and note the version in the commit.
+
+- **There are two ground-truth fixtures now, and both have the same trap.**
+  `tests/validation/perturbplan_ground_truth.json` caches PerturbPlan's own
+  output for the analytical power port, regenerated by
+  `scripts/dump_perturbplan_ground_truth.R` under the same
+  only-if-missing rule as `ground_truth.json`. Change the dumper and you must
+  delete the JSON. Unlike the sceptre fixture this one *does* record the
+  version and commit SHA that produced it; the dumper's header explains why
+  that SHA is not the one the published comparison used, and why it makes no
+  difference.
 
 - **Real screen data is never committed, so anything that needs it takes a
   path from the environment and fails immediately when it is missing.**
-  `tests/validation/test_day0_regression.py` reads `PYSCEPTRE_DAY0_EXPORT`;
-  `docker/run_on_gcp.sh` requires `GCS_IN` and `GCS_SO` with no defaults.
-  Don't reintroduce absolute paths, and don't give a dataset-specific
-  default: a wrong-but-plausible default is worse than a missing one when
-  the output is a benchmark or a validation number.
+  `tests/validation/test_day0_regression.py` reads `PYSCEPTRE_DAY0_EXPORT` and
+  skips when it is unset. Don't reintroduce absolute paths, and don't give a
+  dataset-specific default: a wrong-but-plausible default is worse than a
+  missing one when the output is a benchmark or a validation number.
 
 - **The `realdata` pytest marker is named for the kind of test, not a
   dataset.** Those tests are deselected by default (`addopts` in
@@ -221,8 +249,8 @@ Python 3.10+ (`requires-python`). Verified passing on 3.10, 3.11, 3.12, 3.13.
   `var` is load-bearing.** sceptre keeps gRNA assignments at exactly two
   resolutions: `grna_group_idxs`, one entry per *target* (the union of that
   target's gRNAs), and `indiv_nt_grna_idxs`, one entry per individual
-  *non-targeting* gRNA. Targeting gRNAs are never kept individually — they are
-  only ever used as a union — and NTCs are, because the calibration check
+  *non-targeting* gRNA. Targeting gRNAs are never kept individually -- they are
+  only ever used as a union -- and NTCs are, because the calibration check
   regroups them into synthetic targets. **`"non-targeting"` is not a key in the
   target-keyed table** (2,974 keys against 2,975 distinct targets on one real
   screen), so
@@ -252,7 +280,7 @@ Python 3.10+ (`requires-python`). Verified passing on 3.10, 3.11, 3.12, 3.13.
   0.10.3) as `max(100, ceil(5 * n_calibration_pairs / (n_genes * p_hat)))`,
   verified on eight cases in `tests/validation/test_calibration_pairs.py`.
   R *enumerates* every combination instead when `choose(n_ntc, size) <= 100`.
-  If those tests start failing, sceptre changed the rule — re-derive it the
+  If those tests start failing, sceptre changed the rule -- re-derive it the
   same way rather than patching the expectations.
 
 - **`uv.lock` is committed but CI installs unlocked.** The lockfile exists so

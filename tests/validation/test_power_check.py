@@ -103,7 +103,7 @@ def test_qc_failures_are_reported_not_dropped():
             covariate_matrix=X,
             grna_target_cells=targets,
             positive_control_pairs=pairs,
-            # Impossible for one arm, so some pairs must fail and still appear.
+            # Impossible for one group, so some pairs must fail and still appear.
             n_nonzero_trt_thresh=140,
             n_nonzero_cntrl_thresh=7,
         )

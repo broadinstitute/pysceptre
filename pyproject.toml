@@ -13,7 +13,10 @@ requires-python = ">=3.10"
 # `License: GPL-3`, which in R packaging means version 3 exactly
 # (`GPL (>= 3)` is the or-later form). Don't grant more than we received.
 license = "GPL-3.0-only"
-license-files = ["LICENSE"]
+# THIRD_PARTY_LICENSES ships in the wheel because it has to: the analytical
+# power port carries perturbplan's MIT notice, and MIT requires the notice to
+# travel with the code.
+license-files = ["LICENSE", "THIRD_PARTY_LICENSES"]
 authors = [
     { name = "Siddarth Wekhande" },
     { name = "Eugenio Mattei" },

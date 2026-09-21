@@ -1,7 +1,7 @@
 # API reference
 
-Generated from the source. Three functions make up the public API, and all
-three are importable from the top level (`from pysceptre import
+Generated from the source. Four functions make up the public API, and all
+four are importable from the top level (`from pysceptre import
 run_discovery_analysis`) as well as from their defining module.
 
 !!! note "Reading these signatures"
@@ -16,6 +16,25 @@ run_discovery_analysis`) as well as from their defining module.
 ::: pysceptre.pipeline.api.run_calibration_check
 
 ::: pysceptre.pipeline.api.run_power_check
+
+## Analytical power
+
+A different question from the three above, and the one function here does not
+run a test at all. `run_power_check` is sceptre's positive-control
+diagnostic -- it runs the real test on pairs where an effect is expected.
+`compute_power_posthoc` estimates in closed form what the screen *could* have
+detected, per pair, including for pairs the screen never tested.
+
+!!! warning "Three arguments have no defaults on purpose"
+    `cutoff`, `fold_change_mean` and `fold_change_sd` are all required, and
+    `cutoff` must be the analysed screen's own nominal threshold. Borrowing
+    another design's was measured at more than double the error with a
+    systematically optimistic bias. See
+    [Design decisions](design.md#analytical-per-pair-power).
+
+::: pysceptre.analytical_power.posthoc.compute_power_posthoc
+
+::: pysceptre.analytical_power.posthoc.target_cell_counts
 
 ## Lower-level building blocks
 
@@ -58,3 +77,19 @@ debugging the pipeline.
 ::: pysceptre.pipeline.discovery.parallel_backend
 
 ::: pysceptre.pipeline.discovery.gene_job_backend
+
+### Analytical power primitives
+
+The pieces `compute_power_posthoc` is assembled from, each a direct port of
+the correspondingly named function in PerturbPlan (MIT -- see
+`THIRD_PARTY_LICENSES`).
+
+::: pysceptre.analytical_power.closed_form.test_stat_distribution
+
+::: pysceptre.analytical_power.closed_form.qc_failure_prob
+
+::: pysceptre.analytical_power.closed_form.rejection_prob
+
+::: pysceptre.analytical_power.closed_form.zero_prob
+
+::: pysceptre.analytical_power.closed_form.var_nb

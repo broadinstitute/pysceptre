@@ -236,6 +236,55 @@ screen had too few cells to test.
 **No multiple-testing correction is applied**, matching R, which returns no
 `significant` column here. These are a diagnostic rather than discoveries.
 
+### `pysceptre.compute_power_posthoc`
+
+A different question from the three above, and the only entry point here that
+does not come from sceptre. `run_power_check` runs the real test on pairs
+where an effect is expected; this estimates, in closed form and with no
+resampling, what the screen *could* have detected: if this element really did
+reduce this gene by X%, how likely was this screen to call it?
+
+It is a port of
+[PerturbPlan](https://github.com/Katsevich-Lab/perturbplan)'s
+`compute_power_posthoc()` (MIT -- see
+[THIRD_PARTY_LICENSES](https://github.com/broadinstitute/pysceptre/blob/main/THIRD_PARTY_LICENSES)),
+validated against that package's own output to a relative 1e-9.
+
+```python
+from pysceptre import compute_power_posthoc
+
+power = compute_power_posthoc(
+    discovery_pairs,             # grna_target, response_id
+    cells_per_grna,              # grna_id, grna_target, num_cells
+    baseline_expression_stats,   # response_id, expression_mean, expression_size
+    fold_change_mean=0.85,       # a MULTIPLIER: a 15% knockdown is 0.85
+    fold_change_sd=0.13,
+    cutoff=alpha / 2,            # this screen's own nominal threshold
+    num_total_cells=n_cells,
+    side="left",
+)
+```
+
+| Argument | Notes |
+|---|---|
+| `cells_per_grna` | One row per **individual** gRNA. Per-gRNA granularity is required, not a convenience: the across-gRNA variance term needs the sum of *squared* per-gRNA counts, which no target-level total can supply. Note that the treated count is the **sum** over a target's gRNAs, not the size of the union of perturbed cells -- the two differ in high MOI, and the sum is what was validated. |
+| `baseline_expression_stats` | `expression_size` is the NB size, i.e. theta = `1 / dispersion`, not the dispersion. The validated `expression_mean` is the size-factor-normalised mean. |
+| `cutoff`, `fold_change_mean`, `fold_change_sd` | All three are **required, with no defaults**, and `cutoff` must be the analysed screen's own nominal threshold rather than a borrowed one. |
+| `n_nonzero_trt_thresh`, `n_nonzero_cntrl_thresh` | Default to `0`, not to sceptre's `7`, which makes the QC factor 1 -- correct for pairs that already passed QC. Raise them to score pairs that were never tested. |
+
+Because none of its inputs is a property of the *pair* -- expression and
+dispersion belong to the gene, cell counts to the element -- it also answers
+the question for pairs the screen never tested.
+
+**Two things it cannot yet do.** pysceptre does not derive either input for
+you: `cells_per_grna` is not in the `.h5mu` export, and the
+size-factor-normalised mean is not computed anywhere. You must bring both.
+And read the accuracy limits in
+[Design decisions](https://broadinstitute.github.io/pysceptre/design/#analytical-per-pair-power)
+before using it on a single pair: the estimate is good enough to plan a screen
+and to triage its negatives, not to close a question about one element-gene
+pair.
+
 ### Lower-level building blocks
 
 `run_discovery_analysis` is a thin wrapper around
@@ -362,8 +411,11 @@ comparison against R sceptre are in the manuscript repository,
 posted.
 
 Reproduce with `scripts/benchmark_vs_r.R` (R side, which also exports the
-exact inputs) and `scripts/benchmark_pysceptre.py` (pysceptre side), or inside
-the pinned container in `docker/`.
+exact inputs) and `scripts/benchmark_pysceptre.py` (pysceptre side). The
+pinned R-plus-pysceptre image those numbers were measured in lives with the
+comparison itself, in the private development archive, rather than here:
+`docker/` in this repository holds only the pysceptre runtime image, which
+carries no R.
 
 ### Sizing the machine
 

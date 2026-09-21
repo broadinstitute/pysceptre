@@ -24,7 +24,13 @@
 #
 # Usage:
 #   export_sceptre_dataset.R --sceptre-object so.rds --response-odm gene.odm \
-#       --grna-odm grna.odm --out-dir out/ [--all-genes] [--discovery-result r.rds]
+#       --grna-odm grna.odm --out-dir out/ [--all-genes] [--all-cells] \
+#       [--discovery-result r.rds]
+#
+# --all-cells keeps the cells QC removed, which only a simulation needs: poscounts size factors
+# are computed against a geometric mean over every cell, so dropping them moves the size factors
+# of the cells that remain. The loader subsets back to cells_in_use by default, so an analysis
+# reads such a file exactly as it reads any other.
 #
 # Convert with scripts/make_h5mu.py, then read with sceptre_io.load_export.
 
@@ -37,12 +43,17 @@ source(file.path(dirname(sub("^--file=", "", grep("^--file=", commandArgs(FALSE)
                  "sceptre_export_lib.R"))
 
 parse_args <- function(argv) {
-  opts <- list(all_genes = FALSE, discovery_result = NA_character_)
+  opts <- list(all_genes = FALSE, all_cells = FALSE, discovery_result = NA_character_)
   i <- 1
   while (i <= length(argv)) {
     key <- argv[[i]]
     if (key == "--all-genes") {
       opts$all_genes <- TRUE
+      i <- i + 1
+      next
+    }
+    if (key == "--all-cells") {
+      opts$all_cells <- TRUE
       i <- i + 1
       next
     }
@@ -92,7 +103,7 @@ main <- function() {
     loaded <- readRDS(opts$discovery_result)
     so@discovery_result <- if (is.data.frame(loaded)) loaded else loaded$discovery_result
   }
-  export_sceptre_object(so, opts$out_dir, opts$all_genes,
+  export_sceptre_object(so, opts$out_dir, opts$all_genes, opts$all_cells,
                         source_label = normalizePath(opts$sceptre_object))
   cat("\nDone in", format(Sys.time() - t_start), "->", opts$out_dir, "\n")
 }

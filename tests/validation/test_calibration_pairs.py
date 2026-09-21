@@ -143,7 +143,7 @@ def test_nonzero_counts_against_a_direct_computation():
         mask = np.zeros(n_cells, dtype=bool)
         mask[cells] = True
         assert np.array_equal(trt[:, j], dense[:, mask].sum(axis=1))
-        # The control arm is the complement, which is why one pass suffices.
+        # The control group is the complement, which is why one pass suffices.
         assert np.array_equal(cntrl[:, j], dense[:, ~mask].sum(axis=1))
 
 

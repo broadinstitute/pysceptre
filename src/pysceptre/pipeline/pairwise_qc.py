@@ -39,7 +39,7 @@ def nonzero_counts(
 
     This is R's `compute_n_trt_cells_matrix`, done as one sparse-sparse matmul
     of the binarized response matrix against the membership matrix rather than
-    a loop over pairs. The control arm is the *complement*, so its count is
+    a loop over pairs. The control group is the *complement*, so its count is
     `total nonzero for the gene - treated nonzero` and needs no second pass --
     which is the whole reason the complement control group is cheap here.
 

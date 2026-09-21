@@ -8,8 +8,8 @@ single-cell CRISPR screens.
 from pysceptre import run_discovery_analysis
 ```
 
-Three validated analysis paths — **discovery analysis**, the **calibration
-check** and the **power check** — on the complement control group with CRT
+Three validated analysis paths -- **discovery analysis**, the **calibration
+check** and the **power check** -- on the complement control group with CRT
 resampling, for high-MOI screens. Every result is validated against the R
 package rather than against itself. What is deliberately *not* implemented is
 listed in [Scope and limitations](scope.md); read it before assuming a path

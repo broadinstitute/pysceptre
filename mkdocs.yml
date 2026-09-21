@@ -8,11 +8,13 @@ edit_uri: edit/main/docs/
 
 # Documentation of the *software*. The manuscript lives in its own repository
 # and `CLAUDE.md` is contributor instructions; neither is documentation. The
-# two files that do live in `docs/` but are not documentation are excluded by
-# name rather than by a glob, so adding a third has to be a deliberate act.
+# files that do live in `docs/` but are not documentation are excluded by
+# name rather than by a glob, so adding another has to be a deliberate act.
 exclude_docs: |
   ROADMAP.md
   PARKED-width1-target-fits.md
+  # Untracked locally (see .gitignore); the glob is a no-op in a clean clone.
+  PLAN-*.md
 
 theme:
   name: material

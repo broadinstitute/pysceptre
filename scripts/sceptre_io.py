@@ -14,17 +14,25 @@ That is what the single-cell Python ecosystem already uses (`mudata`, `muon`,
 `indices` and `indptr` as HDF5 datasets -- so a load reads straight into the
 final arrays.
 
-**Why the gRNA assay needs an annotated `var`.** sceptre retains gRNA
-assignments at two different resolutions, and only two: `grna_group_idxs` has
-one entry per *target*, the union of that target's gRNAs, and
+**Why the gRNA assay needs an annotated `var`.** sceptre's two analysis-facing
+slots hold gRNA assignments at two different resolutions: `grna_group_idxs`
+has one entry per *target*, the union of that target's gRNAs, and
 `indiv_nt_grna_idxs` has one entry per individual *non-targeting* gRNA.
-Targeting gRNAs are never kept individually, because they are only ever used
-as a union; NTCs are, because the calibration check regroups them into
+Targeting gRNAs are not kept individually there, because an analysis only ever
+uses their union; NTCs are, because the calibration check regroups them into
 synthetic targets. Crucially, `"non-targeting"` is **not a key** in the
 target-keyed table (2,974 keys against 2,975 distinct targets on one real screen), so a
 target-keyed export drops every NTC -- not by oversight, but by construction.
-Storing both kinds as rows of one `var` with a `unit_kind` column is what makes
+Storing the kinds as rows of one `var` with a `unit_kind` column is what makes
 the calibration check expressible at all.
+
+A third kind, `targeting_grna`, carries the individual targeting guides, read
+from `@initial_grna_assignment_list` -- the one slot that keeps them. No
+analysis path reads it; a *simulation* does, because it gives each guide its
+own effect size and so needs to know which cells carry which guide rather than
+which carry the target. Readers select the kind they want by name, never by
+excluding the others, so a new kind cannot leak into an existing selection.
+The `target` units remain the union and remain what an analysis uses.
 
 `_load_intermediate` reads the columnar form `export_sceptre_dataset.R`
 emits. That exists only so `scripts/make_h5mu.py` can convert a dataset out
@@ -45,7 +53,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -71,6 +79,25 @@ class SceptreExport:
     # it can regroup them into synthetic negative-control targets. None when
     # the export predates this or the object had no NTC gRNAs.
     ntc_grna_cells: dict[str, np.ndarray] | None = None
+    # Individual TARGETING gRNAs -> their cells. sceptre keeps per-gRNA
+    # resolution for these only in `@initial_grna_assignment_list`; every
+    # analysis path uses the per-target union in `grna_target_cells` instead.
+    # A simulation needs the guides themselves, to give each one its own
+    # effect size. None when the export predates WattEG's simulation support.
+    targeting_grna_cells: dict[str, np.ndarray] | None = None
+    # Which of the exported cells passed QC, aligned to the matrix columns.
+    # All True unless the export was written with `--all-cells`; see
+    # `subset_to_cells_in_use` for what the two spaces mean.
+    in_use: np.ndarray | None = None
+    # The screen's design: every gRNA and the target it was designed against,
+    # including guides that ended up with no cells. `targeting_grna_cells`
+    # covers only the guides that have cells, so guides-per-target counted
+    # from it would be the surviving subset rather than the design.
+    grna_target_data_frame: pd.DataFrame | None = None
+    # Every discovery pair with its pairwise-QC columns, against `pairs`,
+    # which carries only the ids of the passing ones. Per-pair facts about the
+    # real data, and the only record of them once the object is gone.
+    discovery_pairs_with_info: pd.DataFrame | None = None
     # R's calibration-check pairs and result, when the source object had been
     # through run_calibration_check. R's pair selection is unseeded, so these
     # are the only record of which pairs a given result used.
@@ -95,6 +122,8 @@ class SceptreExport:
             f"resampling={'permutations' if m['run_permutations'] else 'crt'}, "
             f"B1/B2/B3={m['B1']}/{m['B2']}/{m['B3']}, "
             f"ntc_grnas={len(self.ntc_grna_cells) if self.ntc_grna_cells else 0}, "
+            f"targeting_grnas="
+            f"{len(self.targeting_grna_cells) if self.targeting_grna_cells else 0}, "
             f"sceptre {m['sceptre_version']}"
         )
 
@@ -220,28 +249,89 @@ class BackedResponseMatrix:
         self.close()
 
 
-def load_export(path: str | Path, backed: bool = False) -> SceptreExport:
+def subset_to_cells_in_use(export: SceptreExport) -> SceptreExport:
+    """Bring an `--all-cells` export back to the QC-passing cells.
+
+    A file written with `--all-cells` is in one consistent space -- matrix
+    columns, covariate rows and every gRNA unit's cells are all absolute cell
+    positions -- so moving to the other space means moving all of them
+    together. The result is indistinguishable from an export written without
+    the flag, which is what lets an analysis read either.
+
+    The re-index is a position lookup, not a search: `new_pos` holds each
+    exported cell's index among the kept ones, so a unit's cells map through it
+    in one pass and the cells QC removed drop out.
+    """
+    in_use = np.asarray(export.in_use, dtype=bool)
+    if in_use.all():
+        return export
+
+    keep = np.flatnonzero(in_use)
+    new_pos = np.cumsum(in_use) - 1
+
+    def remap(cells: dict[str, np.ndarray] | None) -> dict[str, np.ndarray] | None:
+        if cells is None:
+            return None
+        out = {}
+        for unit, idxs in cells.items():
+            kept = idxs[in_use[idxs]]
+            out[unit] = new_pos[kept].astype(np.int64)
+        return out
+
+    matrix = export.response_matrix
+    if hasattr(matrix, "rows"):
+        raise ValueError(
+            "this dataset was written with --all-cells and a backed read cannot subset it to "
+            "cells_in_use: BackedResponseMatrix serves columns straight from the file. Load it "
+            "unbacked, or pass all_cells=True to read every cell. A dataset meant for backed "
+            "analysis should be exported without --all-cells, which is what that flag's cost is: "
+            "it is for the simulation path, which reads the matrix once and whole."
+        )
+
+    metadata = dict(export.metadata)
+    metadata["n_cells"] = int(keep.size)
+    metadata["n_nonzero"] = int(matrix[:, keep].nnz)
+    metadata["all_cells"] = False
+
+    return replace(
+        export,
+        response_matrix=matrix[:, keep].tocsr(),
+        covariate_matrix=export.covariate_matrix[keep],
+        grna_target_cells=remap(export.grna_target_cells),
+        ntc_grna_cells=remap(export.ntc_grna_cells),
+        targeting_grna_cells=remap(export.targeting_grna_cells),
+        in_use=np.ones(keep.size, dtype=bool),
+        metadata=metadata,
+    )
+
+
+def load_export(path: str | Path, backed: bool = False, all_cells: bool = False) -> SceptreExport:
     """Load a dataset: an .h5mu file, or a directory containing dataset.h5mu.
 
     Falls back to the R extraction's intermediate form if no .h5mu is present,
     so an unconverted directory still works; run `scripts/make_h5mu.py` to
     convert it.
+
+    `all_cells` is for simulation only -- see `subset_to_cells_in_use`. The
+    default subsets a `--all-cells` file back to the QC-passing cells, so every
+    caller reads the same thing whichever way the file was written.
     """
     path = Path(path)
     if path.is_file():
-        return load_h5mu(path, backed=backed)
+        return load_h5mu(path, backed=backed, all_cells=all_cells)
     h5mu = path / "dataset.h5mu"
     if h5mu.exists():
-        return load_h5mu(h5mu, backed=backed)
+        return load_h5mu(h5mu, backed=backed, all_cells=all_cells)
     if backed:
         raise ValueError(
             f"backed reads need a dataset.h5mu; {path} holds only the columnar "
             "intermediate. Convert it with scripts/make_h5mu.py first."
         )
-    return _load_intermediate(path)
+    export = _load_intermediate(path)
+    return export if all_cells else subset_to_cells_in_use(export)
 
 
-def load_h5mu(path: str | Path, backed: bool = False) -> SceptreExport:
+def load_h5mu(path: str | Path, backed: bool = False, all_cells: bool = False) -> SceptreExport:
     """Read a dataset written by `write_h5mu`.
 
     The response matrix comes back as a zero-copy CSR view of the stored CSC,
@@ -251,6 +341,11 @@ def load_h5mu(path: str | Path, backed: bool = False) -> SceptreExport:
     genes from disk on demand, which is what keeps an all-genes dataset usable
     when a run touches a fraction of it. Everything else -- covariates, gRNA
     assignments, pairs -- is small and still read eagerly.
+
+    A file written with `--all-cells` carries the cells QC removed as well, and
+    is subsetted back to `cells_in_use` here unless `all_cells=True`. Backed
+    reads cannot be subsetted, so the two combined are refused rather than
+    quietly served in the wrong cell space.
     """
     import mudata
 
@@ -277,6 +372,11 @@ def load_h5mu(path: str | Path, backed: bool = False) -> SceptreExport:
         response_matrix = X.T.tocsr() if not sparse.isspmatrix_csr(X.T) else X.T
 
     covariate_matrix = mdata.obs[list(metadata["covariate_names"])].to_numpy(dtype=float)
+    in_use = (
+        mdata.obs["in_use"].to_numpy(dtype=bool)
+        if "in_use" in mdata.obs
+        else np.ones(covariate_matrix.shape[0], dtype=bool)
+    )
 
     # The gRNA assay: cells x assignment units, with `var` saying what each
     # unit is. `target` units are per-target unions; `ntc_grna` units are
@@ -302,6 +402,13 @@ def load_h5mu(path: str | Path, backed: bool = False) -> SceptreExport:
     ntc_grna_cells = {
         u: cells_of[u] for u, k in zip(unit_ids, kinds, strict=True) if k == "ntc_grna"
     } or None
+    # Selected by kind, like the two above, which is what keeps this third kind
+    # inert for every reader that does not ask for it: `grna_target_cells` and
+    # `ntc_grna_cells` name the kinds they want rather than excluding the ones
+    # they don't, so adding a kind cannot leak into either.
+    targeting_grna_cells = {
+        u: cells_of[u] for u, k in zip(unit_ids, kinds, strict=True) if k == "targeting_grna"
+    } or None
 
     pairs = pd.DataFrame(
         {
@@ -318,6 +425,8 @@ def load_h5mu(path: str | Path, backed: bool = False) -> SceptreExport:
             pd.DataFrame(dict(raw)), list(mdata.uns.get(f"{key}_bool_columns", []))
         )
 
+    grna_target_data_frame = _uns_frame("grna_target_data_frame")
+    discovery_pairs_with_info = _uns_frame("discovery_pairs_with_info")
     negative_control_pairs = _uns_frame("negative_control_pairs")
     calibration_result = _uns_frame("calibration_result")
     positive_control_pairs = _uns_frame("positive_control_pairs")
@@ -332,7 +441,7 @@ def load_h5mu(path: str | Path, backed: bool = False) -> SceptreExport:
         )
 
     _check_shapes(metadata, response_matrix, covariate_matrix, gene_ids, grna_target_cells)
-    return SceptreExport(
+    export = SceptreExport(
         response_matrix=response_matrix,
         gene_ids=gene_ids,
         covariate_matrix=covariate_matrix,
@@ -341,11 +450,16 @@ def load_h5mu(path: str | Path, backed: bool = False) -> SceptreExport:
         metadata=metadata,
         discovery_result=discovery_result,
         ntc_grna_cells=ntc_grna_cells,
+        targeting_grna_cells=targeting_grna_cells,
+        in_use=in_use,
+        grna_target_data_frame=grna_target_data_frame,
+        discovery_pairs_with_info=discovery_pairs_with_info,
         negative_control_pairs=negative_control_pairs,
         calibration_result=calibration_result,
         positive_control_pairs=positive_control_pairs,
         power_result=power_result,
     )
+    return export if all_cells else subset_to_cells_in_use(export)
 
 
 # Sentinel for a missing logical value, so NA survives the int8 encoding
@@ -454,11 +568,18 @@ def write_h5mu(export: SceptreExport, path: str | Path, compression: str | None 
       `grna`  (cells, units)  0/1 assignments, CSC, `var` carrying
                               `grna_target` and `unit_kind`.
 
-    A unit is either a `target` -- the union of that target's gRNAs, which is
-    all sceptre retains for targeting gRNAs -- or an `ntc_grna`, an individual
-    non-targeting gRNA. Keeping both in one annotated assay is what makes the
-    calibration check expressible: it selects the `ntc_grna` rows of `var` and
-    regroups them, where a target-keyed table has no NTCs in it at all.
+    A unit is a `target` (the union of that target's gRNAs, and what an
+    analysis uses), an `ntc_grna` (one individual non-targeting gRNA), or a
+    `targeting_grna` (one individual targeting guide, for simulations that give
+    each guide its own effect size). Keeping them in one annotated assay is what
+    makes the calibration check expressible: it selects the `ntc_grna` rows of
+    `var` and regroups them, where a target-keyed table has no NTCs in it at all.
+
+    **Cells are indexed relative to `cells_in_use` throughout**, every unit kind
+    included. The individual targeting guides are the one input that does not
+    arrive that way -- `@initial_grna_assignment_list` holds absolute cell
+    positions -- so the R exporter maps them across and drops the cells QC
+    removed, counting them in `metadata["n_grna_cells_dropped_by_qc"]`.
 
     Cell covariates are shared, so they live on the MuData's own `obs`. The
     pair table and analysis parameters go in `uns`.
@@ -489,6 +610,10 @@ def write_h5mu(export: SceptreExport, path: str | Path, compression: str | None 
     ]
     if export.ntc_grna_cells:
         units += [(name, "ntc_grna", cells) for name, cells in export.ntc_grna_cells.items()]
+    if export.targeting_grna_cells:
+        units += [
+            (name, "targeting_grna", cells) for name, cells in export.targeting_grna_cells.items()
+        ]
 
     # Built straight as CSC: column j is unit j's cells, already sorted, so the
     # indptr is a cumulative count and no lil_matrix intermediate is needed.
@@ -501,6 +626,30 @@ def write_h5mu(export: SceptreExport, path: str | Path, compression: str | None 
         shape=(n_cells, len(units)),
     )
 
+    # The gRNA -> target map is many-to-many: a guide inside two overlapping
+    # candidate elements belongs to both (1,673 of 43,736 guides on day0). `var`
+    # has one row per unit and so one target per guide, which cannot represent
+    # that; such a guide is labelled "<multiple>" and `grna_target_data_frame`,
+    # carried in `uns`, is the map that answers the question properly. A dict
+    # here would silently keep one target per guide and look correct.
+    design = export.grna_target_data_frame
+    grna_to_targets: dict[str, set[str]] = {}
+    if design is not None:
+        for grna_id, target in zip(
+            design["grna_id"].astype(str), design["grna_target"].astype(str), strict=True
+        ):
+            grna_to_targets.setdefault(grna_id, set()).add(target)
+
+    def target_of_unit(name: str, kind: str) -> str:
+        if kind == "target":
+            return name
+        if kind == "targeting_grna":
+            targets = grna_to_targets.get(name)
+            if not targets:
+                return "unknown"
+            return next(iter(targets)) if len(targets) == 1 else "<multiple>"
+        return "non-targeting"
+
     obs_index = pd.RangeIndex(n_cells).astype(str)
     rna = ad.AnnData(
         X=as_counts(export.response_matrix.T.tocsc()),  # (cells, genes) counts
@@ -511,9 +660,10 @@ def write_h5mu(export: SceptreExport, path: str | Path, compression: str | None 
         X=assignments,
         var=pd.DataFrame(
             {
-                "grna_target": [
-                    name if kind == "target" else "non-targeting" for name, kind, _ in units
-                ],
+                # A targeting gRNA's target is neither its own name (that is a
+                # gRNA id, not a target) nor "non-targeting"; it comes from the
+                # screen's design, which is why the map is carried.
+                "grna_target": [target_of_unit(name, kind) for name, kind, _ in units],
                 "unit_kind": [kind for _, kind, _ in units],
             },
             index=pd.Index([name for name, _, _ in units], name="unit_id"),
@@ -524,12 +674,18 @@ def write_h5mu(export: SceptreExport, path: str | Path, compression: str | None 
     mdata = mudata.MuData({"rna": rna, "grna": grna})
     for j, name in enumerate(export.metadata["covariate_names"]):
         mdata.obs[name] = export.covariate_matrix[:, j]
+    if export.in_use is not None and not np.asarray(export.in_use, dtype=bool).all():
+        # Only written when it says something. An all-True column on every
+        # dataset would be a boolean per cell that no reader ever branches on.
+        mdata.obs["in_use"] = np.asarray(export.in_use, dtype=bool)
     mdata.uns["pysceptre"] = dict(export.metadata)
     mdata.uns["pairs"] = {
         "response_id": export.pairs["response_id"].to_numpy().astype(object),
         "grna_target": export.pairs["grna_target"].to_numpy().astype(object),
     }
     for key, frame in (
+        ("grna_target_data_frame", export.grna_target_data_frame),
+        ("discovery_pairs_with_info", export.discovery_pairs_with_info),
         ("negative_control_pairs", export.negative_control_pairs),
         ("calibration_result", export.calibration_result),
         ("positive_control_pairs", export.positive_control_pairs),
@@ -575,6 +731,12 @@ def _load_intermediate(export_dir: Path) -> SceptreExport:
     covariate_matrix = pd.read_parquet(export_dir / "covariate_matrix.parquet").to_numpy(
         dtype=float
     )
+    annotation_path = export_dir / "cell_annotation.parquet"
+    in_use = (
+        pd.read_parquet(annotation_path)["in_use"].to_numpy(dtype=bool)
+        if annotation_path.exists()
+        else np.ones(covariate_matrix.shape[0], dtype=bool)
+    )
 
     # One assignment table plus its annotation, mirroring the `grna` assay.
     assignments = pd.read_parquet(export_dir / "grna_assignments.parquet")
@@ -592,6 +754,9 @@ def _load_intermediate(export_dir: Path) -> SceptreExport:
     )
     grna_target_cells = {u: c for u, c in cells_of.items() if kind_of.get(u) == "target"}
     ntc_grna_cells = {u: c for u, c in cells_of.items() if kind_of.get(u) == "ntc_grna"} or None
+    targeting_grna_cells = {
+        u: c for u, c in cells_of.items() if kind_of.get(u) == "targeting_grna"
+    } or None
 
     pairs = pd.read_parquet(export_dir / "pairs.parquet")
 
@@ -602,6 +767,8 @@ def _load_intermediate(export_dir: Path) -> SceptreExport:
         path = export_dir / name
         return pd.read_parquet(path) if path.exists() else None
 
+    grna_target_data_frame = _optional("grna_target_data_frame.parquet")
+    discovery_pairs_with_info = _optional("discovery_pairs_with_info.parquet")
     negative_control_pairs = _optional("negative_control_pairs.parquet")
     calibration_result = _optional("calibration_result.parquet")
     positive_control_pairs = _optional("positive_control_pairs.parquet")
@@ -617,6 +784,10 @@ def _load_intermediate(export_dir: Path) -> SceptreExport:
         metadata=metadata,
         discovery_result=discovery_result,
         ntc_grna_cells=ntc_grna_cells,
+        targeting_grna_cells=targeting_grna_cells,
+        in_use=in_use,
+        grna_target_data_frame=grna_target_data_frame,
+        discovery_pairs_with_info=discovery_pairs_with_info,
         negative_control_pairs=negative_control_pairs,
         calibration_result=calibration_result,
         positive_control_pairs=positive_control_pairs,
