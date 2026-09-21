@@ -282,6 +282,8 @@ before using it on a single pair: the estimate is good enough to plan a screen
 and to triage its negatives, not to close a question about one element-gene
 pair.
 
+<!-- --8<-- [start:recipe-power] -->
+
 #### Reporting power alongside a discovery result
 
 `run_discovery_analysis` returns no power column, and `compute_power` is not
@@ -354,6 +356,8 @@ estimate says something a p-value cannot. Pass them to `compute_power` too,
 with `n_nonzero_trt_thresh` and `n_nonzero_cntrl_thresh` set to the
 thresholds the QC used, so the estimate includes the probability the pair
 would have failed QC at all.
+
+<!-- --8<-- [end:recipe-power] -->
 
 ### Lower-level building blocks
 

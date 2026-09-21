@@ -48,6 +48,7 @@ nav:
   - Installation: installation.md
   - User guide: guide.md
   - Tutorials: tutorials.md
+  - Recipes: recipes.md
   - API reference: api.md
   - Scope and limitations: scope.md
   - Design decisions: design.md
