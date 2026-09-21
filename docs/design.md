@@ -342,10 +342,12 @@ cover:
 
 So the normalised mean sits about **16 % below** sceptre's scale, and the
 offset is a single factor rather than a reshuffling: the two agree almost
-perfectly on which genes are expressed more than which. Power rises with
-expression, so feeding the closed form the normalised mean makes it
-**conservative** rather than wrong-shaped. That is the better direction to err
-in, and it is still the wrong number.
+perfectly on which genes are expressed more than which. Raising
+`expression_mean` by that factor raises the closed form's power on 17 of the
+fixture's 18 pairs, the exception being a pair whose power is ~0 under either
+(the non-monotone corner below). So feeding it the normalised mean makes the
+estimate **conservative** rather than wrong-shaped, which is the better
+direction to err in and still the wrong number.
 
 **Which to use.** `baseline_expression_stats_from_fits` for any new analysis,
 because it is the only one consistent with the test being predicted.
@@ -357,24 +359,33 @@ stands.
 
 **The two sides of that comparison were not on the same scale, which is
 worth knowing before its error profile is taken at face value.** The
-simulation multiplies each cell's size factor back in when it draws counts, so
-it realises gene expression about 4 % below the screen's real level. The
-closed form has no size factors and applies no such scaling, so being fed the
-same normalised mean it was told the genes were about 16 % dim. The gap
-between the two sides is the mean size factor, 1.1389 on day0, so the closed
-form was predicting for genes 13.9 % dimmer than the simulation actually made
-them.
+simulation that produced its ground truth multiplies each cell's size factor
+back in when it draws counts; the closed form has no size factors and applies
+no such scaling. So being fed the same column, the closed form was predicting
+for genes about **13.9 %** dimmer than the simulation actually made them,
+which is the mean size factor on day0, 1.1389.
 
-That is a plausible cause of the comparison's reported finding that the
-formula "leans low", with a positive median residual in every bin of predicted
-power. The *ranking* result is scale-insensitive and unaffected; the
-*calibration* part of it should not be read as characterising the estimator
-until the input mismatch is separated out. None of this is pysceptre's to fix
-and nothing here depends on it: the helpers are validated against R output
-value for value, and which mean to feed the estimator is the caller's choice.
-It is written down so a later comparison against those sweeps does not inherit
-the mismatch silently. (An earlier version of this note said the simulation
-itself ran 16 % low, which was wrong: it restores the size factors.)
+**What that does to the reported residuals is not established, and it would
+be easy to over-read.** The comparison found the formula "leans low", a
+positive median residual in every bin of predicted power, and a 13.9 % dim
+input would produce that signature. But the same baseline also *understated
+the count variance* by about 13.5 %, and less variance inflates power where
+less expression deflates it. Two errors of opposite sign, neither measured
+against the other, so the net direction of the simulated power is unknown.
+The *ranking* result is scale-insensitive and unaffected either way; the
+*calibration* half should not be read as characterising the estimator until
+the two are separated.
+
+None of this is pysceptre's to fix and nothing here depends on it: the helpers
+are validated against R output value for value, and which mean to feed the
+estimator is the caller's. It is recorded so a later comparison against those
+sweeps does not inherit the mismatch silently. It describes the **published**
+sweeps: the pipeline that produced them has since been changed to draw from
+`exp(X b)`, sceptre's own model, which removes the mismatch at the source.
+
+(Two earlier versions of this note were wrong. The first said the simulation
+ran 16 % low, missing that it restores the size factors. The second said its
+power was therefore biased low, which the variance error contradicts.)
 
 #### A note on the poscounts convention, for the reproduction path only
 
