@@ -13,7 +13,7 @@ check** and the **power check** -- on the complement control group with CRT
 resampling, for high-MOI screens, each validated against the R package rather
 than against itself.
 
-Alongside them, **`compute_power_posthoc`** estimates in closed form what a
+Alongside them, **`compute_power`** estimates in closed form what a
 screen *could* have detected, per pair and without simulation. It answers a
 different question, it is a port of PerturbPlan rather than of sceptre, and it
 is validated against that package instead.

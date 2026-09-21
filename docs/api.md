@@ -22,7 +22,7 @@ run_discovery_analysis`) as well as from their defining module.
 A different question from the three above, and the one function here does not
 run a test at all. `run_power_check` is sceptre's positive-control
 diagnostic -- it runs the real test on pairs where an effect is expected.
-`compute_power_posthoc` estimates in closed form what the screen *could* have
+`compute_power` estimates in closed form what the screen *could* have
 detected, per pair, including for pairs the screen never tested.
 
 !!! warning "Three arguments have no defaults on purpose"
@@ -32,13 +32,13 @@ detected, per pair, including for pairs the screen never tested.
     systematically optimistic bias. See
     [Design decisions](design.md#analytical-per-pair-power).
 
-::: pysceptre.analytical_power.posthoc.compute_power_posthoc
+::: pysceptre.analytical_power.estimate.compute_power
 
-::: pysceptre.analytical_power.posthoc.target_cell_counts
+::: pysceptre.analytical_power.estimate.target_cell_counts
 
 ### Building its inputs
 
-Three things `compute_power_posthoc` needs that no other part of pysceptre
+Three things `compute_power` needs that no other part of pysceptre
 produces. They take arrays and frames rather than a loaded export, because
 nothing under `src/` imports the `io` extra; the file-reading glue lives in
 `scripts/`.
@@ -97,7 +97,7 @@ debugging the pipeline.
 
 ### Analytical power primitives
 
-The pieces `compute_power_posthoc` is assembled from, each a direct port of
+The pieces `compute_power` is assembled from, each a direct port of
 the correspondingly named function in PerturbPlan (MIT -- see
 `THIRD_PARTY_LICENSES`).
 

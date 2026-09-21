@@ -24,12 +24,12 @@ while the CRT path is *validated*. Treat that gap as the reason not to quote a
 permutation result against R, not as a licence to widen it.
 
 `analytical_power/` is a **fourth** thing and it does not come from sceptre.
-It is a port of PerturbPlan's closed-form post-hoc power estimate (MIT, see
-`THIRD_PARTY_LICENSES`), it answers what a screen *could* have detected rather
-than what it did, and its ground truth is PerturbPlan's own R rather than
-sceptre's. Its scope limits are its own: complement control group only,
-explicit cutoff only, no minimum-detectable-effect-size path. `docs/design.md`
-has them.
+It is a port of PerturbPlan's closed-form power estimate for a screen that
+has already been run (MIT, see `THIRD_PARTY_LICENSES`), it answers what a
+screen *could* have detected rather than what it did, and its ground truth is
+PerturbPlan's own R rather than sceptre's. Its scope limits are its own:
+complement control group only, explicit cutoff only, and no
+minimum-detectable-effect-size path. `docs/design.md` has them.
 
 **One carve-out from "no `run_qc()`".** The calibration and power checks
 *construct or receive* their own pairs, so both must decide which are testable

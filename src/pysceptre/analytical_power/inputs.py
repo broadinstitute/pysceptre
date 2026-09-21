@@ -1,6 +1,6 @@
 """Building the analytical power estimator's inputs from a pysceptre analysis.
 
-`compute_power_posthoc` takes three things pysceptre does not otherwise
+`compute_power` takes three things pysceptre does not otherwise
 produce: per-gRNA cell counts, per-gene baseline expression statistics, and
 the screen's own nominal p-value threshold. These helpers derive each one.
 
@@ -49,7 +49,7 @@ def cells_per_grna_from_assignments(
     grna_target_data_frame: pd.DataFrame,
     targeting_grna_cells: dict[str, np.ndarray],
 ) -> pd.DataFrame:
-    """Per-gRNA cell counts in the shape `compute_power_posthoc` wants.
+    """Per-gRNA cell counts in the shape `compute_power` wants.
 
     Args:
         grna_target_data_frame: the screen's *design*, one row per
@@ -171,7 +171,7 @@ def baseline_expression_stats(
     size_factors: np.ndarray | None = None,
     gene_subset: list[str] | None = None,
 ) -> pd.DataFrame:
-    """Per-gene `expression_mean` and `expression_size` for `compute_power_posthoc`.
+    """Per-gene `expression_mean` and `expression_size` for `compute_power`.
 
     Args:
         counts: `(n_genes, n_cells)` sparse counts for **all** genes and cells.
@@ -195,12 +195,12 @@ def baseline_expression_stats(
     divided by its size factor, then averaged over cells. `expression_size` is
     the NB size, theta, not the dispersion.
 
-    **This is the wrong scale for `compute_power_posthoc`, and is kept only to
+    **This is the wrong scale for `compute_power`, and is kept only to
     reproduce the published comparison.** Use
     `baseline_expression_stats_from_fits`. The mean here comes from a
     normalisation scheme sceptre does not use, and on day0 it sits about 16%
     below the mean sceptre's own model implies -- which is what
-    `compute_power_posthoc` needs, since its `var_nb` is the variance of the
+    `compute_power` needs, since its `var_nb` is the variance of the
     counts themselves and its QC factor asks how many cells hold a nonzero
     count. Calling this function emits a warning for that reason.
 
@@ -211,12 +211,12 @@ def baseline_expression_stats(
     another implementation's only if the design matrices match.
     """
     # Loud, because this has already gone wrong once in production: a published comparison fed
-    # this column straight to compute_power_posthoc, which applies no per-cell scaling, and so
+    # this column straight to compute_power, which applies no per-cell scaling, and so
     # scored a formula against genes 16% dimmer than the simulation it was compared to. A
     # docstring did not prevent that; the call site is where the warning has to be.
     warnings.warn(
         "baseline_expression_stats returns a SIZE-FACTOR-NORMALISED mean, which is not the "
-        "scale compute_power_posthoc expects: that function's var_nb is the variance of the "
+        "scale compute_power expects: that function's var_nb is the variance of the "
         "raw counts and its QC factor asks how many cells hold a nonzero count. On day0 this "
         "mean is 16% below the right one, which understates power. Use "
         "baseline_expression_stats_from_fits unless you are deliberately reproducing the "
@@ -283,7 +283,7 @@ def bh_nominal_cutoff(p_values: np.ndarray, alpha: float) -> float:
 
     Returns:
         The largest p-value BH calls significant, which is what
-        `compute_power_posthoc`'s `cutoff` wants (halved, for the default
+        `compute_power`'s `cutoff` wants (halved, for the default
         `side="left"`).
 
     Ports WattEG's `discovery_threshold()`, including its refusal to return a
@@ -356,7 +356,7 @@ def baseline_expression_stats_from_fits(
 
     That near-constancy makes it tempting to call the difference a
     conservative rescaling, and **through the test statistic it is**. Through
-    the QC factor it is not. `compute_power_posthoc` multiplies power by
+    the QC factor it is not. `compute_power` multiplies power by
     `1 - qc_failure_prob`, which is built from `P(count == 0)`, and that is
     nonlinear in the mean: a 16% dim input overstates the zero probability by
     0.032 at the median on day0 and 0.073 at worst, inflating the QC discount

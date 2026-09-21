@@ -16,7 +16,7 @@ import pandas as pd
 import pytest
 
 from pysceptre.analytical_power import (
-    compute_power_posthoc,
+    compute_power,
     target_cell_counts,
     var_nb,
     zero_prob,
@@ -45,12 +45,12 @@ def test_fixture_records_its_provenance(perturbplan_ground_truth):
 
 
 def test_power_matches_r_for_every_case(perturbplan_ground_truth):
-    """The whole point: same inputs, same numbers as `compute_power_posthoc()`."""
+    """The whole point: same inputs, same numbers as `compute_power()`."""
     gt = perturbplan_ground_truth
     pairs, cells_per_grna, baseline = _frames(gt)
 
     for case in gt["cases"]:
-        got = compute_power_posthoc(
+        got = compute_power(
             pairs,
             cells_per_grna,
             baseline,
@@ -89,7 +89,7 @@ def test_expected_num_discoveries_matches_r(perturbplan_ground_truth):
     gt = perturbplan_ground_truth
     pairs, cells_per_grna, baseline = _frames(gt)
     for case in gt["cases"]:
-        got = compute_power_posthoc(
+        got = compute_power(
             pairs,
             cells_per_grna,
             baseline,
@@ -126,10 +126,10 @@ def test_qc_thresholds_only_ever_reduce_power(perturbplan_ground_truth):
         num_total_cells=gt["num_total_cells"],
         side="left",
     )
-    no_qc = compute_power_posthoc(
+    no_qc = compute_power(
         pairs, cells_per_grna, baseline, n_nonzero_trt_thresh=0, n_nonzero_cntrl_thresh=0, **common
     )
-    with_qc = compute_power_posthoc(
+    with_qc = compute_power(
         pairs, cells_per_grna, baseline, n_nonzero_trt_thresh=7, n_nonzero_cntrl_thresh=7, **common
     )
     assert (no_qc["qc_failure_prob"] == 0).all()
@@ -201,13 +201,13 @@ def test_missing_inputs_raise_rather_than_producing_nan(perturbplan_ground_truth
         {"grna_target": ["nowhere"], "response_id": [baseline["response_id"][0]]}
     )
     with pytest.raises(KeyError, match="cells_per_grna"):
-        compute_power_posthoc(ghost_target, cells_per_grna, baseline, **common)
+        compute_power(ghost_target, cells_per_grna, baseline, **common)
 
     ghost_gene = pd.DataFrame(
         {"grna_target": [cells_per_grna["grna_target"][0]], "response_id": ["nosuchgene"]}
     )
     with pytest.raises(KeyError, match="baseline_expression_stats"):
-        compute_power_posthoc(ghost_gene, cells_per_grna, baseline, **common)
+        compute_power(ghost_gene, cells_per_grna, baseline, **common)
 
 
 @pytest.mark.parametrize(
@@ -234,10 +234,10 @@ def test_arguments_are_validated(perturbplan_ground_truth, kwargs, match):
     )
     common.update(kwargs)
     if match is None:
-        compute_power_posthoc(pairs, cells_per_grna, baseline, **common)
+        compute_power(pairs, cells_per_grna, baseline, **common)
         return
     with pytest.raises(ValueError, match=match):
-        compute_power_posthoc(pairs, cells_per_grna, baseline, **common)
+        compute_power(pairs, cells_per_grna, baseline, **common)
 
 
 def test_summed_treated_count_can_exceed_the_cell_count(perturbplan_ground_truth):
@@ -251,7 +251,7 @@ def test_summed_treated_count_can_exceed_the_cell_count(perturbplan_ground_truth
     gt = perturbplan_ground_truth
     pairs, cells_per_grna, baseline = _frames(gt)
     with pytest.raises(ValueError, match="not the union"):
-        compute_power_posthoc(
+        compute_power(
             pairs,
             cells_per_grna,
             baseline,
@@ -276,8 +276,8 @@ def test_a_stricter_threshold_never_raises_power(perturbplan_ground_truth):
         num_total_cells=gt["num_total_cells"],
         side="left",
     )
-    cis = compute_power_posthoc(pairs, cells_per_grna, baseline, cutoff=6.4840e-4 / 2, **common)
-    trans = compute_power_posthoc(pairs, cells_per_grna, baseline, cutoff=6.2252e-5 / 2, **common)
+    cis = compute_power(pairs, cells_per_grna, baseline, cutoff=6.4840e-4 / 2, **common)
+    trans = compute_power(pairs, cells_per_grna, baseline, cutoff=6.2252e-5 / 2, **common)
     assert (trans["power"] <= cis["power"]).all()
     assert (trans["power"] < cis["power"]).any()
 
@@ -297,8 +297,8 @@ def test_power_rises_with_effect_size_where_the_pair_is_testable(perturbplan_gro
         num_total_cells=gt["num_total_cells"],
         side="left",
     )
-    weak = compute_power_posthoc(pairs, cells_per_grna, baseline, fold_change_mean=0.95, **common)
-    strong = compute_power_posthoc(pairs, cells_per_grna, baseline, fold_change_mean=0.50, **common)
+    weak = compute_power(pairs, cells_per_grna, baseline, fold_change_mean=0.95, **common)
+    strong = compute_power(pairs, cells_per_grna, baseline, fold_change_mean=0.50, **common)
     testable = weak["power"] > 1e-3
     assert testable.sum() >= 5, "the guard would make this test vacuous"
     assert (strong.loc[testable, "power"] >= weak.loc[testable, "power"]).all()
@@ -332,9 +332,9 @@ def test_power_can_fall_with_effect_size_for_a_hopeless_pair(perturbplan_ground_
         side="left",
     )
     curve = [
-        compute_power_posthoc(
-            hopeless, cells_per_grna, baseline, fold_change_mean=1 - es, **common
-        )["power"].iloc[0]
+        compute_power(hopeless, cells_per_grna, baseline, fold_change_mean=1 - es, **common)[
+            "power"
+        ].iloc[0]
         for es in (0.05, 0.15, 0.50)
     ]
     assert curve[0] > curve[1] > curve[2]
@@ -347,7 +347,7 @@ def test_power_is_a_probability(perturbplan_ground_truth):
     gt = perturbplan_ground_truth
     pairs, cells_per_grna, baseline = _frames(gt)
     for case in gt["cases"]:
-        got = compute_power_posthoc(
+        got = compute_power(
             pairs,
             cells_per_grna,
             baseline,
@@ -380,11 +380,11 @@ def test_duplicate_keys_raise(perturbplan_ground_truth):
     )
     dup_gene = pd.concat([baseline, baseline.iloc[[0]]], ignore_index=True)
     with pytest.raises(ValueError, match="duplicated response_id"):
-        compute_power_posthoc(pairs, cells_per_grna, dup_gene, **common)
+        compute_power(pairs, cells_per_grna, dup_gene, **common)
 
     dup_grna = pd.concat([cells_per_grna, cells_per_grna.iloc[[0]]], ignore_index=True)
     with pytest.raises(ValueError, match="repeats 1"):
-        compute_power_posthoc(pairs, dup_grna, baseline, **common)
+        compute_power(pairs, dup_grna, baseline, **common)
 
 
 def test_a_guide_shared_by_two_targets_is_counted_into_both(perturbplan_ground_truth):

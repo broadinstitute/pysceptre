@@ -236,7 +236,7 @@ screen had too few cells to test.
 **No multiple-testing correction is applied**, matching R, which returns no
 `significant` column here. These are a diagnostic rather than discoveries.
 
-### `pysceptre.compute_power_posthoc`
+### `pysceptre.compute_power`
 
 A different question from the three above, and the only entry point here that
 does not come from sceptre. `run_power_check` runs the real test on pairs
@@ -251,9 +251,9 @@ It is a port of
 validated against that package's own output to a relative 1e-9.
 
 ```python
-from pysceptre import compute_power_posthoc
+from pysceptre import compute_power
 
-power = compute_power_posthoc(
+power = compute_power(
     discovery_pairs,             # grna_target, response_id
     cells_per_grna,              # grna_id, grna_target, num_cells
     baseline_expression_stats,   # response_id, expression_mean, expression_size
@@ -276,14 +276,84 @@ Because none of its inputs is a property of the *pair* -- expression and
 dispersion belong to the gene, cell counts to the element -- it also answers
 the question for pairs the screen never tested.
 
-**Two things it cannot yet do.** pysceptre does not derive either input for
-you: `cells_per_grna` is not in the `.h5mu` export, and the
-size-factor-normalised mean is not computed anywhere. You must bring both.
-And read the accuracy limits in
+Read the accuracy limits in
 [Design decisions](https://broadinstitute.github.io/pysceptre/design/#analytical-per-pair-power)
 before using it on a single pair: the estimate is good enough to plan a screen
 and to triage its negatives, not to close a question about one element-gene
 pair.
+
+#### Reporting power alongside a discovery result
+
+`run_discovery_analysis` returns no power column, and `compute_power` is not
+wired into it. That is deliberate: the estimator needs inputs the discovery
+path has no business knowing about, and a wrapper is where a wrong cell set or
+the per-target union instead of the per-gRNA sum would creep in unseen. The
+join is five steps, and each one is a place to check you meant it.
+
+```python
+from pysceptre import compute_power, run_discovery_analysis
+from pysceptre.analytical_power import (
+    baseline_expression_stats_from_fits,
+    bh_nominal_cutoff,
+    cells_per_grna_from_assignments,
+)
+from pysceptre.pipeline.discovery import fit_all_genes
+
+ALPHA = 0.1
+
+# 1. the analysis
+result = run_discovery_analysis(
+    response_matrix, gene_ids, covariate_matrix, grna_target_cells, pairs,
+    side="left", multiple_testing_alpha=ALPHA, seed=0,
+)
+
+# 2. the threshold this run actually applied. Halved because side="left":
+#    sceptre's p-value is two-sided, a knockdown is a one-sided claim.
+cutoff = bh_nominal_cutoff(result["p_value"], alpha=ALPHA) / 2
+
+# 3. the estimator's inputs, both on sceptre's own scale
+fits = fit_all_genes(response_matrix, gene_ids, covariate_matrix)
+baseline = baseline_expression_stats_from_fits(covariate_matrix, fits)
+cells_per_grna = cells_per_grna_from_assignments(
+    grna_target_data_frame, targeting_grna_cells,   # both from the export
+)
+
+# 4. power for the same pairs, at a 15% knockdown
+power = compute_power(
+    pairs, cells_per_grna, baseline,
+    fold_change_mean=0.85, fold_change_sd=0.13,
+    cutoff=cutoff, num_total_cells=covariate_matrix.shape[0],
+)
+
+# 5. one table
+report = result.merge(
+    power[["response_id", "grna_target", "power"]],
+    on=["response_id", "grna_target"], how="left",
+)
+```
+
+Four things worth knowing before you run it.
+
+**Step 3 refits every gene, and the discovery run already did.** It discards
+its fits rather than returning them, so this repeats the most expensive part
+of the analysis. If that matters, call `fit_all_genes` once yourself and reuse
+the result; the fit depends only on the counts and the covariate matrix, not
+on the pairs.
+
+**Step 2 raises if nothing is significant**, rather than returning a threshold
+that would hand every pair zero power. On a screen with no discoveries, pass
+`cutoff` yourself from a plain alpha and say so in whatever you report.
+
+**Use `cutoff=alpha` unhalved if you ran `side="both"`.** The halving in
+step 2 pairs with `side="left"`, which is the configuration the estimator was
+validated in.
+
+**The pairs that failed QC are the interesting ones.** They carry a NaN
+p-value because they were never tested, and they are exactly where a power
+estimate says something a p-value cannot. Pass them to `compute_power` too,
+with `n_nonzero_trt_thresh` and `n_nonzero_cntrl_thresh` set to the
+thresholds the QC used, so the estimate includes the probability the pair
+would have failed QC at all.
 
 ### Lower-level building blocks
 
@@ -400,9 +470,9 @@ adjustment over the union each time.
   R's behavior, reproduced rather than corrected.
 - **gRNA integration strategy: "union" only.** `grna_target_cells` is keyed
   by target, not by individual gRNA -- matches sceptre's `"union"` strategy;
-  `"singleton"` is not supported. `compute_power_posthoc` is the exception and
+  `"singleton"` is not supported. `compute_power` is the exception and
   needs per-gRNA counts, for the reason below.
-- **`compute_power_posthoc` is not a sceptre path, and its limits are its
+- **`compute_power` is not a sceptre path, and its limits are its
   own.** It estimates in closed form what a screen *could* have detected,
   which is a different question from the three analyses above, and it is a
   port of [PerturbPlan](https://github.com/Katsevich-Lab/perturbplan) (MIT)

@@ -191,7 +191,7 @@ these are the manuscript's results rather than the tool's.
 Each of these turns the estimator into one that nothing has scored.
 
 **`num_trt_cells` is the sum over a target's gRNAs, not the union of its
-perturbed cells.** `compute_power_posthoc` groups `cells_per_grna` by target
+perturbed cells.** `compute_power` groups `cells_per_grna` by target
 and sums, and that is the input the estimator was validated with. pysceptre's
 own data model carries the union instead (`grna_target_cells`, one index array
 per target), and a cell can carry several of a target's gRNAs, so union <= sum.
@@ -217,7 +217,7 @@ therefore requires per-gRNA granularity outright rather than deriving it.
 
 One visible consequence is kept visible rather than smoothed over: the sum can
 exceed the number of distinct cells, which would empty the complement group,
-and `compute_power_posthoc` raises with that explanation rather than returning
+and `compute_power` raises with that explanation rather than returning
 a NaN. Note the trap `measure_union_vs_sum.R` documents, because it bites
 anyone recomputing this: `@initial_grna_assignment_list` is indexed against
 *all* cells while `grna_group_idxs` is indexed against `cells_in_use` (586,309
@@ -299,7 +299,7 @@ untested.
 
 ### Building the estimator's inputs
 
-`analytical_power/inputs.py` derives the three things `compute_power_posthoc`
+`analytical_power/inputs.py` derives the three things `compute_power`
 needs that no other part of pysceptre produces. Each can be got subtly wrong
 in a way that still returns plausible numbers, so each is validated against
 someone else's code rather than against itself.
@@ -497,7 +497,7 @@ sit inside two or three of them, so the design table carries 45,463 rows for
 such a guide's cells into every target it belongs to, and
 `cells_per_grna_from_assignments` does the same. Deduplicating by `grna_id`
 looks like hygiene and would silently shrink exactly those targets;
-`compute_power_posthoc` originally refused a repeated `grna_id` for that
+`compute_power` originally refused a repeated `grna_id` for that
 reason and was wrong to, which the fixture now pins against R.
 
 A designed guide that ended up with no cells is a `num_cells = 0` row rather

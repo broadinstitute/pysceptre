@@ -1,8 +1,8 @@
 """Per-pair analytical power for a completed screen.
 
 Port of PerturbPlan's `compute_power_posthoc()` (`Katsevich-Lab/perturbplan`,
-MIT -- see `THIRD_PARTY_LICENSES`), restricted to the post-hoc,
-complement-control-group, explicit-cutoff path.
+MIT -- see `THIRD_PARTY_LICENSES`), restricted to the path for a screen that
+has already been run: complement control group, explicit cutoff.
 
 Given a screen that has already been analysed, it answers per pair: if this
 element really did reduce this gene by X%, would this screen have detected it?
@@ -53,7 +53,7 @@ def target_cell_counts(cells_per_grna: pd.DataFrame) -> pd.DataFrame:
     return agg
 
 
-def compute_power_posthoc(
+def compute_power(
     discovery_pairs: pd.DataFrame,
     cells_per_grna: pd.DataFrame,
     baseline_expression_stats: pd.DataFrame,

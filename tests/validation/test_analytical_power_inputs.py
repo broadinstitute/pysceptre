@@ -1,4 +1,4 @@
-"""The helpers that build `compute_power_posthoc`'s inputs, against R.
+"""The helpers that build `compute_power`'s inputs, against R.
 
 `poscounts_size_factors` is checked against **DESeq2**, which defines the
 estimator, rather than against a second transcription of the same arithmetic.

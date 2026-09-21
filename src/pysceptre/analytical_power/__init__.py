@@ -11,6 +11,7 @@ from .closed_form import (
     var_nb,
     zero_prob,
 )
+from .estimate import compute_power, target_cell_counts
 from .inputs import (
     baseline_expression_stats,
     baseline_expression_stats_from_fits,
@@ -18,14 +19,13 @@ from .inputs import (
     cells_per_grna_from_assignments,
     poscounts_size_factors,
 )
-from .posthoc import compute_power_posthoc, target_cell_counts
 
 __all__ = [
     "baseline_expression_stats",
     "baseline_expression_stats_from_fits",
     "bh_nominal_cutoff",
     "cells_per_grna_from_assignments",
-    "compute_power_posthoc",
+    "compute_power",
     "poscounts_size_factors",
     "qc_failure_prob",
     "rejection_prob",
