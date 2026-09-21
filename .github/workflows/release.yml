@@ -1,0 +1,59 @@
+# Publishes to PyPI via Trusted Publishing: no API token exists anywhere,
+# and PyPI verifies the workflow identity instead. Configure the publisher
+# at https://pypi.org/manage/project/pysceptre/settings/publishing/ with
+# owner broadinstitute, repository pysceptre, workflow release.yml,
+# environment pypi.
+name: release
+
+on:
+  release:
+    types: [published]
+  # Dry run: builds and checks, never publishes (publish needs a release).
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      # A tag that disagrees with pyproject would publish a version nobody
+      # can reproduce from the repository, and PyPI versions cannot be
+      # reused. Fail before building rather than after uploading.
+      - name: Tag must match the packaged version
+        if: github.event_name == 'release'
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(grep -m1 '^version = ' pyproject.toml | cut -d'"' -f2)"
+          echo "tag=$tag  pyproject=$pkg"
+          test "$tag" = "$pkg"
+
+      - run: uv build
+      - run: uvx twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/pysceptre
+    permissions:
+      # The OIDC token Trusted Publishing exchanges for an upload grant.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
