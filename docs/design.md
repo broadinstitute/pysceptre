@@ -514,3 +514,76 @@ pair silently got zero power. NaN p-values, the pairs that failed pairwise QC
 and were never tested, are dropped before the correction rather than inflating
 its denominator. On day0 it reproduces R's derived threshold,
 `0.00072628634455531758`, exactly.
+
+## gRNA integration strategies
+
+sceptre tests whatever it calls a `grna_group`, and
+`grna_integration_strategy` only decides what a group is: the target
+(`union`), the individual guide (`singleton`), or the guide followed by an
+aggregation back to the target (`bonferroni`). **Nothing statistical differs
+between them.** The same CRT, the same score statistic, the same skew-normal
+escalation; only the treated cell set changes, and in `bonferroni`'s case
+what happens to the results afterwards. So `pipeline/grouping.py` holds pair
+bookkeeping and one aggregation, and `discovery.py` never learns which
+strategy is in play, exactly as sceptre's engine does not.
+
+The expansion is validated against `update_dfs_based_on_grouping_strategy`
+itself rather than against a reading of it, on four cached cases and then on a
+real screen: day0's 36,450 pairs become 515,972, row for row and in order.
+That comparison earned its keep twice over, as both of the following came out
+of it rather than out of reasoning.
+
+### A guide shared by two targets is one test reported twice
+
+Overlapping candidate elements share guides, and on day0 1,673 of 43,736 sit
+in two or three. R expands the pair list many-to-many and so tests such a
+guide once per target it belongs to. Those tests are necessarily identical:
+the same gene and the same guide means the same treated cells. pysceptre
+therefore runs the distinct tests and fans the target column out afterwards,
+which is cheaper and removes the possibility of two copies disagreeing. The
+reported rows are the same rows.
+
+### A duplicated design row is kept, and that is a choice
+
+day0's design lists 36 `(grna_id, grna_target)` pairs twice: the same guide
+against the same target, which carries no information the single row does not.
+Deduplicating them was the first implementation, and it disagreed with R by
+exactly the 288 expansion rows they fan out to.
+
+Whether that matters depends entirely on the strategy, which is why the
+default is what it is:
+
+| path | effect of a duplicated design row |
+|---|---|
+| `union` | **none, provably.** R builds a target's cells as `unique(unlist(...))`, so listing a guide twice contributes the same set once. The union path does not read the design table at all. |
+| `singleton` | the pair is expanded twice, so the guide appears twice in the result and is double counted by any correction applied across rows |
+| `bonferroni` | the correction factor is `sum(pass_qc)`, so the guide is counted twice and the corrected p-value is **inflated** |
+| `compute_power` | the guide's cells enter `num_trt_cells` and its squared sum twice, which is simply wrong |
+
+So the discovery path **keeps** them by default, because matching R is how
+correctness is established here and the error direction is conservative, and
+warns with the one-line alternative. `drop_duplicate_design_rows=True`
+collapses them, at the stated cost of no longer reproducing R's row count.
+Asking for it under `union` is refused rather than ignored, since it could not
+change anything there.
+
+`cells_per_grna_from_assignments` **raises** instead of warning, and takes the
+same option to collapse. The asymmetry is deliberate: there is no parity
+argument on that path, because PerturbPlan never reads a design table, and
+double counting cells into a variance term is not a conservative error but a
+wrong one.
+
+### Two deliberate deviations from R
+
+**An orphan target raises.** A pair naming a target with no guides in the
+design leaves `grna_group` as `NA` in R's left join, and the row survives to
+ask for the cells of a group called `NA`. An untestable row reaching a result
+is the failure this package refuses everywhere else.
+
+**`pass_qc` is optional in the aggregation.** R reads it from
+`discovery_pairs_with_info`. `run_discovery_analysis` is handed pairs already
+judged testable and does not produce that column, so when it is absent every
+row counts as passing and the correction factor is the group size. Supplying
+it -- `pipeline/pairwise_qc.py` computes it at guide resolution -- recovers
+R's behaviour for a target whose guides individually fail, which is the case
+the default cannot see.

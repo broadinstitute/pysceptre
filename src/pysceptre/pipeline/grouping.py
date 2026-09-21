@@ -30,7 +30,12 @@ __all__ = ["singleton_pairs", "aggregate_bonferroni"]
 _NON_TARGETING = "non-targeting"
 
 
-def singleton_pairs(pairs: pd.DataFrame, grna_target_data_frame: pd.DataFrame) -> pd.DataFrame:
+def singleton_pairs(
+    pairs: pd.DataFrame,
+    grna_target_data_frame: pd.DataFrame,
+    *,
+    drop_duplicate_design_rows: bool = False,
+) -> pd.DataFrame:
     """Fan each (response, target) pair out to one row per guide of that target.
 
     Args:
@@ -38,6 +43,10 @@ def singleton_pairs(pairs: pd.DataFrame, grna_target_data_frame: pd.DataFrame) -
             list, which is the same input R takes.
         grna_target_data_frame: the screen's design, one row per
             (`grna_id`, `grna_target`).
+        drop_duplicate_design_rows: collapse a guide listed more than once
+            against the same target. The default keeps it, which is what R
+            does; either way a warning names the count. See the note below on
+            why this is a choice and not a fix.
 
     Returns:
         `response_id`, `grna_id`, `grna_target`, one row per pair per guide of
@@ -52,9 +61,14 @@ def singleton_pairs(pairs: pd.DataFrame, grna_target_data_frame: pd.DataFrame) -
     `"non-targeting"` rather than their id, and since a discovery pair names
     a target rather than a guide they cannot enter the output anyway.
 
-    A **duplicated** `(grna_id, grna_target)` row is kept rather than
-    collapsed, matching R, and warned about. It is not cosmetic: such a guide
-    is counted twice in `aggregate_bonferroni`'s correction factor.
+    A **duplicated** `(grna_id, grna_target)` row is kept by default,
+    matching R, and warned about either way. It is not cosmetic: such a guide
+    is expanded twice, so it appears twice in the result and is counted twice
+    in `aggregate_bonferroni`'s correction factor, which inflates the
+    corrected p-value. `drop_duplicate_design_rows=True` collapses them, at
+    the cost of no longer reproducing R's row count. Note that the `union`
+    strategy is immune either way: R takes `unique()` of the treated cells, so
+    a guide listed twice contributes the same set once.
 
     Raises:
         KeyError: a column is missing, or a pair names a target with no guides
@@ -83,12 +97,22 @@ def singleton_pairs(pairs: pd.DataFrame, grna_target_data_frame: pd.DataFrame) -
     # those 288 rows. Warned about rather than silently propagated, since it is a defect in the
     # design table that the caller can fix and nothing else will tell them.
     n_duplicated = int(design.duplicated().sum())
-    if n_duplicated:
+    if n_duplicated and drop_duplicate_design_rows:
+        design = design.drop_duplicates()
+        warnings.warn(
+            f"dropped {n_duplicated} duplicated (grna_id, grna_target) row(s) from "
+            "grna_target_data_frame. The expansion no longer matches R's row count, which is "
+            "what drop_duplicate_design_rows=True asks for.",
+            stacklevel=2,
+        )
+    elif n_duplicated:
         warnings.warn(
             f"grna_target_data_frame has {n_duplicated} duplicated (grna_id, grna_target) "
-            f"row(s) of {len(design)}. They are kept, matching R, so the affected pairs are "
-            "expanded more than once and a bonferroni correction counts those guides more than "
-            "once. Drop them from the design if that is not what you want.",
+            f"row(s) of {len(design)}. They are kept, matching R, so those pairs are expanded "
+            "more than once and a bonferroni correction counts those guides more than once, "
+            "inflating the corrected p-value. Pass drop_duplicate_design_rows=True to collapse "
+            "them, or drop them from the design yourself. The union strategy is unaffected "
+            "either way.",
             stacklevel=2,
         )
 

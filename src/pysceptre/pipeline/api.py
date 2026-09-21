@@ -128,6 +128,7 @@ def run_discovery_analysis(
     side: str = "both",
     grna_integration_strategy: str = "union",
     grna_target_data_frame: pd.DataFrame | None = None,
+    drop_duplicate_design_rows: bool = False,
     resampling_approximation: str = "skew_normal",
     multiple_testing_alpha: float = 0.1,
     seed: int | None = None,
@@ -216,7 +217,11 @@ def run_discovery_analysis(
                 "grna_target_data_frame, the (grna_id, grna_target) design, to expand each pair "
                 "to its target's guides. grna_target_cells must then be keyed by guide."
             )
-        expanded = singleton_pairs(pairs, grna_target_data_frame)
+        expanded = singleton_pairs(
+            pairs,
+            grna_target_data_frame,
+            drop_duplicate_design_rows=drop_duplicate_design_rows,
+        )
         # The engine looks its treated cells up by the pair frame's `grna_target` column, so the
         # guide id goes there and the real target is restored afterwards. That keeps
         # discovery.py entirely unaware of which strategy is in play, exactly as sceptre's
@@ -238,6 +243,13 @@ def run_discovery_analysis(
             raise ValueError(
                 "grna_target_data_frame is only used by the singleton and bonferroni "
                 "strategies; under 'union' a pair already names the unit that is tested."
+            )
+        if drop_duplicate_design_rows:
+            raise ValueError(
+                "drop_duplicate_design_rows only applies to the singleton and bonferroni "
+                "strategies. Under 'union' a duplicated design row cannot change anything: "
+                "a target's treated cells are the set union over its guides, so listing one "
+                "twice contributes the same cells once."
             )
         engine_pairs = pairs
 

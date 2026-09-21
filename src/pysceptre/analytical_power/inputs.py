@@ -48,6 +48,8 @@ __all__ = [
 def cells_per_grna_from_assignments(
     grna_target_data_frame: pd.DataFrame,
     targeting_grna_cells: dict[str, np.ndarray],
+    *,
+    drop_duplicate_design_rows: bool = False,
 ) -> pd.DataFrame:
     """Per-gRNA cell counts in the shape `compute_power` wants.
 
@@ -75,6 +77,12 @@ def cells_per_grna_from_assignments(
     many-to-many, so a guide in two overlapping elements contributes its cells
     to both sums; that is what R does. Deduplicating by `grna_id` looks like
     hygiene and silently shrinks exactly those targets.
+
+    A guide listed twice against the **same** target is a different matter and
+    is refused, because it would be counted twice into `num_trt_cells` and its
+    squared sum. Unlike the discovery path there is no parity argument for
+    keeping it: PerturbPlan never reads a design table.
+    `drop_duplicate_design_rows=True` collapses them instead of raising.
     """
     needed = ("grna_id", "grna_target")
     absent = [c for c in needed if c not in grna_target_data_frame.columns]
@@ -84,10 +92,20 @@ def cells_per_grna_from_assignments(
     design = grna_target_data_frame.loc[:, list(needed)].astype(str)
     dup = design.duplicated()
     if dup.any():
-        offenders = sorted(design.loc[dup].itertuples(index=False, name=None))
-        raise ValueError(
-            f"grna_target_data_frame repeats {len(offenders)} (grna_id, grna_target) pair(s), "
-            f"including: {offenders[:5]}"
+        n = int(dup.sum())
+        if not drop_duplicate_design_rows:
+            offenders = sorted(design.loc[dup].itertuples(index=False, name=None))
+            raise ValueError(
+                f"grna_target_data_frame repeats {n} (grna_id, grna_target) pair(s), which "
+                f"would be counted twice into that target's num_trt_cells and its squared sum, "
+                f"including: {offenders[:5]}. Pass drop_duplicate_design_rows=True to collapse "
+                "them, or drop them from the design yourself."
+            )
+        design = design.loc[~dup]
+        warnings.warn(
+            f"dropped {n} duplicated (grna_id, grna_target) row(s) from "
+            "grna_target_data_frame before counting cells.",
+            stacklevel=2,
         )
 
     counts = {str(g): int(np.asarray(idx).size) for g, idx in targeting_grna_cells.items()}

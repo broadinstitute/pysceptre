@@ -291,3 +291,67 @@ def test_a_duplicated_guide_inflates_the_bonferroni_factor():
         }
     )
     assert aggregate_bonferroni(result)["p_value"].iloc[0] == pytest.approx(3 * 0.01)
+
+
+def test_duplicate_design_rows_can_be_dropped_on_request():
+    """The option, and it warns either way because the input is defective either way."""
+    design = pd.DataFrame({"grna_id": ["gA1", "gA1", "gA2"], "grna_target": ["A", "A", "A"]})
+    pairs = pd.DataFrame({"response_id": ["g0"], "grna_target": ["A"]})
+    with pytest.warns(UserWarning, match="dropped 1 duplicated"):
+        got = singleton_pairs(pairs, design, drop_duplicate_design_rows=True)
+    assert len(got) == 2
+    assert list(got["grna_id"]) == ["gA1", "gA2"]
+
+
+def test_dropping_duplicates_removes_the_bonferroni_inflation():
+    """The reason the option exists, shown as the consequence rather than a row count."""
+    design = pd.DataFrame({"grna_id": ["gA1", "gA1", "gA2"], "grna_target": ["A", "A", "A"]})
+    pairs = pd.DataFrame({"response_id": ["g0"], "grna_target": ["A"]})
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        kept = singleton_pairs(pairs, design)
+        dropped = singleton_pairs(pairs, design, drop_duplicate_design_rows=True)
+
+    def bonferroni_p(expanded):
+        result = expanded.assign(
+            p_value=[0.01] * len(expanded), pct_change_es=[-5.0] * len(expanded)
+        )
+        return aggregate_bonferroni(result)["p_value"].iloc[0]
+
+    assert bonferroni_p(kept) == pytest.approx(3 * 0.01)
+    assert bonferroni_p(dropped) == pytest.approx(2 * 0.01)
+
+
+def test_the_option_is_rejected_under_union(screen):
+    """It cannot change a union result, so asking for it there is a mistake worth naming."""
+    counts, gene_ids, cov, guide_cells, _, pairs = screen
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        with pytest.raises(ValueError, match="only applies to the singleton"):
+            run_discovery_analysis(
+                counts,
+                gene_ids,
+                cov,
+                guide_cells,
+                pairs,
+                drop_duplicate_design_rows=True,
+            )
+
+
+def test_union_is_immune_to_a_duplicated_design_row(screen):
+    """Not an opinion: R takes `unique()` of the treated cells.
+
+    The union path never reads the design table at all -- a pair already names
+    the unit tested -- so this is a statement about what the option would even
+    have to change, and the answer is nothing.
+    """
+    counts, gene_ids, cov, guide_cells, _, _ = screen
+    target_cells = {"A": np.union1d(guide_cells["gA1"], guide_cells["gA2"])}
+    pairs = pd.DataFrame({"response_id": ["g0"], "grna_target": ["A"]})
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        result = run_discovery_analysis(
+            counts, gene_ids, cov, target_cells, pairs, side="left", seed=0
+        )
+    assert len(result) == 1
+    assert "grna_id" not in result.columns
