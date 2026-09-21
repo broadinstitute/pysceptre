@@ -8,38 +8,48 @@ the joins and the designs around them.
 
 ## Per-gRNA tests instead of per-target
 
-[Scope](scope.md) says gRNA integration is `"union"` only, and that is true of
-sceptre's *named* strategy. But the engine never learns what the keys of
-`grna_target_cells` mean: it builds one indicator per key, fits the binomial
-model and draws the CRT from it. So key that dict by gRNA and you get one test
-per guide.
+Pass `grna_integration_strategy="singleton"` with the design table, and
+`grna_target_cells` keyed by guide:
 
 ```python
-# targeting_grna_cells comes straight from an export: grna_id -> cell indices
-pairs = pd.DataFrame(
-    [(gene, guide) for gene in genes_of_interest for guide in targeting_grna_cells],
-    columns=["response_id", "grna_target"],
-)
-
 result = run_discovery_analysis(
     response_matrix, gene_ids, covariate_matrix,
-    targeting_grna_cells,          # keyed by guide, not by target
-    pairs,
+    targeting_grna_cells,          # keyed by guide, both from the export
+    pairs,                         # still (response_id, grna_target)
+    grna_integration_strategy="singleton",
+    grna_target_data_frame=design,
     side="left", seed=0,
 )
+# -> response_id, grna_id, grna_target, p_value, pct_change_es, ...
 ```
 
-On a screen where one guide of four carries a real knockdown, that guide comes
-back significant and its three siblings do not.
+Each pair fans out to one row per guide of its target, and the result carries
+both the guide tested and the target it belongs to, sorted by p-value with
+missing values last. That is R's shape and R's ordering. `"bonferroni"` takes
+the same per-guide tests and collapses them back to one row per target: the
+smallest p-value among the guides that passed QC, multiplied by how many
+passed and capped at 1, carrying that guide's other numbers.
 
-**Three things this is not.** It is not sceptre's `"singleton"` strategy
-reproduced: there is no per-target aggregation afterwards, and no attempt to
-match how sceptre reports singleton results. The multiple-testing burden is
-now per guide rather than per target, so a threshold derived from a
-per-target run is the wrong one -- derive it from this run's own p-values.
-And a guide's cell count is much smaller than its target's, so pairs that
-passed QC at target resolution can fail it at guide resolution; check that
-before reading a null result as biology.
+**Nothing statistical changes between the strategies.** The same CRT, the same
+score statistic, the same escalation. Only the treated cell set differs, which
+is exactly how sceptre works: it tests whatever it calls a `grna_group`, and
+the strategy only decides what a group is.
+
+Three things worth knowing.
+
+**It is roughly a guides-per-target multiple of the work.** On one real screen
+36,450 pairs expand to 515,972, so a singleton run is about 14 times a union
+run, not a flag flip. A guide shared by two overlapping targets is tested once
+and reported under both, since the gene and the treated cells are identical.
+
+**The multiple-testing burden is per guide.** A threshold derived from a
+union run is the wrong one; derive it from this run's own p-values.
+
+**QC is per guide too.** A guide's cell count is far below its target's, so
+pairs that passed QC at target resolution can fail at guide resolution. The
+discovery path is fed pairs already judged testable and does not recheck, so
+if that distinction matters, recompute the pairwise counts at guide resolution
+before you trust a null.
 
 ## A design matrix with interactions
 

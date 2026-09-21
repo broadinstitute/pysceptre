@@ -58,8 +58,10 @@ src-layout -- the importable package lives under `src/`, so it is only on
   - `crt/`              -- the CRT resampling draw (`sampler.py`).
   - `test_statistic/`   -- score statistic, empirical p, skew-normal escalation,
                            fold change, and the per-pair `B1 -> B2 -> B3` staging.
-  - `pipeline/`         -- `discovery.py` (orchestration) and `api.py` (the one
-                           public entry point, `run_discovery_analysis`).
+  - `pipeline/`         -- `discovery.py` (orchestration), `api.py` (the public
+                           entry points) and `grouping.py` (the gRNA
+                           integration strategies, which are pair bookkeeping
+                           only: nothing statistical differs between them).
   - `analytical_power/` -- the closed-form per-pair power estimate, ported
                            from PerturbPlan (MIT, `THIRD_PARTY_LICENSES`). Not
                            from sceptre, and not part of the discovery path.

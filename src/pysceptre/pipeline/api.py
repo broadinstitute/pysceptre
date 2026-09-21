@@ -24,6 +24,7 @@ from .discovery import (
     _DEFAULT_TARGET_CHUNK_SIZE,
     run_discovery_ntcells_complement,
 )
+from .grouping import aggregate_bonferroni, singleton_pairs, sort_like_r
 from .power import (
     annotate_pairwise_qc,
     construct_positive_control_pairs,
@@ -33,6 +34,7 @@ from .power import (
 _SIDE_CODES = {"left": -1, "both": 0, "right": 1}
 _RESAMPLING_APPROXIMATIONS = ("skew_normal", "no_approximation")
 _RESAMPLING_MECHANISMS = ("crt", "permutations")
+_GRNA_INTEGRATION_STRATEGIES = ("union", "singleton", "bonferroni")
 
 
 def _validate_covariate_matrix(covariate_matrix: np.ndarray, n_cells: int | None = None) -> None:
@@ -124,6 +126,8 @@ def run_discovery_analysis(
     pairs: pd.DataFrame,
     *,
     side: str = "both",
+    grna_integration_strategy: str = "union",
+    grna_target_data_frame: pd.DataFrame | None = None,
     resampling_approximation: str = "skew_normal",
     multiple_testing_alpha: float = 0.1,
     seed: int | None = None,
@@ -198,23 +202,61 @@ def run_discovery_analysis(
             f"resampling_mechanism must be one of {list(_RESAMPLING_MECHANISMS)}, "
             f"got {resampling_mechanism!r}"
         )
+    if grna_integration_strategy not in _GRNA_INTEGRATION_STRATEGIES:
+        raise ValueError(
+            f"grna_integration_strategy must be one of "
+            f"{list(_GRNA_INTEGRATION_STRATEGIES)}, got {grna_integration_strategy!r}"
+        )
+
+    per_guide = grna_integration_strategy in ("singleton", "bonferroni")
+    if per_guide:
+        if grna_target_data_frame is None:
+            raise ValueError(
+                f"grna_integration_strategy={grna_integration_strategy!r} needs "
+                "grna_target_data_frame, the (grna_id, grna_target) design, to expand each pair "
+                "to its target's guides. grna_target_cells must then be keyed by guide."
+            )
+        expanded = singleton_pairs(pairs, grna_target_data_frame)
+        # The engine looks its treated cells up by the pair frame's `grna_target` column, so the
+        # guide id goes there and the real target is restored afterwards. That keeps
+        # discovery.py entirely unaware of which strategy is in play, exactly as sceptre's
+        # engine is: it only ever sees a `grna_group`.
+        #
+        # **Tested once per (gene, guide), reported once per (gene, guide, target).** A guide in
+        # two overlapping elements yields two rows in R, and they are necessarily identical:
+        # same gene, same guide, so the same treated cells and the same test. Running it twice
+        # would only cost time and risk the two copies disagreeing, so the engine is handed the
+        # distinct tests and the target column is restored by a fan-out afterwards.
+        engine_pairs = (
+            expanded.loc[:, ["response_id", "grna_id"]]
+            .drop_duplicates()
+            .rename(columns={"grna_id": "grna_target"})
+            .reset_index(drop=True)
+        )
+    else:
+        if grna_target_data_frame is not None:
+            raise ValueError(
+                "grna_target_data_frame is only used by the singleton and bonferroni "
+                "strategies; under 'union' a pair already names the unit that is tested."
+            )
+        engine_pairs = pairs
 
     side_code = _SIDE_CODES[side]
     fit_parametric_curve = resampling_approximation == "skew_normal"
     B2, B3 = _resampling_budget(
         resampling_approximation,
         side_code,
-        len(pairs),
+        len(engine_pairs),
         multiple_testing_alpha,
         resampling_mechanism,
     )
 
-    return run_discovery_ntcells_complement(
+    result = run_discovery_ntcells_complement(
         response_matrix=response_matrix,
         gene_ids=gene_ids,
         covariate_matrix=covariate_matrix,
         grna_target_cells=grna_target_cells,
-        pairs=pairs,
+        pairs=engine_pairs,
         B2=B2,
         B3=B3,
         fit_parametric_curve=fit_parametric_curve,
@@ -225,6 +267,19 @@ def run_discovery_analysis(
         n_jobs=n_jobs,
         resampling_mechanism=resampling_mechanism,
     )
+    if not per_guide:
+        return result
+
+    # Restore the two-column identity R reports: the guide that was tested, and the target it
+    # belongs to. Joining would be ambiguous for a guide in several targets, so the mapping is
+    # carried positionally from the expansion instead.
+    result = result.rename(columns={"grna_target": "grna_id"})
+    result = expanded.merge(result, on=["response_id", "grna_id"], how="left")
+    front = ["response_id", "grna_id", "grna_target"]
+    result = result.loc[:, front + [c for c in result.columns if c not in front]]
+    if grna_integration_strategy == "bonferroni":
+        result = aggregate_bonferroni(result)
+    return sort_like_r(result)
 
 
 def run_calibration_check(

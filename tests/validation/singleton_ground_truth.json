@@ -1,0 +1,37 @@
+{
+  "sceptre_version": "0.10.3",
+  "cases": [
+    {
+      "label": "shared_guide",
+      "note": "gS belongs to A and B and must appear under each",
+      "gtdf": {"grna_id": ["gA1", "gA2", "gS", "gS", "gB1", "ntc1", "ntc2"], "grna_target": ["A", "A", "A", "B", "B", "non-targeting", "non-targeting"]},
+      "pairs_in": {"grna_target": ["A", "B", "A"], "response_id": ["g1", "g1", "g2"]},
+      "pairs_out": {"grna_target": ["A", "A", "A", "B", "B", "A", "A", "A"], "response_id": ["g1", "g1", "g1", "g1", "g1", "g2", "g2", "g2"], "grna_group": ["gA1", "gA2", "gS", "gS", "gB1", "gA1", "gA2", "gS"]},
+      "grna_group": ["gA1", "gA2", "gS", "gS", "gB1", "non-targeting", "non-targeting"]
+    },
+    {
+      "label": "one_guide_target",
+      "note": "one row in, one row out",
+      "gtdf": {"grna_id": ["gC1", "ntc1"], "grna_target": ["C", "non-targeting"]},
+      "pairs_in": {"grna_target": ["C"], "response_id": ["g1"]},
+      "pairs_out": {"grna_target": ["C"], "response_id": ["g1"], "grna_group": ["gC1"]},
+      "grna_group": ["gC1", "non-targeting"]
+    },
+    {
+      "label": "ntcs_are_not_expanded",
+      "note": "grna_group stays 'non-targeting' for NTCs and they are not in the output",
+      "gtdf": {"grna_id": ["gA1", "ntc1", "ntc2", "ntc3"], "grna_target": ["A", "non-targeting", "non-targeting", "non-targeting"]},
+      "pairs_in": {"grna_target": ["A"], "response_id": ["g1"]},
+      "pairs_out": {"grna_target": ["A"], "response_id": ["g1"], "grna_group": ["gA1"]},
+      "grna_group": ["gA1", "non-targeting", "non-targeting", "non-targeting"]
+    },
+    {
+      "label": "orphan_target",
+      "note": "target absent from grna_target_data_frame",
+      "gtdf": {"grna_id": ["gA1", "ntc1"], "grna_target": ["A", "non-targeting"]},
+      "pairs_in": {"grna_target": ["A", "MISSING"], "response_id": ["g1", "g1"]},
+      "pairs_out": {"grna_target": ["A", "MISSING"], "response_id": ["g1", "g1"], "grna_group": ["gA1", "NA"]},
+      "grna_group": ["gA1", "non-targeting"]
+    }
+  ]
+}

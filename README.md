@@ -472,10 +472,13 @@ adjustment over the union each time.
   single target and the run warns that it may still exhaust memory.
   Conversely, at 4 pairs one-sided `B3 = 200`, *below* `B1 = 499`. Both are
   R's behavior, reproduced rather than corrected.
-- **gRNA integration strategy: "union" only.** `grna_target_cells` is keyed
-  by target, not by individual gRNA -- matches sceptre's `"union"` strategy;
-  `"singleton"` is not supported. `compute_power` is the exception and
-  needs per-gRNA counts, for the reason below.
+- **All three gRNA integration strategies.** `"union"` (the default),
+  `"singleton"` and `"bonferroni"`, matching sceptre's own option. Under the
+  latter two, `grna_target_cells` is keyed by guide rather than by target and
+  `grna_target_data_frame` supplies the design; the pair expansion is
+  validated against sceptre's own on a real screen, 36,450 pairs to 515,972.
+  Nothing statistical differs between them -- only which cells count as
+  treated, and what happens to the results afterwards.
 - **`compute_power` is not a sceptre path, and its limits are its
   own.** It estimates in closed form what a screen *could* have detected,
   which is a different question from the three analyses above, and it is a
