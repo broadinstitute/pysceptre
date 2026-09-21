@@ -150,12 +150,20 @@ def compute_power_posthoc(
             f"including: {offenders[:5]}"
         )
     if "grna_id" in cells_per_grna.columns:
-        dup_grnas = cells_per_grna["grna_id"].duplicated()
-        if dup_grnas.any():
-            offenders = sorted(cells_per_grna.loc[dup_grnas, "grna_id"].unique())
+        # Uniqueness is of the (gRNA, target) pair, not of the gRNA. A guide inside two
+        # overlapping candidate elements legitimately belongs to both targets and contributes
+        # its cells to both sums; R accepts that and so must this. Only a repeat of the same
+        # guide under the same target is double counting.
+        key = ["grna_id", "grna_target"]
+        dup = cells_per_grna.duplicated(subset=key)
+        if dup.any():
+            offenders = (
+                cells_per_grna.loc[dup, key].drop_duplicates().itertuples(index=False, name=None)
+            )
+            offenders = sorted(offenders)
             raise ValueError(
-                f"cells_per_grna has {len(offenders)} duplicated grna_id(s), which would be "
-                f"counted twice into their target's cell count, including: {offenders[:5]}"
+                f"cells_per_grna repeats {len(offenders)} (grna_id, grna_target) pair(s), which "
+                f"would be counted twice into that target's cell count, including: {offenders[:5]}"
             )
 
     targets = target_cell_counts(cells_per_grna).set_index("grna_target")

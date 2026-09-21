@@ -24,13 +24,23 @@
 #
 # Usage:
 #   export_sceptre_dataset.R --sceptre-object so.rds --response-odm gene.odm \
-#       --grna-odm grna.odm --out-dir out/ [--all-genes] [--all-cells] \
+#       --grna-odm grna.odm --out-dir out/ [--pair-genes-only] [--qc-cells-only] \
 #       [--discovery-result r.rds]
 #
-# --all-cells keeps the cells QC removed, which only a simulation needs: poscounts size factors
-# are computed against a geometric mean over every cell, so dropping them moves the size factors
-# of the cells that remain. The loader subsets back to cells_in_use by default, so an analysis
-# reads such a file exactly as it reads any other.
+# AN EXPORT CARRIES EVERYTHING BY DEFAULT: every gene in the response matrix and every cell in the
+# object, QC removed ones included. The two flags narrow it and exist only for the cases that want
+# a smaller file.
+#
+# Exporting everything costs disk and nothing else. An analysis reads only the genes that appear
+# in the discovery pairs, and the loader subsets back to `cells_in_use` unless asked not to, so
+# the extra rows and columns are never carried into the per-gene fits or into a worker process.
+# What they buy is that the file can answer questions the pair list does not anticipate.
+#
+# The cell set in particular is not recoverable later. Poscounts size factors are a per-cell
+# median taken against a geometric mean over every cell, so an export that already dropped the
+# QC removed cells gives different size factors, and therefore different normalised gene means,
+# from one that kept them. That difference is silent: both files look complete. Same for the gene
+# set, since the geometric mean runs over all genes.
 #
 # Convert with scripts/make_h5mu.py, then read with sceptre_io.load_export.
 
@@ -43,17 +53,24 @@ source(file.path(dirname(sub("^--file=", "", grep("^--file=", commandArgs(FALSE)
                  "sceptre_export_lib.R"))
 
 parse_args <- function(argv) {
-  opts <- list(all_genes = FALSE, all_cells = FALSE, discovery_result = NA_character_)
+  # Everything by default; the flags subtract. `--all-genes` and `--all-cells` are still accepted
+  # so a script written against the old defaults does not break, but they are now no-ops and say so.
+  opts <- list(all_genes = TRUE, all_cells = TRUE, discovery_result = NA_character_)
   i <- 1
   while (i <= length(argv)) {
     key <- argv[[i]]
-    if (key == "--all-genes") {
-      opts$all_genes <- TRUE
+    if (key == "--pair-genes-only") {
+      opts$all_genes <- FALSE
       i <- i + 1
       next
     }
-    if (key == "--all-cells") {
-      opts$all_cells <- TRUE
+    if (key == "--qc-cells-only") {
+      opts$all_cells <- FALSE
+      i <- i + 1
+      next
+    }
+    if (key == "--all-genes" || key == "--all-cells") {
+      cat("note:", key, "is now the default and has no effect.\n")
       i <- i + 1
       next
     }

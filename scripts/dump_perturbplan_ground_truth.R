@@ -80,6 +80,21 @@ grnas <- list(
     grna_id = "g_tiny_1",
     grna_target = "tiny_trt",
     num_cells = 3L
+  ),
+  # Two targets sharing a guide, which is the shape of overlapping candidate elements: on one real
+  # screen 1,673 of 43,736 guides sit inside two or three of them, so the gRNA-to-target map is
+  # many-to-many and the same grna_id appears under several targets. R sums such a guide's cells
+  # into every target it belongs to. Pinned here because a port that deduplicated by grna_id would
+  # look reasonable and be wrong.
+  shared_a = data.frame(
+    grna_id = c("g_shared_1", "g_shared_2"),
+    grna_target = c("shared_a", "shared_a"),
+    num_cells = c(40L, 60L)
+  ),
+  shared_b = data.frame(
+    grna_id = c("g_shared_2", "g_shared_3"),
+    grna_target = c("shared_b", "shared_b"),
+    num_cells = c(60L, 75L)
   )
 )
 cells_per_grna <- do.call(rbind, grnas)

@@ -383,5 +383,27 @@ def test_duplicate_keys_raise(perturbplan_ground_truth):
         compute_power_posthoc(pairs, cells_per_grna, dup_gene, **common)
 
     dup_grna = pd.concat([cells_per_grna, cells_per_grna.iloc[[0]]], ignore_index=True)
-    with pytest.raises(ValueError, match="duplicated grna_id"):
+    with pytest.raises(ValueError, match="repeats 1"):
         compute_power_posthoc(pairs, dup_grna, baseline, **common)
+
+
+def test_a_guide_shared_by_two_targets_is_counted_into_both(perturbplan_ground_truth):
+    """The gRNA-to-target map is many-to-many, and R sums a shared guide into every target.
+
+    Overlapping candidate elements share guides: on one real screen 1,673 of
+    43,736 sit inside two or three, so the same `grna_id` appears under
+    several targets. Deduplicating by `grna_id` would look like sensible
+    hygiene and would silently shrink those targets. The fixture carries
+    `shared_a` and `shared_b`, which share `g_shared_2`.
+    """
+    gt = perturbplan_ground_truth
+    _, cells_per_grna, _ = _frames(gt)
+    shared = cells_per_grna[cells_per_grna["grna_id"] == "g_shared_2"]
+    assert set(shared["grna_target"]) == {"shared_a", "shared_b"}, "fixture lost the shared guide"
+
+    agg = target_cell_counts(cells_per_grna).set_index("grna_target")
+    # 40 + 60 and 60 + 75: the shared guide's 60 cells count into both.
+    assert agg.loc["shared_a", "num_trt_cells"] == pytest.approx(100.0)
+    assert agg.loc["shared_b", "num_trt_cells"] == pytest.approx(135.0)
+    # And the power for both targets matches R, which is what actually settles it.
+    assert any(t in ("shared_a", "shared_b") for t in gt["cases"][0]["grna_target"])

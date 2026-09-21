@@ -5,9 +5,9 @@
   "control_group": "complement",
   "num_total_cells": 20000,
   "cells_per_grna": {
-    "grna_id": ["g_one_1", "g_many_01", "g_many_02", "g_many_03", "g_many_04", "g_many_05", "g_many_06", "g_many_07", "g_many_08", "g_many_09", "g_many_10", "g_many_11", "g_many_12", "g_many_13", "g_many_14", "g_many_15", "g_many_16", "g_many_17", "g_many_18", "g_many_19", "g_many_20", "g_large_1", "g_large_2", "g_large_3", "g_large_4", "g_tiny_1"],
-    "grna_target": ["one_grna", "many_grnas", "many_grnas", "many_grnas", "many_grnas", "many_grnas", "many_grnas", "many_grnas", "many_grnas", "many_grnas", "many_grnas", "many_grnas", "many_grnas", "many_grnas", "many_grnas", "many_grnas", "many_grnas", "many_grnas", "many_grnas", "many_grnas", "many_grnas", "large_trt", "large_trt", "large_trt", "large_trt", "tiny_trt"],
-    "num_cells": [               250,                 12,                 18,                  7,                 31,                 25,                  9,                 44,                 15,                 22,                  5,                 38,                 11,                 27,                 19,                  8,                 33,                 14,                 21,                  6,                 29,               2000,               2500,               1800,               2200,                  3]
+    "grna_id": ["g_one_1", "g_many_01", "g_many_02", "g_many_03", "g_many_04", "g_many_05", "g_many_06", "g_many_07", "g_many_08", "g_many_09", "g_many_10", "g_many_11", "g_many_12", "g_many_13", "g_many_14", "g_many_15", "g_many_16", "g_many_17", "g_many_18", "g_many_19", "g_many_20", "g_large_1", "g_large_2", "g_large_3", "g_large_4", "g_tiny_1", "g_shared_1", "g_shared_2", "g_shared_2", "g_shared_3"],
+    "grna_target": ["one_grna", "many_grnas", "many_grnas", "many_grnas", "many_grnas", "many_grnas", "many_grnas", "many_grnas", "many_grnas", "many_grnas", "many_grnas", "many_grnas", "many_grnas", "many_grnas", "many_grnas", "many_grnas", "many_grnas", "many_grnas", "many_grnas", "many_grnas", "many_grnas", "large_trt", "large_trt", "large_trt", "large_trt", "tiny_trt", "shared_a", "shared_a", "shared_b", "shared_b"],
+    "num_cells": [               250,                 12,                 18,                  7,                 31,                 25,                  9,                 44,                 15,                 22,                  5,                 38,                 11,                 27,                 19,                  8,                 33,                 14,                 21,                  6,                 29,               2000,               2500,               1800,               2200,                  3,                 40,                 60,                 60,                 75]
   },
   "baseline_expression_stats": {
     "response_id": ["gene_low", "gene_mid", "gene_high"],
@@ -15,8 +15,8 @@
     "expression_size": [              0.25, 1.1000000000000001,                  6]
   },
   "discovery_pairs": {
-    "grna_target": ["one_grna", "many_grnas", "large_trt", "tiny_trt", "one_grna", "many_grnas", "large_trt", "tiny_trt", "one_grna", "many_grnas", "large_trt", "tiny_trt"],
-    "response_id": ["gene_low", "gene_low", "gene_low", "gene_low", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_high", "gene_high", "gene_high", "gene_high"]
+    "grna_target": ["one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b", "one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b", "one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b"],
+    "response_id": ["gene_low", "gene_low", "gene_low", "gene_low", "gene_low", "gene_low", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_high", "gene_high", "gene_high", "gene_high", "gene_high", "gene_high"]
   },
   "cases": [
     {
@@ -28,10 +28,10 @@
       "fold_change_sd":               0.13,
       "n_nonzero_trt_thresh": 0,
       "n_nonzero_cntrl_thresh": 0,
-      "grna_target": ["one_grna", "many_grnas", "large_trt", "tiny_trt", "one_grna", "many_grnas", "large_trt", "tiny_trt", "one_grna", "many_grnas", "large_trt", "tiny_trt"],
-      "response_id": ["gene_low", "gene_low", "gene_low", "gene_low", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_high", "gene_high", "gene_high", "gene_high"],
-      "power": [0.00071668493481057193, 0.00045636354462711597, 0.011858787290882879, 0.00024325683048642609, 0.067885949879832624, 0.00799430872448793, 0.4348992911343304, 0.00033179844956101207, 0.3767140363803303, 0.27653044446435704, 0.67491186753970434, 0.0017530927209967473],
-      "expected_num_discoveries": 1.8542958818944075
+      "grna_target": ["one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b", "one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b", "one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b"],
+      "response_id": ["gene_low", "gene_low", "gene_low", "gene_low", "gene_low", "gene_low", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_high", "gene_high", "gene_high", "gene_high", "gene_high", "gene_high"],
+      "power": [0.00071668493481057193, 0.00045636354462711597, 0.011858787290882879, 0.00024325683048642609, 0.00036403736742523737, 0.00040037746776331457, 0.067885949879832624, 0.00799430872448793, 0.4348992911343304, 0.00033179844956101207, 0.006423415536557525, 0.010507953814891044, 0.3767140363803303, 0.27653044446435704, 0.67491186753970434, 0.0017530927209967473, 0.17780695837922147, 0.22603149984124798],
+      "expected_num_discoveries":  2.275830124301514
     },
     {
       "label": "left_cis_es15",
@@ -42,10 +42,10 @@
       "fold_change_sd":               0.13,
       "n_nonzero_trt_thresh": 0,
       "n_nonzero_cntrl_thresh": 0,
-      "grna_target": ["one_grna", "many_grnas", "large_trt", "tiny_trt", "one_grna", "many_grnas", "large_trt", "tiny_trt", "one_grna", "many_grnas", "large_trt", "tiny_trt"],
-      "response_id": ["gene_low", "gene_low", "gene_low", "gene_low", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_high", "gene_high", "gene_high", "gene_high"],
-      "power": [0.00097879185661409575, 0.00077634771239093556, 0.097192922972636389, 0.00011856878836184124, 0.19804321263098076, 0.14462493343325847, 0.91050685268879372, 0.00019816367919533743, 0.67103803639161619, 0.97810548348297499, 0.97660894900276629, 0.0029498078284029851],
-      "expected_num_discoveries": 3.9811420704679916
+      "grna_target": ["one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b", "one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b", "one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b"],
+      "response_id": ["gene_low", "gene_low", "gene_low", "gene_low", "gene_low", "gene_low", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_high", "gene_high", "gene_high", "gene_high", "gene_high", "gene_high"],
+      "power": [0.00097879185661409575, 0.00077634771239093556, 0.097192922972636389, 0.00011856878836184124, 0.00032798180170682438, 0.00040450070847598135, 0.19804321263098076, 0.14462493343325847, 0.91050685268879372, 0.00019816367919533743, 0.026255694911843812, 0.047304375918731191, 0.67103803639161619, 0.97810548348297499, 0.97660894900276629, 0.0029498078284029851, 0.52249948613735375, 0.60375963780806985],
+      "expected_num_discoveries": 5.1816937477541725
     },
     {
       "label": "left_cis_es50",
@@ -56,10 +56,10 @@
       "fold_change_sd":               0.13,
       "n_nonzero_trt_thresh": 0,
       "n_nonzero_cntrl_thresh": 0,
-      "grna_target": ["one_grna", "many_grnas", "large_trt", "tiny_trt", "one_grna", "many_grnas", "large_trt", "tiny_trt", "one_grna", "many_grnas", "large_trt", "tiny_trt"],
-      "response_id": ["gene_low", "gene_low", "gene_low", "gene_low", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_high", "gene_high", "gene_high", "gene_high"],
-      "power": [0.0030434934323228247, 0.0056949240089244433, 0.99248684592016034, 1.0932565158546746e-06, 0.94680747265923304, 0.99999996420667858, 0.99999999998823919, 8.0408795069893975e-06, 0.99911312085222592,                  1, 0.99999999999991307, 0.035360866551522777],
-      "expected_num_discoveries": 6.9825158217552428
+      "grna_target": ["one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b", "one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b", "one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b"],
+      "response_id": ["gene_low", "gene_low", "gene_low", "gene_low", "gene_low", "gene_low", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_high", "gene_high", "gene_high", "gene_high", "gene_high", "gene_high"],
+      "power": [0.0030434934323228247, 0.0056949240089244433, 0.99248684592016034, 1.0932565158546746e-06, 0.00012698421451388009, 0.00028844369866259386, 0.94680747265923304, 0.99999996420667858, 0.99999999998823919, 8.0408795069893975e-06, 0.70363413162946875, 0.86419625136535472, 0.99911312085222592,                  1, 0.99999999999991307, 0.035360866551522777, 0.99988815106670959, 0.99996516585474116],
+      "expected_num_discoveries": 10.550614949584693
     },
     {
       "label": "left_trans_es05",
@@ -70,10 +70,10 @@
       "fold_change_sd":               0.13,
       "n_nonzero_trt_thresh": 0,
       "n_nonzero_cntrl_thresh": 0,
-      "grna_target": ["one_grna", "many_grnas", "large_trt", "tiny_trt", "one_grna", "many_grnas", "large_trt", "tiny_trt", "one_grna", "many_grnas", "large_trt", "tiny_trt"],
-      "response_id": ["gene_low", "gene_low", "gene_low", "gene_low", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_high", "gene_high", "gene_high", "gene_high"],
-      "power": [8.3465905381500377e-05, 4.393118991496316e-05, 0.003111511919498179, 2.0864027298898946e-05, 0.035249970203225144, 0.0015830346707860253, 0.37423535073636705, 3.0522822268910374e-05, 0.33197963456471535, 0.17915346459896359, 0.65545331004556862, 0.00026998555492098951],
-      "expected_num_discoveries": 1.5812150462389094
+      "grna_target": ["one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b", "one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b", "one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b"],
+      "response_id": ["gene_low", "gene_low", "gene_low", "gene_low", "gene_low", "gene_low", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_high", "gene_high", "gene_high", "gene_high", "gene_high", "gene_high"],
+      "power": [8.3465905381500377e-05, 4.393118991496316e-05, 0.003111511919498179, 2.0864027298898946e-05, 3.4273568774075048e-05, 3.8635221971062487e-05, 0.035249970203225144, 0.0015830346707860253, 0.37423535073636705, 3.0522822268910374e-05, 0.0014546002267955098, 0.0027932887334623769, 0.33197963456471535, 0.17915346459896359, 0.65545331004556862, 0.00026998555492098951, 0.12106129685737201, 0.16581095547838789],
+      "expected_num_discoveries": 1.8724080963256724
     },
     {
       "label": "left_trans_es15",
@@ -84,10 +84,10 @@
       "fold_change_sd":               0.13,
       "n_nonzero_trt_thresh": 0,
       "n_nonzero_cntrl_thresh": 0,
-      "grna_target": ["one_grna", "many_grnas", "large_trt", "tiny_trt", "one_grna", "many_grnas", "large_trt", "tiny_trt", "one_grna", "many_grnas", "large_trt", "tiny_trt"],
-      "response_id": ["gene_low", "gene_low", "gene_low", "gene_low", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_high", "gene_high", "gene_high", "gene_high"],
-      "power": [0.00010596413656213105, 7.0507651485039209e-05, 0.03835538240740255, 7.6752158247864773e-06, 0.12060839325994996, 0.050906698642465671, 0.88336591796089892, 1.3446970441308985e-05, 0.62633691910310163, 0.95377319456157073, 0.97363077689663258, 0.00042200421660860493],
-      "expected_num_discoveries": 3.6475968810229444
+      "grna_target": ["one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b", "one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b", "one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b"],
+      "response_id": ["gene_low", "gene_low", "gene_low", "gene_low", "gene_low", "gene_low", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_high", "gene_high", "gene_high", "gene_high", "gene_high", "gene_high"],
+      "power": [0.00010596413656213105, 7.0507651485039209e-05, 0.03835538240740255, 7.6752158247864773e-06, 2.6018003181232452e-05, 3.3633841337798307e-05, 0.12060839325994996, 0.050906698642465671, 0.88336591796089892, 1.3446970441308985e-05, 0.0070685746851128876, 0.015522704861219311, 0.62633691910310163, 0.95377319456157073, 0.97363077689663258, 0.00042200421660860493, 0.42342054035948362, 0.51664413215182747],
+      "expected_num_discoveries": 4.6103124849251067
     },
     {
       "label": "left_trans_es50",
@@ -98,10 +98,10 @@
       "fold_change_sd":               0.13,
       "n_nonzero_trt_thresh": 0,
       "n_nonzero_cntrl_thresh": 0,
-      "grna_target": ["one_grna", "many_grnas", "large_trt", "tiny_trt", "one_grna", "many_grnas", "large_trt", "tiny_trt", "one_grna", "many_grnas", "large_trt", "tiny_trt"],
-      "response_id": ["gene_low", "gene_low", "gene_low", "gene_low", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_high", "gene_high", "gene_high", "gene_high"],
-      "power": [0.00022321243284653875, 0.00037851598633423798, 0.9754510425179449, 1.1012706154749394e-08, 0.89806249853116904, 0.99999837204204955, 0.99999999997083699, 7.567867315278246e-08, 0.9986696929600668,                  1, 0.99999999999987976, 0.0047175212744567253],
-      "expected_num_discoveries": 6.8775009424069644
+      "grna_target": ["one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b", "one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b", "one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b"],
+      "response_id": ["gene_low", "gene_low", "gene_low", "gene_low", "gene_low", "gene_low", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_high", "gene_high", "gene_high", "gene_high", "gene_high", "gene_high"],
+      "power": [0.00022321243284653875, 0.00037851598633423798, 0.9754510425179449, 1.1012706154749394e-08, 3.4682045789360137e-06, 9.6659555815335943e-06, 0.89806249853116904, 0.99999837204204955, 0.99999999997083699, 7.567867315278246e-08, 0.46583997518663378, 0.70186304557019763, 0.9986696929600668,                  1, 0.99999999999987976, 0.0047175212744567253, 0.99969889053147232, 0.99991126660925589],
+      "expected_num_discoveries": 10.044827254464684
     },
     {
       "label": "left_qc7_es05",
@@ -112,10 +112,10 @@
       "fold_change_sd":               0.13,
       "n_nonzero_trt_thresh": 7,
       "n_nonzero_cntrl_thresh": 7,
-      "grna_target": ["one_grna", "many_grnas", "large_trt", "tiny_trt", "one_grna", "many_grnas", "large_trt", "tiny_trt", "one_grna", "many_grnas", "large_trt", "tiny_trt"],
-      "response_id": ["gene_low", "gene_low", "gene_low", "gene_low", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_high", "gene_high", "gene_high", "gene_high"],
-      "power": [0.00035793278237183175, 0.00041119616808358959, 0.011858787290882879,                  0, 0.067885949879832624, 0.00799430872448793, 0.4348992911343304,                  0, 0.3767140363803303, 0.27653044446435704, 0.67491186753970434,                  0],
-      "expected_num_discoveries": 1.8515638143643809
+      "grna_target": ["one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b", "one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b", "one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b"],
+      "response_id": ["gene_low", "gene_low", "gene_low", "gene_low", "gene_low", "gene_low", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_high", "gene_high", "gene_high", "gene_high", "gene_high", "gene_high"],
+      "power": [0.00035793278237183175, 0.00041119616808358959, 0.011858787290882879,                  0, 6.4526028013200202e-06, 2.8095946818067391e-05, 0.067885949879832624, 0.00799430872448793, 0.4348992911343304,                  0, 0.006423415536557525, 0.010507953814891044, 0.3767140363803303, 0.27653044446435704, 0.67491186753970434,                  0, 0.17780695837922147, 0.22603149984124798],
+      "expected_num_discoveries": 2.2723681904859183
     },
     {
       "label": "left_qc7_es15",
@@ -126,10 +126,10 @@
       "fold_change_sd":               0.13,
       "n_nonzero_trt_thresh": 7,
       "n_nonzero_cntrl_thresh": 7,
-      "grna_target": ["one_grna", "many_grnas", "large_trt", "tiny_trt", "one_grna", "many_grnas", "large_trt", "tiny_trt", "one_grna", "many_grnas", "large_trt", "tiny_trt"],
-      "response_id": ["gene_low", "gene_low", "gene_low", "gene_low", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_high", "gene_high", "gene_high", "gene_high"],
-      "power": [0.00038491219837914666, 0.00064792531085538802, 0.097192922972636389,                  0, 0.19804321263098076, 0.14462493343325847, 0.91050685268879372,                  0, 0.67103803639161619, 0.97810548348297499, 0.97660894900276629,                  0],
-      "expected_num_discoveries": 3.9771532281122615
+      "grna_target": ["one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b", "one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b", "one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b"],
+      "response_id": ["gene_low", "gene_low", "gene_low", "gene_low", "gene_low", "gene_low", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_high", "gene_high", "gene_high", "gene_high", "gene_high", "gene_high"],
+      "power": [0.00038491219837914666, 0.00064792531085538802, 0.097192922972636389,                  0, 3.4567182888618888e-06, 1.816342778918758e-05, 0.19804321263098076, 0.14462493343325847, 0.91050685268879372,                  0, 0.026255694911843812, 0.047304375918731191, 0.67103803639161619, 0.97810548348297499, 0.97660894900276629,                  0, 0.52249948613735375, 0.60375963780806985],
+      "expected_num_discoveries": 5.1769940430343375
     },
     {
       "label": "left_qc7_es50",
@@ -140,10 +140,10 @@
       "fold_change_sd":               0.13,
       "n_nonzero_trt_thresh": 7,
       "n_nonzero_cntrl_thresh": 7,
-      "grna_target": ["one_grna", "many_grnas", "large_trt", "tiny_trt", "one_grna", "many_grnas", "large_trt", "tiny_trt", "one_grna", "many_grnas", "large_trt", "tiny_trt"],
-      "response_id": ["gene_low", "gene_low", "gene_low", "gene_low", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_high", "gene_high", "gene_high", "gene_high"],
-      "power": [0.0002224881062428344, 0.0019644164201054631, 0.99248684592016034,                  0, 0.94680747265923304, 0.99999996420667858, 0.99999999998823919,                  0, 0.99911312085222592,                  1, 0.99999999999991307,                  0],
-      "expected_num_discoveries": 6.9405943081527983
+      "grna_target": ["one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b", "one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b", "one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b"],
+      "response_id": ["gene_low", "gene_low", "gene_low", "gene_low", "gene_low", "gene_low", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_high", "gene_high", "gene_high", "gene_high", "gene_high", "gene_high"],
+      "power": [0.0002224881062428344, 0.0019644164201054631, 0.99248684592016034,                  0, 8.3259610235875495e-08, 1.0592962020578047e-06, 0.94680747265923304, 0.99999996420667858, 0.99999999998823919,                  0, 0.70363413162946831, 0.86419625136535472, 0.99911312085222592,                  1, 0.99999999999991307,                  0, 0.99988815106670959, 0.99996516585474116],
+      "expected_num_discoveries": 10.508279150624885
     },
     {
       "label": "both_cis_es05",
@@ -154,10 +154,10 @@
       "fold_change_sd":               0.13,
       "n_nonzero_trt_thresh": 0,
       "n_nonzero_cntrl_thresh": 0,
-      "grna_target": ["one_grna", "many_grnas", "large_trt", "tiny_trt", "one_grna", "many_grnas", "large_trt", "tiny_trt", "one_grna", "many_grnas", "large_trt", "tiny_trt"],
-      "response_id": ["gene_low", "gene_low", "gene_low", "gene_low", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_high", "gene_high", "gene_high", "gene_high"],
-      "power": [0.0010100072409753671, 0.00059029735809873842, 0.012578848657822491, 0.00046133187491237578, 0.083642454233087971, 0.0080614226525256155, 0.48569053211748459, 0.00052987580417342703, 0.51933553128783372,  0.277357423689578, 0.81778342208536559, 0.0022488865681346759],
-      "expected_num_discoveries": 2.2092900335699928
+      "grna_target": ["one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b", "one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b", "one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b"],
+      "response_id": ["gene_low", "gene_low", "gene_low", "gene_low", "gene_low", "gene_low", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_high", "gene_high", "gene_high", "gene_high", "gene_high", "gene_high"],
+      "power": [0.0010100072409753671, 0.00059029735809873842, 0.012578848657822491, 0.00046133187491237578, 0.00056071138443696195, 0.00059728863152168268, 0.083642454233087971, 0.0080614226525256155, 0.48569053211748459, 0.00052987580417342703, 0.0072876687483711643, 0.011782698021513369, 0.51933553128783372,  0.277357423689578, 0.81778342208536559, 0.0022488865681346759, 0.20636604463645003, 0.26497285668185705],
+      "expected_num_discoveries": 2.7008573016741431
     },
     {
       "label": "both_cis_es15",
@@ -168,10 +168,10 @@
       "fold_change_sd":               0.13,
       "n_nonzero_trt_thresh": 0,
       "n_nonzero_cntrl_thresh": 0,
-      "grna_target": ["one_grna", "many_grnas", "large_trt", "tiny_trt", "one_grna", "many_grnas", "large_trt", "tiny_trt", "one_grna", "many_grnas", "large_trt", "tiny_trt"],
-      "response_id": ["gene_low", "gene_low", "gene_low", "gene_low", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_high", "gene_high", "gene_high", "gene_high"],
-      "power": [0.0010294769275383509, 0.0007891413899320679, 0.097211020073106003, 0.00020066068757211894, 0.2001172704998174, 0.14462494667563641, 0.91150969389478964, 0.00023078008125675505, 0.70475469403424595, 0.97810548596293578, 0.98159577273533283, 0.0029865366166630159],
-      "expected_num_discoveries": 4.0231554795788265
+      "grna_target": ["one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b", "one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b", "one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b"],
+      "response_id": ["gene_low", "gene_low", "gene_low", "gene_low", "gene_low", "gene_low", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_high", "gene_high", "gene_high", "gene_high", "gene_high", "gene_high"],
+      "power": [0.0010294769275383509, 0.0007891413899320679, 0.097211020073106003, 0.00020066068757211894, 0.00036962415264687716, 0.00044209215316927191, 0.2001172704998174, 0.14462494667563641, 0.91150969389478964, 0.00023078008125675505, 0.026290561122714169, 0.047352336646952806, 0.70475469403424595, 0.97810548596293578, 0.98159577273533283, 0.0029865366166630159, 0.52422529414585961, 0.60626190630830568],
+      "expected_num_discoveries": 5.2280972941084753
     },
     {
       "label": "both_cis_es50",
@@ -182,10 +182,10 @@
       "fold_change_sd":               0.13,
       "n_nonzero_trt_thresh": 0,
       "n_nonzero_cntrl_thresh": 0,
-      "grna_target": ["one_grna", "many_grnas", "large_trt", "tiny_trt", "one_grna", "many_grnas", "large_trt", "tiny_trt", "one_grna", "many_grnas", "large_trt", "tiny_trt"],
-      "response_id": ["gene_low", "gene_low", "gene_low", "gene_low", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_high", "gene_high", "gene_high", "gene_high"],
-      "power": [0.0030434940278178161, 0.0056949240095769578, 0.99248684592016445, 1.2262931660364101e-06, 0.94680748551478056, 0.99999996420667858, 0.9999999999882393, 8.0409316940642444e-06, 0.99911622550516066,                  1, 0.99999999999991485, 0.035360866551723887],
-      "expected_num_discoveries": 6.9825190729489162
+      "grna_target": ["one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b", "one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b", "one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b"],
+      "response_id": ["gene_low", "gene_low", "gene_low", "gene_low", "gene_low", "gene_low", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_high", "gene_high", "gene_high", "gene_high", "gene_high", "gene_high"],
+      "power": [0.0030434940278178161, 0.0056949240095769578, 0.99248684592016445, 1.2262931660364101e-06, 0.0001269854413491584, 0.00028844423614271823, 0.94680748551478056, 0.99999996420667858, 0.9999999999882393, 8.0409316940642444e-06, 0.70363413162947763, 0.86419625136536515, 0.99911622550516066,                  1, 0.99999999999991485, 0.035360866551723887, 0.99988815107877649, 0.99996516587516593],
+      "expected_num_discoveries": 10.550618202575194
     },
     {
       "label": "both_qc7_es05",
@@ -196,10 +196,10 @@
       "fold_change_sd":               0.13,
       "n_nonzero_trt_thresh": 7,
       "n_nonzero_cntrl_thresh": 7,
-      "grna_target": ["one_grna", "many_grnas", "large_trt", "tiny_trt", "one_grna", "many_grnas", "large_trt", "tiny_trt", "one_grna", "many_grnas", "large_trt", "tiny_trt"],
-      "response_id": ["gene_low", "gene_low", "gene_low", "gene_low", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_high", "gene_high", "gene_high", "gene_high"],
-      "power": [0.0005044262609950951, 0.00053187423609481145, 0.012578848657822491,                  0, 0.083642454233087971, 0.0080614226525256155, 0.48569053211748459,                  0, 0.51933553128783372,  0.277357423689578, 0.81778342208536559,                  0],
-      "expected_num_discoveries": 2.2054859352207878
+      "grna_target": ["one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b", "one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b", "one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b"],
+      "response_id": ["gene_low", "gene_low", "gene_low", "gene_low", "gene_low", "gene_low", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_high", "gene_high", "gene_high", "gene_high", "gene_high", "gene_high"],
+      "power": [0.0005044262609950951, 0.00053187423609481145, 0.012578848657822491,                  0, 9.9386716136853967e-06, 4.1913921180474277e-05, 0.083642454233087971, 0.0080614226525256155, 0.48569053211748459,                  0, 0.0072876687483711643, 0.011782698021513369, 0.51933553128783372,  0.277357423689578, 0.81778342208536559,                  0, 0.20636604463645003, 0.26497285668185705],
+      "expected_num_discoveries": 2.6959470559017737
     },
     {
       "label": "both_qc7_es15",
@@ -210,10 +210,10 @@
       "fold_change_sd":               0.13,
       "n_nonzero_trt_thresh": 7,
       "n_nonzero_cntrl_thresh": 7,
-      "grna_target": ["one_grna", "many_grnas", "large_trt", "tiny_trt", "one_grna", "many_grnas", "large_trt", "tiny_trt", "one_grna", "many_grnas", "large_trt", "tiny_trt"],
-      "response_id": ["gene_low", "gene_low", "gene_low", "gene_low", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_high", "gene_high", "gene_high", "gene_high"],
-      "power": [0.00040484422166134473, 0.00065860267534750827, 0.097211020073106003,                  0, 0.2001172704998174, 0.14462494667563641, 0.91150969389478964,                  0, 0.70475469403424595, 0.97810548596293578, 0.98159577273533283,                  0],
-      "expected_num_discoveries": 4.0189823307728734
+      "grna_target": ["one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b", "one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b", "one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b"],
+      "response_id": ["gene_low", "gene_low", "gene_low", "gene_low", "gene_low", "gene_low", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_high", "gene_high", "gene_high", "gene_high", "gene_high", "gene_high"],
+      "power": [0.00040484422166134473, 0.00065860267534750827, 0.097211020073106003,                  0, 3.8956020175827752e-06, 1.9851408741681672e-05, 0.2001172704998174, 0.14462494667563641, 0.91150969389478964,                  0, 0.026290561122714169, 0.047352336646952806, 0.70475469403424595, 0.97810548596293578, 0.98159577273533283,                  0, 0.52422529414585961, 0.60626190630830568],
+      "expected_num_discoveries": 5.2231361760074639
     },
     {
       "label": "both_qc7_es50",
@@ -224,10 +224,10 @@
       "fold_change_sd":               0.13,
       "n_nonzero_trt_thresh": 7,
       "n_nonzero_cntrl_thresh": 7,
-      "grna_target": ["one_grna", "many_grnas", "large_trt", "tiny_trt", "one_grna", "many_grnas", "large_trt", "tiny_trt", "one_grna", "many_grnas", "large_trt", "tiny_trt"],
-      "response_id": ["gene_low", "gene_low", "gene_low", "gene_low", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_high", "gene_high", "gene_high", "gene_high"],
-      "power": [0.00022248814977522764, 0.0019644164203305426, 0.99248684592016445,                  0, 0.94680748551478056, 0.99999996420667858, 0.9999999999882393,                  0, 0.99911622550516066,                  1, 0.99999999999991485,                  0],
-      "expected_num_discoveries":  6.940597425705044
+      "grna_target": ["one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b", "one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b", "one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b"],
+      "response_id": ["gene_low", "gene_low", "gene_low", "gene_low", "gene_low", "gene_low", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_high", "gene_high", "gene_high", "gene_high", "gene_high", "gene_high"],
+      "power": [0.00022248814977522764, 0.0019644164203305426, 0.99248684592016445,                  0, 8.3260414633709406e-08, 1.0592981759288134e-06, 0.94680748551478056, 0.99999996420667858, 0.9999999999882393,                  0, 0.70363413162947719, 0.86419625136536515, 0.99911622550516066,                  1, 0.99999999999991485,                  0, 0.99988815107877649, 0.99996516587516593],
+      "expected_num_discoveries": 10.508282268212419
     },
     {
       "label": "right_cis_es05",
@@ -238,10 +238,10 @@
       "fold_change_sd":               0.13,
       "n_nonzero_trt_thresh": 0,
       "n_nonzero_cntrl_thresh": 0,
-      "grna_target": ["one_grna", "many_grnas", "large_trt", "tiny_trt", "one_grna", "many_grnas", "large_trt", "tiny_trt", "one_grna", "many_grnas", "large_trt", "tiny_trt"],
-      "response_id": ["gene_low", "gene_low", "gene_low", "gene_low", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_high", "gene_high", "gene_high", "gene_high"],
-      "power": [0.00057816165213480535, 0.00028369165910055401, 0.001216028077715207, 0.00045312712566930802, 0.02032737399768943, 0.00013547488600984, 0.05636425206805299, 0.00041107431047603186, 0.15166396587507092, 0.0011830513287570891, 0.1468454301918283, 0.00091546470816843617],
-      "expected_num_discoveries": 0.38037709588067292
+      "grna_target": ["one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b", "one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b", "one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b"],
+      "response_id": ["gene_low", "gene_low", "gene_low", "gene_low", "gene_low", "gene_low", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_high", "gene_high", "gene_high", "gene_high", "gene_high", "gene_high"],
+      "power": [0.00057816165213480535, 0.00028369165910055401, 0.001216028077715207, 0.00045312712566930802, 0.00040732019052477588, 0.00040667805292204993, 0.02032737399768943, 0.00013547488600984, 0.05636425206805299, 0.00041107431047603186, 0.001471803228916972, 0.0020779151031016675, 0.15166396587507092, 0.0011830513287570891, 0.1468454301918283, 0.00091546470816843617, 0.034220206230604649, 0.04535773055794047],
+      "expected_num_discoveries": 0.46431874924468353
     },
     {
       "label": "right_cis_es15",
@@ -252,10 +252,10 @@
       "fold_change_sd":               0.13,
       "n_nonzero_trt_thresh": 0,
       "n_nonzero_cntrl_thresh": 0,
-      "grna_target": ["one_grna", "many_grnas", "large_trt", "tiny_trt", "one_grna", "many_grnas", "large_trt", "tiny_trt", "one_grna", "many_grnas", "large_trt", "tiny_trt"],
-      "response_id": ["gene_low", "gene_low", "gene_low", "gene_low", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_high", "gene_high", "gene_high", "gene_high"],
-      "power": [0.00011264304198756848, 3.1670307880337876e-05, 3.5002319623571989e-05, 0.00018753491941285997, 0.0028803765470193166, 3.8288244109493054e-08, 0.0011837215814532948, 7.8760693695459837e-05, 0.036776009752651356, 4.7447991350614582e-09, 0.0052333177311867539, 8.0359162777101308e-05],
-      "expected_num_discoveries": 0.04659943909073086
+      "grna_target": ["one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b", "one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b", "one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b"],
+      "response_id": ["gene_low", "gene_low", "gene_low", "gene_low", "gene_low", "gene_low", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_high", "gene_high", "gene_high", "gene_high", "gene_high", "gene_high"],
+      "power": [0.00011264304198756848, 3.1670307880337876e-05, 3.5002319623571989e-05, 0.00018753491941285997, 9.7228826886341555e-05, 8.7867459994095648e-05, 0.0028803765470193166, 3.8288244109493054e-08, 0.0011837215814532948, 7.8760693695459837e-05, 6.9741823670117797e-05, 9.1157305221734112e-05, 0.036776009752651356, 4.7447991350614582e-09, 0.0052333177311867539, 8.0359162777101308e-05, 0.0022354871014938714, 0.0031241331284978676],
+      "expected_num_discoveries": 0.05230505473649489
     },
     {
       "label": "right_cis_es50",
@@ -266,10 +266,10 @@
       "fold_change_sd":               0.13,
       "n_nonzero_trt_thresh": 0,
       "n_nonzero_cntrl_thresh": 0,
-      "grna_target": ["one_grna", "many_grnas", "large_trt", "tiny_trt", "one_grna", "many_grnas", "large_trt", "tiny_trt", "one_grna", "many_grnas", "large_trt", "tiny_trt"],
-      "response_id": ["gene_low", "gene_low", "gene_low", "gene_low", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_high", "gene_high", "gene_high", "gene_high"],
-      "power": [2.759915719611827e-09, 4.5429484833950694e-12, 1.3477865119528347e-14, 5.7163455496344677e-07, 2.4344286678460799e-08, 2.910043390186641e-42, 1.3945011536461063e-16, 3.7699413357880126e-10, 3.7402387112106272e-06, 1.0362860381212154e-58, 2.0443275580194135e-15, 1.3047214818604754e-12],
-      "expected_num_discoveries": 4.3393603260373336e-06
+      "grna_target": ["one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b", "one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b", "one_grna", "many_grnas", "large_trt", "tiny_trt", "shared_a", "shared_b"],
+      "response_id": ["gene_low", "gene_low", "gene_low", "gene_low", "gene_low", "gene_low", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_mid", "gene_high", "gene_high", "gene_high", "gene_high", "gene_high", "gene_high"],
+      "power": [2.759915719611827e-09, 4.5429484833950694e-12, 1.3477865119528347e-14, 5.7163455496344677e-07, 6.3123713993669974e-09, 2.8255767239622753e-09, 2.4344286678460799e-08, 2.910043390186641e-42, 1.3945011536461063e-16, 3.7699413357880126e-10, 4.2040633899200479e-14, 4.3677597910039615e-14, 3.7402387112106272e-06, 1.0362860381212154e-58, 2.0443275580194135e-15, 1.3047214818604754e-12, 2.1459707266908205e-11, 3.3682033537184536e-11],
+      "expected_num_discoveries": 4.3485535016196986e-06
     }
   ]
 }

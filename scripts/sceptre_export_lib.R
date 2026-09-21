@@ -44,7 +44,7 @@ qc_passing_pairs <- function(so) {
 # shift in size factor and 0.36 % in normalised gene mean (max 3.0 %). WattEG's R implementation
 # computes them over every cell, so reproducing it needs every cell. The loader subsets back to
 # `cells_in_use` by default, so an analysis reads an `all_cells` file exactly as it reads any other.
-export_sceptre_object <- function(so, out_dir, all_genes = FALSE, all_cells = FALSE,
+export_sceptre_object <- function(so, out_dir, all_genes = TRUE, all_cells = TRUE,
                                   source_label = "<in-memory>") {
   dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
   cells_in_use <- so@cells_in_use
