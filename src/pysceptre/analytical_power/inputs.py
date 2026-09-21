@@ -15,9 +15,25 @@ plausible numbers, which is why each says what it is reproducing.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Protocol
+
 import numpy as np
 import pandas as pd
 from scipy import sparse
+
+
+class GeneFit(Protocol):
+    """The two attributes a per-gene fit has to expose.
+
+    `discovery.py::GenePrecomputation` satisfies this, so a completed analysis
+    can be passed straight in. Stated as a protocol rather than imported so
+    this module stays independent of the pipeline.
+    """
+
+    fitted_coefs: np.ndarray
+    theta: float
+
 
 __all__ = [
     "bh_nominal_cutoff",
@@ -285,7 +301,7 @@ def bh_nominal_cutoff(p_values: np.ndarray, alpha: float) -> float:
 
 def baseline_expression_stats_from_fits(
     covariate_matrix: np.ndarray,
-    gene_fits,
+    gene_fits: Mapping[str, GeneFit],
     *,
     gene_subset: list[str] | None = None,
 ) -> pd.DataFrame:
