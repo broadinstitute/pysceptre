@@ -252,7 +252,23 @@ def stack_pieces(a: np.ndarray, w: np.ndarray, D: np.ndarray) -> np.ndarray:
     single matmul produce all of them. Built once per *gene* and reused across
     that gene's targets.
     """
-    return np.column_stack([a, w, D.T])
+    # **Built C-contiguous, deliberately.** `np.column_stack([a, w, D.T])`
+    # inherits Fortran order from `D.T` (D is `(p, n)` and C-ordered, so its
+    # transpose is F-ordered), and scipy's sparse matmul calls `.ravel()` on
+    # this operand: free on a C-contiguous array, a full 59 MB copy on an
+    # F-contiguous one. Measured 5.18 ms against 0.0003 ms at day0's shape,
+    # paid roughly twice per pair -- 122.5 s, 15% of a serial CRT run, spent
+    # re-copying an array that never changes.
+    #
+    # Filling a preallocated C-ordered buffer rather than wrapping the
+    # `column_stack` in `ascontiguousarray`, which would allocate it twice.
+    # Values are identical either way: `ravel()` was already handing scipy
+    # C-ordered data, so this changes the layout and nothing else.
+    out = np.empty((a.shape[0], D.shape[0] + 2), dtype=np.float64)
+    out[:, 0] = a
+    out[:, 1] = w
+    out[:, 2:] = D.T
+    return out
 
 
 def compute_null_statistics_from_draws(stacked: np.ndarray, draws: sparse.csr_matrix) -> np.ndarray:

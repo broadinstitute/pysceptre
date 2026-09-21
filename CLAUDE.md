@@ -104,12 +104,34 @@ Python 3.10+ (`requires-python`). Verified passing on 3.10, 3.11, 3.12, 3.13.
   `rainbow`. Nothing in the repo plots yet — this applies to whatever
   does first.
 
-- Docstrings here carry the *why* of each port decision (what R does, why the
-  Python differs, what was measured). Preserve that when editing — it is the
-  main defense against someone "simplifying" a deliberate choice.
+- **Docstrings describe the function. Comments stay short. Rationale lives
+  in the docs.** A docstring says what something does, what it takes and
+  returns, and what a caller must honour. Design decisions, what R does, why
+  this differs and what was measured belong in the documentation (ROADMAP
+  T3.5), with the published narrative in `paper/`.
 
-## Gotchas (non-obvious)
+  Source should read as code, not as a memoir. Where a choice looks
+  arbitrary or invites "simplification", leave a **one-line pointer** to the
+  relevant section rather than the argument itself — enough to say a reason
+  exists and where it is. `threadpool_limits` looks pointless until
+  something tells you where to read why it is not.
 
+  **The decisive reason is that a measurement is not a property of the
+  code.** Run the same unchanged function on another backend, machine or
+  dataset and its numbers are wrong, so keeping them in source forces a
+  commit that touches the function without changing it. `git blame` and
+  `git log -p` on that function then answer "when did this last change?"
+  with a list of prose edits. `parallel_backend` is the worked example: its
+  behaviour was untouched for months while its docstring asserted "1.85x
+  with threads, 3.54x with processes", which a later measurement on the same
+  code reversed for one mechanism.
+
+  It also matters ahead of the API reference, which renders docstrings: a
+  measured figure there becomes a published claim, machine- and
+  dataset-specific, and stale the moment anything moves.
+
+  Existing docstrings and comments do not follow this; migrating them is
+  ROADMAP T3.6, a module at a time.
 - **GPL-3.0-only is inherited, not chosen** — upstream `sceptre` is `GPL-3`,
   which in R packaging means version 3 exactly. Don't "modernize" it to
   `-or-later`: that grants more than was received. The SPDX expression is

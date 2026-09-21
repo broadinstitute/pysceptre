@@ -220,3 +220,98 @@ def test_n_jobs_one_really_means_one_thread():
         ) as pool:
             run_discovery_analysis(n_jobs=2, **kwargs)
             assert pool.called, "n_jobs=2 did not prefetch"
+
+
+def test_concurrent_target_preparation_does_not_share_state():
+    """`fit_all_targets` runs several at once, so its state cannot be a slot.
+
+    Chunks of target state are prepared `_PREFETCH_DEPTH` ahead, so several
+    `fit_all_targets` calls are in flight together. Its inputs live in a
+    module global -- so that a forked child inherits them without copying --
+    and with a single shared slot one call's `finally: clear()` deleted
+    another's inputs mid-flight. That surfaced on day0 as
+    `KeyError: 'chr2:201746583-201746884'`, and the existing suite missed it
+    entirely: the race needs real overlap, and these fixtures are too small
+    and too fast to collide by chance.
+
+    So this drives the collision directly rather than hoping for it, and
+    requires concurrent results to equal sequential ones.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    rng = np.random.default_rng(0)
+    n_cells = 800
+    X = np.column_stack([np.ones(n_cells), rng.normal(size=(n_cells, 2))])
+    groups = [
+        {f"c{c}t{j}": np.sort(rng.choice(n_cells, 60, replace=False)) for j in range(4)}
+        for c in range(6)
+    ]
+
+    def prep(cells):
+        return discovery.fit_all_targets(cells, X, B1=20, B2=20, B3=0, seed=0, n_jobs=1)
+
+    expected = [prep(g) for g in groups]
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        got = list(ex.map(prep, groups))
+
+    for want, have in zip(expected, got, strict=True):
+        assert set(want) == set(have)
+        for tid in want:
+            np.testing.assert_array_equal(want[tid].trt_idxs, have[tid].trt_idxs)
+            np.testing.assert_allclose(
+                want[tid].fitted_probabilities, have[tid].fitted_probabilities, rtol=0, atol=0
+            )
+    assert not discovery._TARGET_STATE, "per-call state leaked after the run"
+
+
+def test_backend_override_is_honoured_but_cannot_make_fork_safe_on_macos():
+    """`PYSCEPTRE_BACKEND` exists so the choice can be re-measured.
+
+    The evidence for processes on Linux -- 1.85x threads against 3.54x
+    processes -- was taken against a gather that no longer exists: the
+    statistic is a sparse matmul now, and permutations reach it through a
+    prefix scan, both of which release the GIL where the gather did not. A
+    settled default nobody can re-test is a default that stays wrong.
+
+    The override must not, however, be able to select `fork` off Linux: that
+    restriction is about deadlocking after Accelerate, not performance.
+    """
+    import os
+
+    with mock.patch.dict(os.environ, {"PYSCEPTRE_BACKEND": "thread"}):
+        assert discovery.parallel_backend() == "thread"
+
+    with mock.patch.dict(os.environ, {"PYSCEPTRE_BACKEND": "nonsense"}):
+        assert discovery.parallel_backend() in ("fork", "thread")  # falls back
+
+    with mock.patch.dict(os.environ, {"PYSCEPTRE_BACKEND": "fork"}):
+        if sys.platform.startswith("linux"):
+            assert discovery.parallel_backend() == "fork"
+        else:
+            with pytest.warns(UserWarning, match="only used on Linux"):
+                assert discovery.parallel_backend() == "thread"
+
+
+def test_gene_pool_uses_threads_when_there_are_many_chunks():
+    """The backend follows the chunk count, because the cost does.
+
+    A worker pool is built per chunk. Permutations run as one chunk and pay
+    that once, so processes win there -- measured 70.3 s against threads'
+    143.8 s, which are GIL-bound on that path. The CRT has 217 chunks at the
+    default budget, so fork cost dominates and threads win: 601.9 s and
+    6.93 GB against 679.7 s and 9.46 GB.
+
+    Only those two points are measured, so the threshold sits in the gap
+    between them rather than being fitted to either.
+    """
+    with mock.patch.object(discovery, "parallel_backend", return_value="fork"):
+        assert discovery.gene_job_backend(1) is None  # permutations: keep fork
+        assert discovery.gene_job_backend(217) == "thread"  # CRT: avoid 217 forks
+        assert discovery.gene_job_backend(discovery._THREAD_ABOVE_N_CHUNKS) is None
+        assert discovery.gene_job_backend(discovery._THREAD_ABOVE_N_CHUNKS + 1) == "thread"
+
+    # Where the platform already uses threads there is nothing to choose, and
+    # the function must not pretend otherwise.
+    with mock.patch.object(discovery, "parallel_backend", return_value="thread"):
+        assert discovery.gene_job_backend(1) is None
+        assert discovery.gene_job_backend(217) is None

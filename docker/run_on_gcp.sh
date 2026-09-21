@@ -83,7 +83,10 @@ run)
     cd /mnt/work/pysceptre
     mkdir -p /mnt/work/data /mnt/work/out
     cp COMMIT /mnt/work/out/COMMIT
-    sudo docker build -f docker/Dockerfile -t pysceptre-bench .
+    sudo docker pull polumechanos/pysceptre-bench || echo 'no cached image; building cold'
+    DOCKER_BUILDKIT=1 sudo docker build -f docker/Dockerfile \
+      --cache-from polumechanos/pysceptre-bench --build-arg BUILDKIT_INLINE_CACHE=1 \
+      -t pysceptre-bench .
     sudo docker run --rm pysceptre-bench cat /src/ENVIRONMENT.txt > /mnt/work/out/ENVIRONMENT.txt
     # --cpus=1 makes single-core a cgroup guarantee, not an assumption.
     for step in $STEPS; do

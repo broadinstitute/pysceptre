@@ -38,6 +38,23 @@ step <- args[[1]]; data_dir <- args[[2]]; out_dir <- args[[3]]
 dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
 
 say <- function(...) { cat(format(Sys.time(), "%H:%M:%S"), "|", ..., "\n"); flush.console() }
+
+# sceptre's own parallelism, off by default so a run is single-core unless
+# asked otherwise. Set N_PROCESSORS to a number to turn it on: the matrix
+# comparison needs R measured at the same core counts as pysceptre, and
+# hardcoding `parallel = FALSE` made that impossible.
+N_PROC <- suppressWarnings(as.integer(Sys.getenv("N_PROCESSORS", "1")))
+if (is.na(N_PROC) || N_PROC < 1L) N_PROC <- 1L
+PARALLEL <- N_PROC > 1L
+say("sceptre parallel =", PARALLEL, "| n_processors =", N_PROC)
+
+# sceptre validates `n_processors` as 'auto' or an integer >= 2, and rejects
+# it outright even when `parallel = FALSE`. So the argument has to be omitted
+# for a single-core run rather than passed as 1 -- passing it killed the
+# first attempt at both single-core R cells at input validation.
+sceptre_call <- function(f, so) {
+  if (PARALLEL) f(so, parallel = TRUE, n_processors = N_PROC) else f(so, parallel = FALSE)
+}
 postqc_fp <- file.path(out_dir, "so_postqc_crt.rds")
 
 #' Record wall and CPU time for one step as JSON. Peak RSS is captured
@@ -136,7 +153,7 @@ if (step == "prepare") {
   so <- readRDS(postqc_fp)
 
   if (step == "discovery") {
-    so <- timed("discovery", sceptre::run_discovery_analysis(so, parallel = FALSE))
+    so <- timed("discovery", sceptre_call(sceptre::run_discovery_analysis, so))
     result <- so@discovery_result
   } else if (step == "discovery_perm") {
     # The same analysis with sceptre's other high-MOI resampling mechanism.
@@ -162,13 +179,13 @@ if (step == "prepare") {
     say("B1/B2/B3 =", so@B1, "/", so@B2, "/", so@B3,
         "| permutations =", so@run_permutations,
         "| ok pairs =", so@n_ok_discovery_pairs)
-    so <- timed("discovery_perm", sceptre::run_discovery_analysis(so, parallel = FALSE))
+    so <- timed("discovery_perm", sceptre_call(sceptre::run_discovery_analysis, so))
     result <- so@discovery_result
   } else if (step == "calibration") {
-    so <- timed("calibration", sceptre::run_calibration_check(so, parallel = FALSE))
+    so <- timed("calibration", sceptre_call(sceptre::run_calibration_check, so))
     result <- so@calibration_result
   } else if (step == "power") {
-    so <- timed("power", sceptre::run_power_check(so, parallel = FALSE))
+    so <- timed("power", sceptre_call(sceptre::run_power_check, so))
     result <- so@power_result
   } else {
     stop(sprintf("unknown step: %s", step), call. = FALSE)

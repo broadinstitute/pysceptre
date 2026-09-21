@@ -349,35 +349,34 @@ number actually busy.
 
 | `resampling_mechanism` | `n_jobs` | wall | peak RSS | cores |
 |---|---|---|---|---|
-| `"crt"` (default) | 2 | 403.6 s | 4.87 GB | 2.55 |
-| | 4 | **324.1 s** | 5.23 GB | 3.43 |
-| | 8 | 309.8 s | 5.80 GB | 3.90 |
-| `"permutations"` | 4 | 48.2 s | 4.55 GB | 3.81 |
-| | 8 | **31.8 s** | 6.12 GB | 6.62 |
+| `"crt"` (default) | 1 | 555.6 s | 3.63 GB | 1.09 |
+| | 4 | 165.3 s | 6.20 GB | 5.00 |
+| | 8 | **138.2 s** | 6.81 GB | 6.74 |
+| `"permutations"` | 1 | 125.3 s | 3.47 GB | 1.06 |
+| | 8 | **30.8 s** | 5.85 GB | 6.53 |
 
-**For the CRT, four workers is the sweet spot.** Going from 4 to 8 buys 4.4%
-while doubling the machine, and occupancy never passes 3.90 however many
-workers you grant -- the path cannot fill a large box, because its limit is
-memory bandwidth in the per-gene working set rather than cores. If you are
-billed per core-hour, 4 costs about half of 8 for the same finish, and 2 is
-cheaper still if an extra 30% of wall time is acceptable. Memory is not the
-constraint at any of these sizes: the CRT peaks at 5.8 GB, well inside what
-a 4-vCPU cloud instance ships with.
+**Both mechanisms now use a large machine, so give them one.** The CRT
+reaches 6.74 of 8 cores and gains 1.20x from four workers to eight;
+permutations reach 6.53 and 30.8 s. Neither is memory-constrained at these
+sizes -- the largest peak here is 6.8 GB, inside what a 4-vCPU cloud
+instance ships with, and cloud machine types bundle memory with cores
+anyway, so asking for fewer cores buys less memory rather than a cheaper
+machine at the same memory.
 
-**Permutations do use a big machine, so give them one.** They reach 6.62 of
-8 cores and scale 1.52x from four workers to eight, 48.2 s to 31.8 s. The
-extra 1.6 GB of peak is not a reason to prefer four: cloud machine types
-bundle memory with cores -- a GCP `n2-standard-4` is 16 GB against
-`n2-standard-8`'s 32 GB -- so asking for fewer cores gives you *less*
-memory, not a saving to bank. Both configurations fit either machine with
-room to spare, which leaves the 1.52x as the only difference that counts.
+*This guidance changed.* The CRT used to cap near 3.90 cores with four
+workers within 4.4% of eight, because its per-chunk logistic fit ran on one
+thread and nothing else could proceed past it. Chunks are now prepared
+several deep, so several fits run concurrently, and the ceiling moved. If
+you tuned `n_jobs` down for the CRT on the old advice, undo it.
 
-**Memory rises with workers, not with `chunk_memory_gb`.** Each worker holds
-one gene's working arrays, so peak tracks `n_jobs`; the chunk budget is a
-weaker lever than it looks. Raising it from 1 GB to 8 GB buys 13% on the CRT
-for 2.3x the memory, and past that it gets *slower* -- 16 GB ran 369 s
-against 8 GB's 353 s. Leave it alone unless you have measured otherwise on
-your own data. Results are identical at every setting either way.
+**Memory rises with workers and with pipeline depth, not with
+`chunk_memory_gb`.** Each worker holds one gene's working arrays and the
+pipeline holds `_PREFETCH_DEPTH` chunks of draws, so peak tracks those two;
+the chunk budget is a weaker lever than it looks. Raising it from 1 GB to
+8 GB buys 13% on the CRT for 2.3x the memory, and past that it gets
+*slower* -- 16 GB ran 369 s against 8 GB's 353 s. Leave it alone unless you
+have measured otherwise on your own data. Results are identical at every
+setting either way.
 
 ## Validation
 

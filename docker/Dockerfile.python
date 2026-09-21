@@ -1,0 +1,50 @@
+# Python-only environment for pysceptre benchmarking.
+#
+# The full image (docker/Dockerfile) exists to run *both* implementations, and
+# almost all of its build time is R: `rocker/r-ver` plus compiling sceptre and
+# ondisc from GitHub, about 25 minutes cold. When a run only needs pysceptre
+# -- which is every optimisation experiment -- that is paid for nothing. This
+# builds in roughly two minutes.
+#
+# **Measurements stay comparable to the full image.** numpy's wheels bundle
+# their own OpenBLAS (`numpy.libs/libscipy_openblas64_*.so`), which is what
+# `threadpool_info()` reports in the full image too -- the system
+# `libopenblas-dev` there is for R, not for numpy. So dropping R does not
+# change the BLAS pysceptre runs against, and the thread pinning below is
+# identical.
+#
+# Build:  docker build -f docker/Dockerfile.python -t pysceptre-py .
+FROM python:3.12-slim-bookworm
+
+# Pinned rather than left to the runtime: an unpinned OpenBLAS would quietly
+# use every core it can see, which would make a `--cpus=1` cell a lie.
+ENV OPENBLAS_NUM_THREADS=1 \
+    OMP_NUM_THREADS=1 \
+    MKL_NUM_THREADS=1 \
+    NUMBA_NUM_THREADS=1 \
+    DEBIAN_FRONTEND=noninteractive \
+    PIP_NO_CACHE_DIR=1
+
+# `time` for peak-RSS accounting; the rest of the stack installs from wheels.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates time \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml README.md /src/
+COPY src /src/src
+RUN pip install --upgrade pip setuptools wheel \
+ && pip install -e "/src[dev,fast,io]"
+
+COPY scripts /src/scripts
+WORKDIR /src
+
+# Recorded at build time so a result can be traced to the environment that
+# produced it, matching the full image's ENVIRONMENT.txt.
+RUN { echo "# environment recorded at image build (python-only)"; \
+      python -c "import sys, numpy, threadpoolctl; \
+print('python', sys.version.split()[0]); \
+print('numpy', numpy.__version__); \
+[print('blas', p['internal_api'], p['num_threads'], p['filepath'].split('/')[-1]) for p in threadpoolctl.threadpool_info()]"; \
+    } > /src/ENVIRONMENT.txt 2>&1 || true
+
+CMD ["bash"]

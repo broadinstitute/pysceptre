@@ -267,7 +267,62 @@ Apple silicon laptop with 39 GB.
   float64 `.bin` blobs with `.txt` sidecars for labels, which carries no dtype,
   shape, or column metadata. Zarr for the matrices, parquet for the tabular
   files.
-- Docs site deferred: `README.md` is ~240 lines and still readable.
+- **T3.5 Docs site on GitHub Pages, built by Actions.**
+
+  Documentation of the *software*. `paper/` is manuscript material and
+  `CLAUDE.md` is contributor instructions -- neither is documentation, so
+  neither is in scope, and both should be excluded by an explicit list
+  rather than by a glob that happens not to reach them today.
+
+  Pages:
+
+  - **Home** -- what it is, and the one-paragraph version of why it exists.
+  - **Installation** -- the `uv` and `pip` paths, the `fast` and `io` extras
+    and what each buys, and the Python versions actually tested.
+  - **User guide** -- `run_discovery_analysis` end to end on a small example,
+    the calibration and power checks, and how to read the result frame.
+    Largely a lift of `README.md`, which stays the canonical source.
+  - **Tutorials** -- placeholder to begin with. `TUTORIAL.md` is the seed;
+    the obvious additions are a real screen end to end and the
+    scanpy/MuData interop path.
+  - **API reference** -- generated from docstrings, and the part worth
+    building. They carry the *why* of each port decision: what R does, why
+    this differs, what was measured. That is exactly what a user cannot get
+    from a signature and can currently only reach by reading source.
+  - **Scope and limitations** -- lifted from `README.md`, because the fastest
+    way to mislead someone is to let them assume the unimplemented paths
+    work.
+
+  `mkdocs-material` with `mkdocstrings[python]`. Deploy with
+  `actions/deploy-pages` on push to `main`, in a workflow separate from
+  `ci.yml` so a docs failure never blocks a merge.
+
+  Two project rules that reach the site:
+
+  - Publishing docstrings publishes their measured numbers, so "docs
+    accuracy is a hard rule" starts applying to the site, and a stale figure
+    becomes a public claim rather than an internal note.
+  - `[tool.ruff.format]` excludes `*.md` because formatting rewrites the
+    hand-aligned snippets in `README.md` and `TUTORIAL.md`. The docs
+    pipeline must render markdown, never rewrite it.
+
+  Until then `README.md` remains the reference and is still readable at
+  ~240 lines.
+
+- **T3.6 Move design rationale out of the source and into the docs.**
+  Docstrings describe the function; the reasoning and the measurements go to
+  the documentation, with a one-line pointer left in the code wherever a
+  choice would otherwise look arbitrary. Source should read as code.
+
+  Ahead of T3.5 because the API reference renders docstrings, so a measured
+  figure there becomes a published, machine-specific claim that goes stale
+  silently.
+
+  Needs a home in the docs for design decisions with stable anchors, so the
+  pointers have somewhere to point. A module at a time, not a sweep:
+  `glm/irls.py`, `test_statistic/score_stat.py` and `pipeline/discovery.py`
+  carry the most, and each move should check the pointer still lands where
+  the reasoning went.
 
 ## Tier 5 — exploratory (low priority)
 

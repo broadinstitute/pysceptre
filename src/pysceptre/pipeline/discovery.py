@@ -18,9 +18,11 @@ per-gene loop; likewise all targets share it for the logistic fit.
 from __future__ import annotations
 
 import hashlib
+import itertools
 import os
 import sys
 import warnings
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import partial
@@ -504,17 +506,23 @@ def resolve_entropy(seed) -> int:
     return np.random.SeedSequence(seed).entropy
 
 
-_TARGET_STATE: dict = {}
+# Keyed by a per-call token, not a single shared slot. `fit_all_targets` runs
+# concurrently now -- `_PREFETCH_DEPTH` chunks are prepared at once -- and a
+# single slot meant one call's `finally: clear()` deleted another's inputs
+# mid-flight, which surfaced as `KeyError` on a target id. The dict still
+# lives at module scope so a forked child inherits it without copying.
+_TARGET_STATE: dict[int, dict] = {}
+_TARGET_STATE_SEQ = itertools.count()
 
 
-def _target_draw_job(job: tuple[int, str]) -> tuple[str, TargetPrecomputation]:
+def _target_draw_job(job: tuple[int, int, str]) -> tuple[str, TargetPrecomputation]:
     """One target's resamples.
 
     Independent of every other target: the CRT seeds from the target's own
     name, and permutations read a prefix of one shared array.
     """
-    k, target_id = job
-    st = _TARGET_STATE
+    token, k, target_id = job
+    st = _TARGET_STATE[token]
     fitted_values = st["fitted_values"]
     perms = st["permutations"]
     fitted_probabilities = None if fitted_values is None else fitted_values[k]
@@ -601,7 +609,8 @@ def fit_all_targets(
     # gather in the per-pair statistic does not. Measured on 16 day0 targets:
     # 1.98x at 2 threads, 2.90x at 4, and 2.40x at 8 -- the turnover is
     # allocation and bandwidth contention on those 33 MB buffers.
-    _TARGET_STATE.update(
+    token = next(_TARGET_STATE_SEQ)
+    _TARGET_STATE[token] = dict(
         permutations=permutations,
         fitted_values=fitted_values,
         grna_target_cells=grna_target_cells,
@@ -612,15 +621,50 @@ def fit_all_targets(
     out: dict[str, TargetPrecomputation] = {}
     try:
         for target_id, precomp in _map_jobs(
-            _target_draw_job, list(enumerate(target_ids)), n_jobs, backend="thread"
+            _target_draw_job,
+            [(token, k, t) for k, t in enumerate(target_ids)],
+            n_jobs,
+            backend="thread",
         ):
             out[target_id] = precomp
     finally:
-        _TARGET_STATE.clear()
+        _TARGET_STATE.pop(token, None)
     return out
 
 
 _DEFAULT_TARGET_CHUNK_SIZE = 200
+
+# How many chunks of target state to prepare ahead of the one being tested.
+#
+# The logistic fit does not parallelize *within* a batch: splitting one
+# chunk's targets across threads caps at 1.59x however many it gets, because
+# the work is bandwidth-bound and the per-iteration Python overhead holds the
+# GIL. Different chunks' fits are independent, though, and each stays a full
+# efficient batched call, so running several concurrently does scale --
+# measured on eight chunk-fits: 1.78x at two, 2.24x at three, 2.71x at four.
+#
+# Three recovers most of that while holding three chunks of draws instead of
+# one. Depth 1 is the previous behaviour, and 0 disables prefetching.
+_PREFETCH_DEPTH = 3
+
+# Above this many chunks, the per-chunk gene pool uses threads even where the
+# platform default is processes.
+#
+# The cost being traded is a worker pool built **per chunk** against the GIL.
+# Permutations run as a single chunk and pay the fork once, so processes win
+# there and win big. The CRT at the default budget has 217 chunks, so fork
+# cost dominates and threads win -- and the statistic is a sparse matmul now,
+# which releases the GIL where the old gather did not.
+#
+# Measured on day0, x86_64 Linux, 8 cores:
+#
+#   CRT (217 chunks)      fork 679.7s / 9.46 GB   thread 601.9s / 6.93 GB
+#   permutations (1)      fork  70.3s / 4.61 GB   thread 143.8s / 4.55 GB
+#
+# Only those two points are measured, so the threshold is placed in the wide
+# gap between them rather than fitted: anything from a handful of chunks to
+# a hundred would classify both cases the same way.
+_THREAD_ABOVE_N_CHUNKS = 8
 
 _BYTES_PER_INDEX = 8  # int64 cell index
 
@@ -872,10 +916,44 @@ def parallel_backend() -> str:
     fork-safe. The lower ceiling is the price of not hanging. Note this means
     each backend is exercised on one platform only -- CI (Linux) covers fork,
     local development on a Mac covers threads.
+
+    **`PYSCEPTRE_BACKEND` overrides the choice**, to "fork" or "thread". The
+    evidence above is stale in one respect worth knowing before trusting it:
+    the gather it measured (`D[:, flat_idxs]` plus `reduceat`) no longer
+    exists -- the statistic is a sparse matmul now, and permutations reach it
+    through a prefix scan -- and both release the GIL where the gather did
+    not. Threads may therefore scale better than they did. The override
+    exists so that can be tested rather than assumed, and so a caller who has
+    measured their own machine can act on it.
+
+    The override cannot make macOS safe for `fork`: that restriction is about
+    deadlocking after Accelerate, not about speed.
     """
+    override = os.environ.get("PYSCEPTRE_BACKEND", "").strip().lower()
+    if override in ("fork", "thread"):
+        if override == "fork" and not (sys.platform.startswith("linux") and hasattr(os, "fork")):
+            warnings.warn(
+                "PYSCEPTRE_BACKEND=fork ignored: fork is only used on Linux, because "
+                "forking after Apple's Accelerate BLAS can deadlock.",
+                stacklevel=2,
+            )
+        else:
+            return override
     if sys.platform.startswith("linux") and hasattr(os, "fork"):
         return "fork"
     return "thread"
+
+
+def gene_job_backend(n_chunks: int) -> str | None:
+    """Backend for the per-chunk gene pool, or `None` for the platform default.
+
+    Only meaningful where the default is `fork`: everywhere else the pool is
+    already threads and there is nothing to choose. See
+    `_THREAD_ABOVE_N_CHUNKS` for the measurements.
+    """
+    if parallel_backend() != "fork":
+        return None
+    return "thread" if n_chunks > _THREAD_ABOVE_N_CHUNKS else None
 
 
 def _map_jobs(fn, jobs: list, n_jobs: int, backend: str | None = None):
@@ -1082,6 +1160,8 @@ def run_discovery_ntcells_complement(
     #
     # The cost is one extra chunk of target state alive at a time, so peak
     # memory carries two chunks rather than one.
+    prep_draw_jobs = max(1, resolve_n_jobs(n_jobs) // max(1, _PREFETCH_DEPTH))
+
     def _prepare(ids: list[str]) -> dict[str, TargetPrecomputation]:
         return fit_all_targets(
             {t: grna_target_cells[t] for t in ids},
@@ -1090,7 +1170,11 @@ def run_discovery_ntcells_complement(
             B2=B2,
             B3=B3,
             seed=entropy,
-            n_jobs=n_jobs,
+            # Divided by the pipeline depth: `_PREFETCH_DEPTH` prepares run
+            # at once, so a full `n_jobs` each would ask for that multiple of
+            # the machine. The draws inside a prepare are the only part that
+            # maps, and they are a small share of it.
+            n_jobs=prep_draw_jobs,
             permutations=permutations,
             x_outer_flat_shared=shared_x_outer,
         )
@@ -1105,15 +1189,27 @@ def run_discovery_ntcells_complement(
     # day0, a 1.43x "speedup" that is just the second thread. `n_jobs` has to
     # mean what it says: a single-core benchmark, a cgroup-limited container
     # and every matched-core comparison against R depend on it.
-    prefetch = ThreadPoolExecutor(max_workers=1) if (n_jobs > 1 and len(chunks) > 1) else None
-    pending = None
+    # Chosen once, from the chunk count: a run that builds a pool per chunk
+    # pays fork repeatedly, one that builds a single pool does not.
+    gene_backend = gene_job_backend(len(chunks))
+    # PYSCEPTRE_PREFETCH_DEPTH overrides the default, for tuning on a
+    # machine whose balance differs.
+    _d = os.environ.get("PYSCEPTRE_PREFETCH_DEPTH", "")
+    want_depth = int(_d) if _d.isdigit() and int(_d) > 0 else _PREFETCH_DEPTH
+    depth = min(want_depth, len(chunks) - 1) if resolve_n_jobs(n_jobs) > 1 else 0
+    prefetch = ThreadPoolExecutor(max_workers=depth) if depth > 0 else None
+    pending: deque = deque()
     try:
+        # Prime the pipeline so `depth` fits are in flight before the first
+        # chunk's genes are tested, rather than one.
+        for i in range(depth):
+            pending.append(prefetch.submit(_prepare, chunks[i]))
+
         for chunk_i, chunk_ids in enumerate(chunks):
-            target_precomps = pending.result() if pending is not None else _prepare(chunk_ids)
-            pending = None
-            # Start the next chunk's fit now, so it overlaps this chunk's genes.
-            if prefetch is not None and chunk_i + 1 < len(chunks):
-                pending = prefetch.submit(_prepare, chunks[chunk_i + 1])
+            target_precomps = pending.popleft().result() if pending else _prepare(chunk_ids)
+            ahead = chunk_i + depth
+            if prefetch is not None and ahead < len(chunks):
+                pending.append(prefetch.submit(_prepare, chunks[ahead]))
 
             # Gene-outer inside the chunk so each gene's pieces are rebuilt once
             # per chunk rather than once per pair: 244 genes x ~15 chunks is ~3,660
@@ -1172,7 +1268,7 @@ def run_discovery_ntcells_complement(
                 fit_parametric_curve=fit_parametric_curve,
                 side_code=side_code,
             )
-            for produced in _map_jobs(_gene_job, gene_jobs, n_jobs):
+            for produced in _map_jobs(_gene_job, gene_jobs, n_jobs, backend=gene_backend):
                 rows.update(produced)
             _WORKER_STATE.clear()
 
