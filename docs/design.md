@@ -322,10 +322,24 @@ those means.
 **DESeq2 divides its factors by their geometric mean; the implementation this
 estimator was validated against does not.** So `sizeFactors()` comes back
 centred on 1 and ours does not, and the two differ by exactly one constant per
-dataset: **1.12 and 1.19** on the two non-trivial fixture cases. Because
+dataset, the geometric mean of the uncentred factors. Because
 `expression_mean` divides by the factors, that constant scales every gene's
-mean and therefore every power estimate. Anyone "fixing" this to match DESeq2
-would move every number the estimator produces.
+mean and therefore every power estimate, so anyone "fixing" this to match
+DESeq2 would move every number the estimator produces.
+
+**On real data the constant is 1.0639**, measured over day0's 586,309 cells,
+so the gene means this package produces sit **6.4 % below** what DESeq2's
+convention would give and the resulting power estimates are slightly
+conservative. (The fixture's synthetic cases show 1.12 and 1.19, which are
+larger than a real screen's and should not be read as typical.) Note that
+sceptre is not a party to this: it computes no size factors, and contributes
+only theta.
+
+The published comparison is unaffected, because both sides of it were fed the
+same means -- the analytical formula and the simulation that served as its
+ground truth both read `row_data$mean`. The consequence is for a *user*
+computing power on a new screen: means built DESeq2's way would give slightly
+higher power than the convention these numbers were validated under.
 
 The validation is split accordingly, because neither half is sufficient:
 
