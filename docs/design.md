@@ -218,12 +218,37 @@ failure mode the fitted model the published work compared against did show.
 a 34,000-pair negative class, which is why its MCC is 0.536 while its
 sensitivity is 96.4 %. It is kept to show the row exists.
 
-### The two expression conventions, scored against each other
+### Which mean is correct, and why the scoring above cannot settle it
 
-The recommendation to take the mean off the fit was made on the principle that
-the estimate should sit on the scale of the test it predicts. On the same
-pairs and the same ground truth, with only the expression input changed, it is
-also the better decision at every effect size:
+**The fitted mean, and the argument is principled rather than empirical.**
+sceptre models counts as `NB(exp(Z b), theta)`, so the expected count its test
+operates on *is* `exp(Z b)`. A closed form approximating that test has to be
+handed that mean. The alternative comes from DESeq2 "poscounts"
+normalisation, which sceptre uses nowhere. And because a GLM with an intercept
+satisfies `sum(fitted) == sum(observed)`, the fitted mean is exactly the
+gene's average observed count over the cells the fit ran on, which is
+manifestly the right scale for "how much is this gene expressed"; the
+normalised mean sits 16 % below that.
+
+**The comparison below is consistent with that and is not independent
+evidence of it**, which the first version of this section failed to say. The
+ground truth is a simulation that drew counts as `mean_i * sf_j`, realising
+about **0.959** of the raw mean. So the truth's own expression scale sits
+4.3 % from the fitted mean and 12.2 % from the normalised one: it is closer to
+the convention that then scores better. Some of the margin below is that
+proximity rather than a statement about predicting the real test.
+
+The same caveat weakens the headline table slightly in the other direction:
+the estimator is being scored against genes about 4 % dimmer than the screen
+actually has, so it is a mildly pessimistic ground truth for the fitted mean.
+
+The comparison is unlikely ever to settle this. The simulation pipeline has
+since been changed to draw from `exp(X b)` itself, which would make a re-run
+sweep *exactly* the fitted scale and the circularity total. The principle is
+what decides it; the numbers only confirm nothing has gone badly wrong.
+
+With that read, on the same pairs and the same ground truth and only the
+expression input changed:
 
 | effect size | MCC, model mean | MCC, normalised mean |
 |---|---:|---:|
@@ -237,7 +262,9 @@ And it errs in the predicted direction: at a 15 % knockdown the normalised
 mean misses 1,497 powered pairs against 580, while making 112 wrong claims
 against 440. So the 16 % shortfall buys specificity at a larger cost in
 sensitivity, which is what a conservative input does, and the gap widens as
-the effect size grows.
+the effect size grows. That directional result is not affected by the
+proximity problem above -- a lower expression input gives a lower power
+estimate whatever the ground truth is.
 
 ### Five things that look like simplifications and are not
 
