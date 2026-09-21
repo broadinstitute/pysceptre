@@ -69,3 +69,38 @@ def perturbplan_ground_truth():
         )
     with open(PERTURBPLAN_GROUND_TRUTH_PATH) as f:
         return json.load(f)
+
+
+POSCOUNTS_GROUND_TRUTH_PATH = VALIDATION_DIR / "poscounts_ground_truth.json"
+POSCOUNTS_DUMP_SCRIPT = VALIDATION_DIR.parent.parent / "scripts" / "dump_poscounts_ground_truth.R"
+
+
+def _r_deseq2_available() -> bool:
+    try:
+        result = subprocess.run(
+            ["Rscript", "-e", "library(DESeq2)"],
+            capture_output=True,
+            timeout=120,
+        )
+        return result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+@pytest.fixture(scope="session")
+def poscounts_ground_truth():
+    """DESeq2's own poscounts size factors, for the baseline-mean helper.
+
+    DESeq2 defines the estimator, so it is the reference rather than a second
+    transcription of the same arithmetic. Regenerated only if the JSON is
+    missing, so CI needs neither R nor DESeq2; delete the JSON if you change
+    `scripts/dump_poscounts_ground_truth.R`.
+    """
+    if not POSCOUNTS_GROUND_TRUTH_PATH.exists():
+        if not _r_deseq2_available():
+            pytest.skip("R/DESeq2 not available and no cached poscounts_ground_truth.json present")
+        subprocess.run(
+            ["Rscript", str(POSCOUNTS_DUMP_SCRIPT), str(POSCOUNTS_GROUND_TRUTH_PATH)], check=True
+        )
+    with open(POSCOUNTS_GROUND_TRUTH_PATH) as f:
+        return json.load(f)

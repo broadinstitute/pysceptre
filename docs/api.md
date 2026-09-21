@@ -36,6 +36,21 @@ detected, per pair, including for pairs the screen never tested.
 
 ::: pysceptre.analytical_power.posthoc.target_cell_counts
 
+### Building its inputs
+
+Three things `compute_power_posthoc` needs that no other part of pysceptre
+produces. They take arrays and frames rather than a loaded export, because
+nothing under `src/` imports the `io` extra; the file-reading glue lives in
+`scripts/`.
+
+::: pysceptre.analytical_power.inputs.cells_per_grna_from_assignments
+
+::: pysceptre.analytical_power.inputs.baseline_expression_stats
+
+::: pysceptre.analytical_power.inputs.poscounts_size_factors
+
+::: pysceptre.analytical_power.inputs.bh_nominal_cutoff
+
 ## Lower-level building blocks
 
 Most users will not need to go below `run_discovery_analysis`. Each pipeline

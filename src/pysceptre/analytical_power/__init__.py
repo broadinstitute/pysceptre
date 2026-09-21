@@ -11,10 +11,20 @@ from .closed_form import (
     var_nb,
     zero_prob,
 )
+from .inputs import (
+    baseline_expression_stats,
+    bh_nominal_cutoff,
+    cells_per_grna_from_assignments,
+    poscounts_size_factors,
+)
 from .posthoc import compute_power_posthoc, target_cell_counts
 
 __all__ = [
+    "baseline_expression_stats",
+    "bh_nominal_cutoff",
+    "cells_per_grna_from_assignments",
     "compute_power_posthoc",
+    "poscounts_size_factors",
     "qc_failure_prob",
     "rejection_prob",
     "target_cell_counts",

@@ -296,3 +296,132 @@ ondisc-backed response matrix forced. It held across a tenfold change in
 threshold and a tenfold range of effect size, which is real evidence it is not
 tuned to a corner, but whether it holds on another lab and protocol is
 untested.
+
+### Building the estimator's inputs
+
+`analytical_power/inputs.py` derives the three things `compute_power_posthoc`
+needs that no other part of pysceptre produces. Each can be got subtly wrong
+in a way that still returns plausible numbers, so each is validated against
+someone else's code rather than against itself.
+
+**The helpers take arrays and frames, never a loaded export.** Reading an
+`.h5mu` needs the `io` extra and nothing under `src/` imports it, so the glue
+from a file to these arguments lives in `scripts/`. There is deliberately no
+convenience wrapper that takes an export and returns a power table: the
+estimator's signature is the validated one, and a wrapper is where the
+sum-for-union and all-cells-for-cells-in-use substitutions would creep back in
+unnoticed.
+
+#### The size-factor convention is not DESeq2's, and the difference is not cosmetic
+
+`expression_mean` is a size-factor-normalised mean, and the factors are
+DESeq2-style "poscounts": a per-gene geometric mean over the nonzero counts,
+then each cell's factor is the median log-ratio of its own nonzeros against
+those means.
+
+**DESeq2 divides its factors by their geometric mean; the implementation this
+estimator was validated against does not.** So `sizeFactors()` comes back
+centred on 1 and ours does not, and the two differ by exactly one constant per
+dataset: **1.12 and 1.19** on the two non-trivial fixture cases. Because
+`expression_mean` divides by the factors, that constant scales every gene's
+mean and therefore every power estimate. Anyone "fixing" this to match DESeq2
+would move every number the estimator produces.
+
+The validation is split accordingly, because neither half is sufficient:
+
+| claim | checked against | where |
+|---|---|---|
+| every *ratio* in the factor vector | DESeq2 itself, which defines poscounts | `test_analytical_power_inputs.py`, CI |
+| the *absolute scale* | real R output from the run that produced the published numbers | `test_analytical_power_day0.py`, `realdata` |
+
+On day0 the second reproduces R's factors over all 586,309 cells and its
+normalised mean over 237 genes to a relative 1e-9.
+
+#### Why this is 40 lines here rather than a library call
+
+Reimplementing a published normalisation is the wrong default, so two
+candidates were tried against the fixture before it was written. Neither
+supplies the quantity this needs, and the reason is the same for both: they
+implement the estimator DESeq2 and edgeR use for **bulk** data, which assumes
+genes that are nonzero in every sample.
+
+| candidate | what it offers | result on the fixture |
+|---|---|---|
+| `edgepython` 0.2.6, an edgeR port | TMM, RLE, upperquartile | a different quantity: TMM correlates **-0.05** with poscounts factors and RLE **-0.07**. `upperquartile` returns `inf` |
+| `pydeseq2` 0.5.4 | DESeq2's default median-of-ratios | does not match, and not by a constant either: the ratio to R spreads by **1.9** |
+
+On the sparse case both fail outright, `pydeseq2` returning all `NaN`. The
+cause is visible directly: at 33 % nonzero, **0 of 300** genes are nonzero in
+every cell, and both estimators need the geometric mean of a gene across all
+of them. "poscounts" exists precisely because that assumption does not hold
+for single-cell data, and neither package implements it.
+
+Two further reasons, either of which would matter on its own. `pydeseq2`
+rejects a `scipy.sparse` matrix (`TypeError` on `log`) and `edgepython` wants
+dense as well, while **never densify** is a standing constraint here. And
+between them they would add `anndata`, `formulaic`, `matplotlib`, `patsy`,
+`scikit-learn`, `statsmodels` and `numba` to a package whose runtime
+dependencies are four.
+
+So the arithmetic is implemented, on the nonzeros, and validated against
+DESeq2 for every ratio and against real R output for the absolute scale. That
+is a better trade than a dependency that computes something else.
+
+#### The gene and cell sets are part of the definition
+
+The geometric mean runs over every gene and the median over every cell, so
+computing either on a subset gives different factors for the cells that
+remain, and a different mean for every gene. Both results look equally
+complete, which is what makes it dangerous. On day0 the validated factors were
+computed over all 292 genes and all 586,309 cells, the 18,619 that QC removed
+included, while the gene statistics were then reported for the 237 genes
+appearing in pairs.
+
+Two consequences. `baseline_expression_stats` computes over the full matrix
+and has a `gene_subset` argument for the reporting step, so subsetting the
+*output* is available and subsetting the *input* is not disguised as the same
+thing. And **an export now carries every gene and every cell by default**,
+because that choice is not recoverable afterwards: exporting everything costs
+disk and nothing else, since an analysis reads only the genes in the discovery
+pairs and the loader subsets back to `cells_in_use`, so the extra rows and
+columns never reach a per-gene fit or a worker process.
+
+#### Theta is reused, not refitted, and it carries two caveats
+
+`expression_size` is the NB size, theta, which `discovery.py::fit_all_genes`
+already returns, so a completed analysis has it and
+`baseline_expression_stats` accepts it rather than refitting. Two things about
+it that are invisible in the output: it is **clamped** to `(0.01, 1000.0)`, so
+a gene at a bound carries the bound instead of its estimate; and it is fitted
+under whatever `covariate_matrix` was passed, so it matches another
+implementation's only if the design matrices match. On day0 every one of R's
+237 cached values sits inside the clamp, median 16.84, so the clamp is not
+biting there. The day0 check reports the comparison rather than asserting a
+tolerance, because two different estimators agreeing to a tolerance is not
+something a test should demand.
+
+#### The gRNA-to-target map is many-to-many
+
+Overlapping candidate elements share guides. On day0, 1,673 of 43,736 guides
+sit inside two or three of them, so the design table carries 45,463 rows for
+43,736 distinct ids and the same guide appears under several targets. R sums
+such a guide's cells into every target it belongs to, and
+`cells_per_grna_from_assignments` does the same. Deduplicating by `grna_id`
+looks like hygiene and would silently shrink exactly those targets;
+`compute_power_posthoc` originally refused a repeated `grna_id` for that
+reason and was wrong to, which the fixture now pins against R.
+
+A designed guide that ended up with no cells is a `num_cells = 0` row rather
+than an absent one, for the same family of reason: dropped, `num_trt_cells_sq`
+would be computed over a smaller guide set than the screen actually used.
+
+#### The cutoff helper does the correction pysceptre otherwise skips
+
+`bh_nominal_cutoff` applies BH and returns the largest p-value it calls
+significant, which is what `cutoff` wants. It ports WattEG's
+`discovery_threshold()` including its refusal to return anything when nothing
+is significant: the code that preceded it returned `-Inf` there, and every
+pair silently got zero power. NaN p-values, the pairs that failed pairwise QC
+and were never tested, are dropped before the correction rather than inflating
+its denominator. On day0 it reproduces R's derived threshold,
+`0.00072628634455531758`, exactly.
