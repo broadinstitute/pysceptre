@@ -358,7 +358,8 @@ after QC, 237 genes appearing in pairs, 3,071 gRNA targets, 34,886 QC-passing
 pairs, two-sided, CRT resampling. The headline figures are below, each
 reported with the hardware it was measured on; the full tables and the
 comparison against R sceptre are in the manuscript repository,
-[`pysceptre-paper`](https://github.com/broadinstitute/pysceptre-paper).
+`broadinstitute/pysceptre-paper`, which stays private until the preprint is
+posted.
 
 Reproduce with `scripts/benchmark_vs_r.R` (R side, which also exports the
 exact inputs) and `scripts/benchmark_pysceptre.py` (pysceptre side), or inside
