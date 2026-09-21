@@ -49,7 +49,31 @@ ARG EXTRAS="[fast]"
 COPY pyproject.toml README.md LICENSE THIRD_PARTY_LICENSES ./
 COPY src ./src
 
-RUN uv pip install --compile-bytecode --no-cache ".${EXTRAS}"
+# No --compile-bytecode. It trades 93 MB of .pyc for a faster first import, and
+# a container that runs a multi-minute analysis does not care about import
+# latency. PYTHONDONTWRITEBYTECODE below keeps the runtime from writing any.
+RUN uv pip install --no-cache ".${EXTRAS}"
+
+# Slimming, measured. numpy, scipy and pandas each ship their own test package
+# and a runtime image never runs them: 96 MB. Dropping compiled bytecode above
+# is another 93 MB. Both figures are properties of the dependency set; the
+# image total they produce also depends on the base image and the
+# architecture, so it is not quoted here.
+#
+# **`strip` is deliberately not used here, and that is a measurement, not
+# caution.** `strip --strip-unneeded` across the virtualenv's shared objects
+# corrupted numpy's bundled OpenBLAS outright: `import numpy` then failed with
+# "libscipy_openblas64_-7220728c.so: ELF load command address/offset not
+# page-aligned". Restricting it to `llvmlite/binding/libllvmlite.so`, the
+# largest single file in the image, does work and recovers only 23 MB of
+# 168 MB, which is not a trade worth making against a JIT compiler's symbol
+# table.
+#
+# The two bundled OpenBLAS copies (numpy.libs and scipy.libs, about 54 MB
+# together) are left alone for the same family of reason: each wheel is built
+# against its own, and deduplicating them is how you get a subtly wrong BLAS.
+RUN find /opt/venv -type d -name tests -prune -exec rm -rf {} + \
+ && find /opt/venv -type d -name __pycache__ -prune -exec rm -rf {} +
 
 # ---------------------------------------------------------------- runtime ---
 FROM gcr.io/distroless/python3-debian12

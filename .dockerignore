@@ -1,0 +1,16 @@
+# The build context is shipped to the daemon in full on every build, so this
+# file is about build time and data hygiene, NOT image size: docker/Dockerfile
+# copies only pyproject.toml, the three metadata files and src/, and its
+# runtime stage copies nothing but the virtualenv. Without these rules the
+# context was 4.3 GB, of which test_data/ alone was 3.4 GB of real screen
+# data that has no business being sent anywhere.
+*
+# Everything the wheel build actually needs, re-admitted by name so a new
+# large directory cannot silently rejoin the context.
+!pyproject.toml
+!README.md
+!LICENSE
+!THIRD_PARTY_LICENSES
+!src/
+src/**/__pycache__/
+src/**/*.pyc
