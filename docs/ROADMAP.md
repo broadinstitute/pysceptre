@@ -258,9 +258,9 @@ Apple silicon laptop with 39 GB.
 
 ## Tier 3 -- release
 
-- **T3.1 PyPI publish.** Blocked on account/token and on whether `0.1.0` is the
-  version to make public. Prefer a `release.yml` using trusted publishing on
-  tag, so no long-lived token is handled.
+- ~~**T3.1 PyPI publish.**~~ **done.** `release.yml` publishes through trusted
+  publishing, and `v0.1.0` is out. It fires on a GitHub **Release**, not on a
+  tag push, so a branch or a tag alone cannot publish.
 - **T3.2** `py.typed` marker.
 - **T3.3** CHANGELOG.
 - **T3.4 Parquet/zarr for the export.** The scripts currently write raw
