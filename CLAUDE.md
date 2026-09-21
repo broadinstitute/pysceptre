@@ -4,12 +4,32 @@ Standalone Python port of the statistical engine behind
 [`sceptre`](https://github.com/Katsevich-Lab/sceptre)'s discovery analysis for
 single-cell CRISPR screens.
 
-**Scope: three validated analysis paths, not a general sceptre
-reimplementation.** Discovery analysis, the calibration check and the power
-check, all on the complement control group + CRT (conditional randomization
-test) resampling, high-MOI path. Permutations, non-complement control groups,
-low-MOI, `assign_grnas()`, `run_qc()` and R's formula DSL are all deliberately
-out of scope -- see "Scope and limitations" in `README.md` before adding any of them.
+**Scope: three validated sceptre paths plus one estimator that is not
+sceptre's, not a general sceptre reimplementation.** The three are discovery
+analysis, the calibration check and the power check, all on the complement
+control group + CRT (conditional randomization test) resampling, high-MOI
+path. Non-complement control groups, low-MOI, `assign_grnas()`, `run_qc()`
+and R's formula DSL are deliberately out of scope -- see "Scope and
+limitations" in `README.md` before adding any of them.
+
+**Two things that statement used to get wrong, and a reader should not have to
+discover by grepping.**
+
+`resampling_mechanism="permutations"` **exists** (`crt/permutations.py`, and
+the option is on `run_discovery_analysis`). It is not on the same footing as
+the CRT: `tests/validation/test_permutations.py` makes no value-for-value
+comparison against R at all, only internal consistency, R's `B3` sizing rule,
+and end-to-end usability. So permutations are *implemented and exercised*,
+while the CRT path is *validated*. Treat that gap as the reason not to quote a
+permutation result against R, not as a licence to widen it.
+
+`analytical_power/` is a **fourth** thing and it does not come from sceptre.
+It is a port of PerturbPlan's closed-form post-hoc power estimate (MIT, see
+`THIRD_PARTY_LICENSES`), it answers what a screen *could* have detected rather
+than what it did, and its ground truth is PerturbPlan's own R rather than
+sceptre's. Its scope limits are its own: complement control group only,
+explicit cutoff only, no minimum-detectable-effect-size path. `docs/design.md`
+has them.
 
 **One carve-out from "no `run_qc()`".** The calibration and power checks
 *construct or receive* their own pairs, so both must decide which are testable
@@ -43,10 +63,14 @@ src-layout -- the importable package lives under `src/`, so it is only on
   - `analytical_power/` -- the closed-form per-pair power estimate, ported
                            from PerturbPlan (MIT, `THIRD_PARTY_LICENSES`). Not
                            from sceptre, and not part of the discovery path.
-- `tests/validation/`   -- the whole suite (21 tests; ~20s on a fresh venv
-                           while numba JIT-compiles, ~2s once its cache is warm).
-                           Every test compares against R ground truth, not just
-                           internal consistency.
+- `tests/validation/`   -- the whole suite, in one place. **Most** files
+                           compare against R ground truth rather than only
+                           internal consistency, but not all: the permutation
+                           tests are internal-consistency only, and the
+                           analytical power tests compare against
+                           PerturbPlan's R, not sceptre's. Slow on a fresh
+                           venv while numba JIT-compiles, fast once its cache
+                           is warm.
 - `docker/`             -- one Dockerfile, the minimal pysceptre runtime
                            image. Two-stage, distroless, non-root, and it
                            carries **no R**: the R-plus-pysceptre comparison
@@ -208,7 +232,8 @@ Python 3.10+ (`requires-python`). Verified passing on 3.10, 3.11, 3.12, 3.13.
   then B3 recomputed in `run_qc_pt_2`). `B1=499` always; `skew_normal` gives
   `(4999, 0)`; `no_approximation` gives `(0, ceil(mult * n_pairs / alpha))`.
   `B3=0` on the `skew_normal` path is **parity with R**, not a stub -- R only
-  uses `B3=24999` for `permutations`, which is out of scope. Don't "fix" it.
+  uses `B3=24999` for `permutations`, which this package sizes the same way.
+  Don't "fix" the `skew_normal` zero.
 
 - **`stage == 3` is reachable on the default path.** It is entered whenever
   the skew-normal fit is *rejected* (`sn_fit_used=False`), regardless of `B3`,

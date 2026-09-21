@@ -192,17 +192,37 @@ Each of these turns the estimator into one that nothing has scored.
 
 **`num_trt_cells` is the sum over a target's gRNAs, not the union of its
 perturbed cells.** `compute_power_posthoc` groups `cells_per_grna` by target
-and sums, and that is the input behind every number above. pysceptre's own
-data model carries the union (`grna_target_cells`, one index array per target),
-and in high MOI a cell can carry several of a target's gRNAs, so union ≤ sum.
-The union is the count the *test* uses; the sum is the count this *estimator*
-was validated with. They are not interchangeable, and `target_cell_counts`
-therefore requires per-gRNA granularity: `num_trt_cells_sq`, the sum of
-squared per-gRNA counts, is the across-gRNA variance term and no target-level
-total can supply it. One visible consequence is kept visible rather than
-smoothed over -- the sum can exceed the number of distinct cells, which would
-empty the complement group, and `compute_power_posthoc` raises with that
-explanation rather than returning a NaN.
+and sums, and that is the input the estimator was validated with. pysceptre's
+own data model carries the union instead (`grna_target_cells`, one index array
+per target), and a cell can carry several of a target's gRNAs, so union <= sum.
+
+**How far apart are they? Measured, and the answer is awkward: almost never,
+but not never.** `scripts/measure_union_vs_sum.R` reads the two slots off a
+sceptre object and compares them. On two real screens the union/sum ratio has
+median **1.0000** and mean **0.9985**; the two agree exactly for 57.6% and
+63.2% of targets, and the 1st percentile is 0.9927 and 0.9900. The worst
+single target on one screen sits at **0.4990**, its gRNAs overlapping enough
+to halve the count.
+
+So substituting the union would look harmless on almost every target and be
+badly wrong on a handful, which is the least useful shape an error can have:
+too small to notice in aggregate, large enough to move a specific pair's
+answer. That is a reason to keep the sum, not a reason to relax about it.
+
+**The stronger reason is that the union cannot supply the other term at all.**
+`num_trt_cells_sq`, the sum of *squared* per-gRNA counts, is the across-gRNA
+variance term, and no target-level total contains it: a target's 15 gRNAs
+could be equal or wildly unequal at the same total. `target_cell_counts`
+therefore requires per-gRNA granularity outright rather than deriving it.
+
+One visible consequence is kept visible rather than smoothed over: the sum can
+exceed the number of distinct cells, which would empty the complement group,
+and `compute_power_posthoc` raises with that explanation rather than returning
+a NaN. Note the trap `measure_union_vs_sum.R` documents, because it bites
+anyone recomputing this: `@initial_grna_assignment_list` is indexed against
+*all* cells while `grna_group_idxs` is indexed against `cells_in_use` (586,309
+against 567,690 on one screen), so the per-gRNA counts have to be restricted
+to the cells in use before the two are comparable.
 
 **`cutoff` is required.** PerturbPlan will derive one from the predicted
 distributions when it is `NULL`; that is its design-planning mode, and only

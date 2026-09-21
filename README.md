@@ -359,9 +359,14 @@ adjustment over the union each time.
 
 <!-- --8<-- [start:scope] -->
 
-- **Complement control group only, high-MOI/CRT resampling only.** This is
-  the one analysis path this package targets; other sceptre modes
-  (permutations, non-complement control groups, low-MOI) are out of scope.
+- **Complement control group only, high-MOI.** Non-complement control groups
+  and low-MOI are out of scope.
+- **The CRT is the validated resampling mechanism; permutations are
+  implemented but not validated against R.**
+  `resampling_mechanism="permutations"` works and is exercised end to end, but
+  its tests check internal consistency, R's `B3` sizing rule and usability --
+  not value-for-value agreement with R, which the CRT path does check. Use it
+  knowing that, and don't report a permutation result as R-validated.
 - **No `assign_grnas()` / `run_qc()`**, with one carve-out: the calibration
   check applies the *pairwise* nonzero-count thresholds, because it builds its
   own pairs and cannot select them otherwise. Cell-level and gRNA-level QC
@@ -383,7 +388,8 @@ adjustment over the union each time.
   `(B2, B3) = (4999, 0)` for `skew_normal` and `(0, ceil(mult * n_pairs /
   multiple_testing_alpha))` for `no_approximation`. `B3=0` on the
   `skew_normal` path is parity with R, which only uses `B3=24999` for the
-  `permutations` mechanism this package doesn't implement.
+  `permutations` mechanism -- which this package does implement, and sizes the
+  same way.
   `run_discovery_ntcells_complement` and `run_low_level_test_full` accept all
   three directly if you need to override them.
 - **`no_approximation` is expensive, and can be coarser at small scale.** Its
@@ -394,7 +400,22 @@ adjustment over the union each time.
   R's behavior, reproduced rather than corrected.
 - **gRNA integration strategy: "union" only.** `grna_target_cells` is keyed
   by target, not by individual gRNA -- matches sceptre's `"union"` strategy;
-  `"singleton"` is not supported.
+  `"singleton"` is not supported. `compute_power_posthoc` is the exception and
+  needs per-gRNA counts, for the reason below.
+- **`compute_power_posthoc` is not a sceptre path, and its limits are its
+  own.** It estimates in closed form what a screen *could* have detected,
+  which is a different question from the three analyses above, and it is a
+  port of [PerturbPlan](https://github.com/Katsevich-Lab/perturbplan) (MIT)
+  rather than of sceptre. It is validated against that package's own output,
+  not against sceptre's. Within it: complement control group only, an explicit
+  `cutoff` only (no threshold is derived for you), per-gRNA cell counts
+  required rather than the per-target union, and no minimum-detectable-effect-size
+  path. It is accurate enough to plan a screen and triage its negatives, and
+  **not** accurate enough to settle a question about one element-gene pair --
+  see [Design decisions](https://broadinstitute.github.io/pysceptre/design/#analytical-per-pair-power).
+- **pysceptre cannot yet derive `compute_power_posthoc`'s inputs for you.**
+  You supply `cells_per_grna` and `baseline_expression_stats`; there is no
+  helper that builds either from a response matrix or an export.
 
 <!-- --8<-- [end:scope] -->
 

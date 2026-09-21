@@ -8,12 +8,19 @@ single-cell CRISPR screens.
 from pysceptre import run_discovery_analysis
 ```
 
-Three validated analysis paths -- **discovery analysis**, the **calibration
+Three validated sceptre paths -- **discovery analysis**, the **calibration
 check** and the **power check** -- on the complement control group with CRT
-resampling, for high-MOI screens. Every result is validated against the R
-package rather than against itself. What is deliberately *not* implemented is
-listed in [Scope and limitations](scope.md); read it before assuming a path
-works.
+resampling, for high-MOI screens, each validated against the R package rather
+than against itself.
+
+Alongside them, **`compute_power_posthoc`** estimates in closed form what a
+screen *could* have detected, per pair and without simulation. It answers a
+different question, it is a port of PerturbPlan rather than of sceptre, and it
+is validated against that package instead.
+
+What is deliberately *not* implemented, and which paths are exercised rather
+than validated, is in [Scope and limitations](scope.md); read it before
+assuming a path works.
 
 --8<-- "README.md:why"
 
