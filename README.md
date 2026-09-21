@@ -80,7 +80,7 @@ result = run_discovery_analysis(
     covariate_matrix=covariate_matrix,    # (n_cells, p) numeric design matrix
     grna_target_cells=grna_target_cells,  # dict[target_id -> 0-based treated-cell indices]
     pairs=pairs,                          # DataFrame['response_id', 'grna_target']
-    side="left",
+    side="both",                          # the default, and the side validated against R
     seed=0,
 )
 # result: DataFrame with one row per pair --
@@ -172,7 +172,7 @@ calib = run_calibration_check(
     calibration_group_size=15,
     n_nonzero_trt_thresh=7,
     n_nonzero_cntrl_thresh=7,
-    side="left",
+    side="both",
     seed=0,
 )
 ```
@@ -217,7 +217,7 @@ power = run_power_check(
     covariate_matrix=covariate_matrix,
     grna_target_cells=grna_target_cells,
     positive_control_pairs=positive_control_pairs,  # response_id, grna_target
-    side="left",
+    side="both",
     seed=0,
 )
 ```
@@ -306,11 +306,13 @@ ALPHA = 0.1
 # 1. the analysis
 result = run_discovery_analysis(
     response_matrix, gene_ids, covariate_matrix, grna_target_cells, pairs,
-    side="left", multiple_testing_alpha=ALPHA, seed=0,
+    side="both", multiple_testing_alpha=ALPHA, seed=0,   # "both" is the default
 )
 
-# 2. the threshold this run actually applied. Halved because side="left":
-#    sceptre's p-value is two-sided, a knockdown is a one-sided claim.
+# 2. the threshold this run actually applied, then halved. side="both" gives a
+#    two-sided p-value, and compute_power's default side="left" wants the
+#    one-sided threshold that corresponds to it. Do NOT halve if you ran the
+#    discovery one-sided: those p-values are already one-sided.
 cutoff = bh_nominal_cutoff(result["p_value"], alpha=ALPHA) / 2
 
 # 3. the estimator's inputs, both on sceptre's own scale
@@ -346,9 +348,22 @@ on the pairs.
 that would hand every pair zero power. On a screen with no discoveries, pass
 `cutoff` yourself from a plain alpha and say so in whatever you report.
 
-**Use `cutoff=alpha` unhalved if you ran `side="both"`.** The halving in
-step 2 pairs with `side="left"`, which is the configuration the estimator was
-validated in.
+**Step 2 needs a real pair list to mean anything.** The threshold is the
+largest p-value BH calls significant, so on a handful of pairs it is simply
+whatever the smallest p-value happens to be: five pairs containing one strong
+hit gave `1.2e-215`, and every power estimate came back 0. That is the rule R
+uses, reproduced, not a defect -- but it only behaves like a threshold at
+screen scale, where day0's 34,886 pairs give `7.26e-4`. On a toy example pass
+`cutoff` explicitly.
+
+**The halving in step 2 belongs to the two-sided run, not to
+`compute_power`.** `side="both"` is sceptre's default and pysceptre's, and it
+is the only side the discovery path is validated against R on. Its p-values
+are two-sided, so the one-sided threshold `compute_power(side="left")` wants
+is half of it. Run the discovery one-sided and its p-values are already
+one-sided: use the threshold **unhalved**. Halving twice is the
+easiest way to get a confidently wrong power estimate here, and it is
+invisible in the output.
 
 **The pairs that failed QC are the interesting ones.** They carry a NaN
 p-value because they were never tested, and they are exactly where a power

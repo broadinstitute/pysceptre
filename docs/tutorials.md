@@ -28,7 +28,7 @@ result = run_discovery_analysis(
     pairs,                         # still (response_id, grna_target)
     grna_integration_strategy="singleton",
     grna_target_data_frame=design,
-    side="left", seed=0,
+    seed=0,                        # side defaults to "both", as in sceptre
 )
 # -> response_id, grna_id, grna_target, p_value, pct_change_es, ...
 ```

@@ -107,8 +107,8 @@ response_matrix[gene_ids.index(strong_gene), trt] = rng.negative_binomial(
 result = run_discovery_analysis(
     response_matrix=response_matrix, gene_ids=gene_ids,
     covariate_matrix=covariate_matrix, grna_target_cells=grna_target_cells,
-    pairs=pairs, side="left", seed=0,
-)
+    pairs=pairs, seed=0,   # side defaults to "both"; "left" is also reasonable here,
+)                          # since the planted effect is a knockdown
 hit = result[(result.response_id == strong_gene) & (result.grna_target == strong_target)]
 print(hit)  # expect a very small p_value, pct_change_es well below 0, stage == 2
 ```
