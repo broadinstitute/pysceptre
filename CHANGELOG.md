@@ -61,6 +61,18 @@ Notable changes per release. Dates are the release date.
   inside two of them belongs to both targets and contributes its cells to
   each. Uniqueness now applies to the `(grna_id, grna_target)` pair.
 
+### Validated
+
+- **The power estimate is scored against per-pair simulation**, not only
+  against the code it ports. On day0's 34,886 pairs with 100 simulations
+  each, at the 0.8 bar: MCC 0.941 at a 15 % knockdown and between 0.911 and
+  0.961 from 10 % to 50 %, with no degradation as the signal grows. This is
+  new evidence rather than a re-run, because day0 was analysed under the CRT
+  where the published comparison used sceptre's permutation test.
+- **The two expression conventions are scored against each other**, and the
+  documented default wins at every effect size: MCC 0.941 against 0.910 at a
+  15 % knockdown, widening to 0.925 against 0.856 at 50 %.
+
 ### Notes
 
 - `0.2.0rc1` was tagged during development and is superseded by this release.

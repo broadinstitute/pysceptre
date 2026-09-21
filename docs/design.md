@@ -186,6 +186,59 @@ The measurements behind all three are in the manuscript repository and are
 deliberately not restated here: a number that lives in two places drifts, and
 these are the manuscript's results rather than the tool's.
 
+### Does it agree with the truth? Measured on day0, under the CRT
+
+Matching PerturbPlan's R to 1e-9 says the port computes what it ports. Whether
+that is worth computing is a separate question, and the only available truth
+is simulation. Scored against WattEG's day0 sweep, 100 simulations per pair
+over **34,886 pairs**, at the bar a reader acts on rather than as a distance:
+
+| effect size | powered by simulation | sensitivity | specificity | wrong claims | missed | MCC |
+|---|---:|---:|---:|---:|---:|---:|
+| 0.05 | 274 | 96.4 % | 98.25 % | 606 | 10 | 0.536 |
+| 0.10 | 6,204 | 94.1 % | 98.08 % | 551 | 369 | 0.911 |
+| 0.15 | 16,050 | 96.4 % | 97.66 % | 440 | 580 | **0.941** |
+| 0.20 | 22,131 | 97.9 % | 98.63 % | 175 | 459 | 0.961 |
+| 0.25 | 25,563 | 98.2 % | 99.07 % | 87 | 472 | 0.960 |
+| 0.50 | 31,925 | 98.6 % | 99.97 % | 1 | 447 | 0.925 |
+
+`scripts/score_power_against_simulation.py`, guarded by
+`tests/validation/test_power_against_simulation_day0.py`.
+
+**This is new evidence rather than a re-run of the published comparison.**
+That one scored PerturbPlan's own R on a different screen analysed under
+sceptre's *permutation* test, which an ondisc-backed response matrix forced.
+day0 ran under the **CRT**, which the published work explicitly lists as
+untested. The agreement holds: MCC between 0.91 and 0.96 from a 10 % to a
+50 % knockdown, and it does **not** degrade as the signal grows, which is the
+failure mode the fitted model the published work compared against did show.
+
+**The es = 0.05 row is not a result.** 274 of 34,886 pairs are powered at a
+5 % knockdown, so every rate on that line is a few hundred pairs wide against
+a 34,000-pair negative class, which is why its MCC is 0.536 while its
+sensitivity is 96.4 %. It is kept to show the row exists.
+
+### The two expression conventions, scored against each other
+
+The recommendation to take the mean off the fit was made on the principle that
+the estimate should sit on the scale of the test it predicts. On the same
+pairs and the same ground truth, with only the expression input changed, it is
+also the better decision at every effect size:
+
+| effect size | MCC, model mean | MCC, normalised mean |
+|---|---:|---:|
+| 0.10 | **0.911** | 0.901 |
+| 0.15 | **0.941** | 0.910 |
+| 0.20 | **0.961** | 0.920 |
+| 0.25 | **0.960** | 0.914 |
+| 0.50 | **0.925** | 0.856 |
+
+And it errs in the predicted direction: at a 15 % knockdown the normalised
+mean misses 1,497 powered pairs against 580, while making 112 wrong claims
+against 440. So the 16 % shortfall buys specificity at a larger cost in
+sensitivity, which is what a conservative input does, and the gap widens as
+the effect size grows.
+
 ### Five things that look like simplifications and are not
 
 Each of these turns the estimator into one that nothing has scored.
