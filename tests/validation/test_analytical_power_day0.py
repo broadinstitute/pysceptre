@@ -218,3 +218,115 @@ def test_bh_cutoff_matches_the_threshold_watteg_derived(watteg_prepared):
     alpha = float(ex.metadata["multiple_testing_alpha"])
     got = bh_nominal_cutoff(ex.discovery_result["p_value"].to_numpy(), alpha)
     assert got == pytest.approx(expected, rel=1e-12)
+
+
+_SCEPTRE_DUMP_R = r"""
+suppressPackageStartupMessages({library(sceptre); library(jsonlite)})
+args <- commandArgs(trailingOnly = TRUE)
+object_path <- args[1]; out <- args[2]
+so <- readRDS(object_path)
+rp <- so@response_precomputations
+Z <- so@covariate_matrix
+ciu <- so@cells_in_use
+Zu <- if (nrow(Z) == length(ciu)) Z else Z[ciu, , drop = FALSE]
+genes <- names(rp)
+# sceptre's own model mean for each gene: the average fitted value, E[Y] = exp(Z b).
+model_mean <- vapply(genes, function(g) mean(exp(as.numeric(Zu %*% rp[[g]]$fitted_coefs))),
+                     numeric(1))
+theta <- vapply(genes, function(g) rp[[g]]$theta, numeric(1))
+coefs <- lapply(genes, function(g) as.numeric(rp[[g]]$fitted_coefs))
+cat(sprintf("sceptre precomputations: %d genes, %d covariates, %d cells\n",
+            length(genes), ncol(Zu), nrow(Zu)))
+writeLines(jsonlite::toJSON(list(
+  genes = genes, model_mean = as.numeric(model_mean), theta = as.numeric(theta),
+  coefs = coefs, n_cells = nrow(Zu), n_cov = ncol(Zu),
+  Z = as.numeric(t(as.matrix(Zu)))
+), digits = 17, auto_unbox = TRUE), out)
+"""
+
+
+@pytest.fixture(scope="module")
+def sceptre_precomputations() -> dict:
+    obj = os.environ.get("PYSCEPTRE_DAY0_SCEPTRE_OBJECT")
+    if not obj or not Path(obj).exists():
+        pytest.skip("set PYSCEPTRE_DAY0_SCEPTRE_OBJECT to a post-QC sceptre object")
+    with tempfile.TemporaryDirectory() as tmp:
+        script = Path(tmp) / "dump.R"
+        script.write_text(_SCEPTRE_DUMP_R)
+        payload = Path(tmp) / "payload.json"
+        run = subprocess.run(
+            ["Rscript", str(script), obj, str(payload)], capture_output=True, text=True
+        )
+        if run.returncode != 0:
+            pytest.skip(f"could not read the sceptre object: {run.stderr.strip()[-300:]}")
+        with open(payload) as f:
+            return json.load(f)
+
+
+class _Fit:
+    """The two attributes `baseline_expression_stats_from_fits` reads."""
+
+    def __init__(self, coefs, theta):
+        self.fitted_coefs = np.asarray(coefs, float)
+        self.theta = float(theta)
+
+
+def test_model_based_mean_matches_sceptres_own_fitted_values(sceptre_precomputations):
+    """`baseline_expression_stats_from_fits` lands on sceptre's expression scale.
+
+    This is the check that matters: the estimator predicts sceptre's test, so
+    its `expression_mean` has to be the mean sceptre's own model implies, not
+    a mean from some other normalisation. Fed sceptre's cached coefficients
+    and its covariate matrix, the helper must reproduce
+    `mean(exp(Z b))` per gene.
+    """
+    from pysceptre.analytical_power import baseline_expression_stats_from_fits
+
+    d = sceptre_precomputations
+    Z = np.asarray(d["Z"], float).reshape(int(d["n_cells"]), int(d["n_cov"]))
+    fits = {g: _Fit(c, t) for g, c, t in zip(d["genes"], d["coefs"], d["theta"], strict=True)}
+
+    got = baseline_expression_stats_from_fits(Z, fits, gene_subset=list(d["genes"]))
+    np.testing.assert_allclose(
+        got["expression_mean"].to_numpy(), np.asarray(d["model_mean"], float), rtol=1e-10
+    )
+    np.testing.assert_allclose(
+        got["expression_size"].to_numpy(), np.asarray(d["theta"], float), rtol=1e-12
+    )
+
+
+def test_the_two_mean_conventions_differ_by_a_scale_not_a_shape(
+    sceptre_precomputations, watteg_prepared
+):
+    """How far the poscounts mean sits from sceptre's, and that it is only a scale.
+
+    Reported rather than bounded tightly: the point is that the offset is one
+    factor across genes, so the poscounts convention makes the estimate
+    conservative rather than wrong-shaped. If this ever stopped being a scale,
+    the two would disagree about a gene's expression *relative* to another
+    gene's, which would be a real problem.
+    """
+    from pysceptre.analytical_power import baseline_expression_stats_from_fits
+
+    d = sceptre_precomputations
+    w = watteg_prepared
+    Z = np.asarray(d["Z"], float).reshape(int(d["n_cells"]), int(d["n_cov"]))
+    fits = {g: _Fit(c, t) for g, c, t in zip(d["genes"], d["coefs"], d["theta"], strict=True)}
+
+    shared = [g for g in w["truth_genes"] if g in fits]
+    assert len(shared) > 100, "too few shared genes to say anything"
+    model = baseline_expression_stats_from_fits(Z, fits, gene_subset=shared)
+    poscounts = dict(zip(w["truth_genes"], np.asarray(w["mean"], float), strict=True))
+    pos = np.array([poscounts[g] for g in shared])
+
+    ratio = model["expression_mean"].to_numpy() / pos
+    print(
+        f"\nsceptre model mean / poscounts mean over {len(shared)} genes: "
+        f"median {np.median(ratio):.4f}, sd {np.std(ratio):.4f}, "
+        f"range {ratio.min():.4f} to {ratio.max():.4f}, "
+        f"corr(log) {np.corrcoef(np.log(model['expression_mean']), np.log(pos))[0, 1]:.6f}"
+    )
+    # A scale, not a reshuffling: the two orderings of gene expression agree almost perfectly.
+    assert np.corrcoef(np.log(model["expression_mean"]), np.log(pos))[0, 1] > 0.999
+    # And the offset is real rather than noise, which is why the choice matters.
+    assert np.median(ratio) > 1.05

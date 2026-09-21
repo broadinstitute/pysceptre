@@ -312,44 +312,65 @@ estimator's signature is the validated one, and a wrapper is where the
 sum-for-union and all-cells-for-cells-in-use substitutions would creep back in
 unnoticed.
 
-#### The size-factor convention is not DESeq2's, and the difference is not cosmetic
+#### `expression_mean` has to be on the scale sceptre's own model works on
 
-`expression_mean` is a size-factor-normalised mean, and the factors are
-DESeq2-style "poscounts": a per-gene geometric mean over the nonzero counts,
-then each cell's factor is the median log-ratio of its own nonzeros against
-those means.
+This is the constraint that matters, and it is easy to state wrongly. The
+estimator exists to predict **sceptre's** test, so the gene expression it is
+handed has to be the expression that test operates on. Any other
+normalisation, however respectable, answers a different question.
 
-**DESeq2 divides its factors by their geometric mean; the implementation this
-estimator was validated against does not.** So `sizeFactors()` comes back
-centred on 1 and ours does not, and the two differ by exactly one constant per
-dataset, the geometric mean of the uncentred factors. Because
-`expression_mean` divides by the factors, that constant scales every gene's
-mean and therefore every power estimate, so anyone "fixing" this to match
-DESeq2 would move every number the estimator produces.
+sceptre caches `fitted_coefs` and `theta` per gene, so the mean its model
+implies is `mean(exp(Z b))`, the average fitted value.
+`baseline_expression_stats_from_fits` returns exactly that, taken from the
+same negative-binomial fit that produces theta, so the power estimate and the
+test it predicts are on one scale by construction rather than by coincidence.
+It is validated against sceptre's own cached coefficients to a relative 1e-10
+over day0's 272 genes, and pysceptre's fitted values already match sceptre's
+at 1e-6 (`test_glm_fits.py`), so nothing new is being trusted here.
 
-**On real data the constant is 1.0639**, measured over day0's 586,309 cells,
-so the gene means this package produces sit **6.4 % below** what DESeq2's
-convention would give and the resulting power estimates are slightly
-conservative. (The fixture's synthetic cases show 1.12 and 1.19, which are
-larger than a real screen's and should not be read as typical.) Note that
-sceptre is not a party to this: it computes no size factors, and contributes
-only theta.
+**The published comparison did not use that mean, and the difference is
+measurable.** It used a size-factor-normalised mean instead, which
+`baseline_expression_stats` reproduces. On day0, over the 237 genes both
+cover:
 
-The published comparison is unaffected, because both sides of it were fed the
-same means -- the analytical formula and the simulation that served as its
-ground truth both read `row_data$mean`. The consequence is for a *user*
-computing power on a new screen: means built DESeq2's way would give slightly
-higher power than the convention these numbers were validated under.
+| | |
+|---|---|
+| sceptre's model mean / the normalised mean | median **1.1613**, sd 0.0218, range 1.0948 to 1.2235 |
+| correlation of the logs | **0.99995** |
+| the raw mean / the normalised mean | 1.1875 |
+| sceptre's model mean / the raw mean | 0.9786 |
 
-The validation is split accordingly, because neither half is sufficient:
+So the normalised mean sits about **16 % below** sceptre's scale, and the
+offset is a single factor rather than a reshuffling: the two agree almost
+perfectly on which genes are expressed more than which. Power rises with
+expression, so feeding the closed form the normalised mean makes it
+**conservative** rather than wrong-shaped. That is the better direction to err
+in, and it is still the wrong number.
 
-| claim | checked against | where |
-|---|---|---|
-| every *ratio* in the factor vector | DESeq2 itself, which defines poscounts | `test_analytical_power_inputs.py`, CI |
-| the *absolute scale* | real R output from the run that produced the published numbers | `test_analytical_power_day0.py`, `realdata` |
+**Which to use.** `baseline_expression_stats_from_fits` for any new analysis,
+because it is the only one consistent with the test being predicted.
+`baseline_expression_stats` only to reproduce the published comparison, whose
+sensitivity and specificity were measured with the normalised mean on both
+sides -- the closed form and the simulation that served as its ground truth
+both read it, so that comparison is internally consistent and its conclusion
+stands.
 
-On day0 the second reproduces R's factors over all 586,309 cells and its
-normalised mean over 237 genes to a relative 1e-9.
+#### A note on the poscounts convention, for the reproduction path only
+
+The normalised mean's size factors are DESeq2-style "poscounts", and they are
+**not** centred the way DESeq2 centres them: DESeq2 divides its factors by
+their geometric mean and the implementation here does not. Measured over
+day0's 586,309 cells that geometric mean is 1.0639, so the factors are 6.4 %
+larger and the resulting gene means 6.4 % smaller than DESeq2's convention
+would give. (This is a *different* 6 % from the 16 % above, and it is a
+subset of it: both push the same way.)
+
+This is recorded for the reproduction path and for anyone comparing against
+DESeq2 output, not as a live decision. sceptre computes no size factors and is
+not a party to it. The validation splits accordingly: every ratio in the
+factor vector is checked against DESeq2 itself, and the absolute scale against
+real output from the run that produced the published numbers, because neither
+check alone constrains both.
 
 #### Why this is 40 lines here rather than a library call
 

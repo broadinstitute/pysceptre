@@ -45,6 +45,8 @@ nothing under `src/` imports the `io` extra; the file-reading glue lives in
 
 ::: pysceptre.analytical_power.inputs.cells_per_grna_from_assignments
 
+::: pysceptre.analytical_power.inputs.baseline_expression_stats_from_fits
+
 ::: pysceptre.analytical_power.inputs.baseline_expression_stats
 
 ::: pysceptre.analytical_power.inputs.poscounts_size_factors

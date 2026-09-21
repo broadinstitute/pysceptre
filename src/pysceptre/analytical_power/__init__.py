@@ -13,6 +13,7 @@ from .closed_form import (
 )
 from .inputs import (
     baseline_expression_stats,
+    baseline_expression_stats_from_fits,
     bh_nominal_cutoff,
     cells_per_grna_from_assignments,
     poscounts_size_factors,
@@ -21,6 +22,7 @@ from .posthoc import compute_power_posthoc, target_cell_counts
 
 __all__ = [
     "baseline_expression_stats",
+    "baseline_expression_stats_from_fits",
     "bh_nominal_cutoff",
     "cells_per_grna_from_assignments",
     "compute_power_posthoc",

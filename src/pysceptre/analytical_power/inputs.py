@@ -24,6 +24,7 @@ __all__ = [
     "cells_per_grna_from_assignments",
     "poscounts_size_factors",
     "baseline_expression_stats",
+    "baseline_expression_stats_from_fits",
 ]
 
 
@@ -177,6 +178,11 @@ def baseline_expression_stats(
     divided by its size factor, then averaged over cells. `expression_size` is
     the NB size, theta, not the dispersion.
 
+    **Prefer `baseline_expression_stats_from_fits` unless you are reproducing
+    the published comparison.** This function's mean comes from a
+    normalisation scheme sceptre does not use, and on day0 it sits about 16%
+    below the mean sceptre's own model implies.
+
     **Two caveats on theta**, because a number that transfers badly here is
     invisible in the output. `fit_all_genes` clamps theta to `(0.01, 1000.0)`,
     so a gene at a bound carries the bound rather than its estimate; and theta
@@ -275,3 +281,76 @@ def bh_nominal_cutoff(p_values: np.ndarray, alpha: float) -> float:
             "undefined. Pass `cutoff` explicitly instead of deriving one."
         )
     return float(ranked[np.flatnonzero(below)[-1]])
+
+
+def baseline_expression_stats_from_fits(
+    covariate_matrix: np.ndarray,
+    gene_fits,
+    *,
+    gene_subset: list[str] | None = None,
+) -> pd.DataFrame:
+    """Baseline statistics on the scale sceptre's own model works on.
+
+    **This is the recommended way to build them.** Both numbers come out of
+    the same negative-binomial fit the discovery test itself uses, so the
+    power estimate and the test it predicts are on one expression scale by
+    construction rather than by coincidence.
+
+    Args:
+        covariate_matrix: `(n_cells, p)`, the same design matrix the fits were
+            produced with. Using a different one silently answers a different
+            question.
+        gene_fits: `gene_id` -> an object with `.fitted_coefs` and `.theta`,
+            which is exactly what `discovery.py::fit_all_genes` returns. A
+            completed analysis already has them.
+        gene_subset: return only these genes, in this order.
+
+    Returns:
+        `response_id`, `expression_mean`, `expression_size`.
+
+    `expression_mean` is `mean(exp(Z @ coefs))`, the average expected count
+    the fitted model gives the gene. That is the quantity the score
+    statistic's variance is built from, so it is what the closed form wants.
+    `expression_size` is the same fit's theta.
+
+    **Why not the size-factor-normalised mean.** `baseline_expression_stats`
+    computes that instead, because it is what the published comparison used.
+    Measured on day0, it sits about 16% *below* this one, near enough a
+    constant across genes (correlation of logs 0.9999), so it makes the power
+    estimate conservative rather than wrong-shaped. It also drags in a
+    normalisation convention that has nothing to do with sceptre. Prefer this
+    function unless you are reproducing those published numbers; see
+    `docs/design.md`, "Analytical per-pair power".
+    """
+    Z = np.asarray(covariate_matrix, dtype=float)
+    if Z.ndim != 2:
+        raise ValueError(f"covariate_matrix must be 2-D, got shape {Z.shape}")
+
+    ids = list(gene_fits) if gene_subset is None else list(dict.fromkeys(gene_subset))
+    unknown = [g for g in ids if g not in gene_fits]
+    if unknown:
+        raise KeyError(f"gene_fits has no entry for {len(unknown)} gene(s): {unknown[:5]}")
+
+    means = np.empty(len(ids), dtype=float)
+    thetas = np.empty(len(ids), dtype=float)
+    for k, gene in enumerate(ids):
+        fit = gene_fits[gene]
+        coefs = np.asarray(fit.fitted_coefs, dtype=float)
+        if coefs.shape != (Z.shape[1],):
+            raise ValueError(
+                f"gene {gene!r} was fitted with {coefs.size} coefficients but covariate_matrix "
+                f"has {Z.shape[1]} columns; these are not the same design"
+            )
+        # One gene at a time: the per-cell mu of a real screen is tens of MB, and holding one
+        # per gene would be the densify this package refuses everywhere else.
+        means[k] = float(np.mean(np.exp(Z @ coefs)))
+        thetas[k] = float(fit.theta)
+
+    out = pd.DataFrame({"response_id": ids, "expression_mean": means, "expression_size": thetas})
+    bad = ~np.isfinite(out["expression_mean"].to_numpy()) | (out["expression_mean"].to_numpy() <= 0)
+    if bad.any():
+        raise ValueError(
+            f"{int(bad.sum())} gene(s) have a non-positive or non-finite fitted mean, including: "
+            f"{out.loc[bad, 'response_id'].tolist()[:5]}"
+        )
+    return out
