@@ -194,10 +194,11 @@ class PermutationSliceDraws(StagedDraws):
     point of the mechanism -- every target reads the same draws -- and it was
     being thrown away by materializing per target.
 
-    **Deliberately not memoized**, unlike the base class. Stage 1 no longer
-    reaches here at all -- `PermutationPrefixSums` serves it from one
-    per-gene scan -- so what remains is the escalation stages, 1,257 and 8
-    pairs of 34,886 on day0. Caching those buys a rebuild for the occasional
+    **Deliberately not memoized**, unlike the base class. What reaches here
+    is every stage whose prefix scan did not pay: the escalation stages of a
+    gene with many targets (1,257 and 8 pairs of 34,886 on day0), and every
+    stage of a gene with few, where `prefix_scan_pays` declines the scan
+    outright. Caching those buys a rebuild for the occasional
     second gene that escalates on the same target, and costs a matrix that
     never goes away: with targets no longer processed in chunks there is no
     point at which a chunk's caches are dropped, and ~1,000 escalating
@@ -356,6 +357,26 @@ def compute_null_full_statistics(
     return compute_null_full_statistics_flat(a, w, D, flat_idxs, lengths, B)
 
 
+# How much more one element costs on the scan than on the sparse matmul.
+# It is what decides between the two routes, because counting elements does
+# not: see "When the permutation prefix scan pays, and when it does not" in
+# `docs/design.md` for the measurement behind the value.
+SCAN_BREAK_EVEN = 8.0
+
+
+def prefix_scan_pays(total_trt: int, m: int, break_even: float = SCAN_BREAK_EVEN) -> bool:
+    """Is one shared prefix scan cheaper than one draw matmul per target?
+
+    `total_trt` is the sum of `n_trt` over every target a gene will be tested
+    against and `m` is the width of the shared permutation rows, so the scan
+    touches `B * m * (p + 2)` elements once against the matmuls' combined
+    `B * total_trt * (p + 2)`. `break_even` is the two routes' cost ratio per
+    element, so the scan wins only when the targets together demand that
+    multiple of a row.
+    """
+    return m > 0 and total_trt >= break_even * m
+
+
 class PermutationPrefixSums:
     """One gene's segment sums along the *shared* permutation rows.
 
@@ -374,11 +395,14 @@ class PermutationPrefixSums:
     ordering to accumulate along -- which is why the per-target matmul
     existed in the first place.
 
-    The arithmetic is the reason to bother. A gene with `t` targets paid
-    `t` matmuls of `B * n_trt * (p + 2)`; it now pays one gather-and-scan of
-    `B * m * (p + 2)` and `t` reads. At day0's stage 1 (`B = 499`, `m = 692`,
-    `p + 2 = 13`, median `n_trt = 557`) that is 4.5M operations once against
-    3.6M per target.
+    The arithmetic looks decisive and is not. A gene with `t` targets paid
+    `t` matmuls of `B * n_trt * (p + 2)`; it pays instead one gather-and-scan
+    of `B * m * (p + 2)` and `t` reads. But a scanned element costs several
+    times what the sparse matmul spends on one, so counting elements picks
+    the wrong route whenever a gene has few targets, and picks it by a wide
+    margin for a single one.
+    `prefix_scan_pays` is the gate, and the caller applies it before building
+    this at all.
 
     **Bounded, and it falls back rather than growing.** The array is
     `B * m * (p + 2) * 8` bytes, where `m` is the *largest* target, and that

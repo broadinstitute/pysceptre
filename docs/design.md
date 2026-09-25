@@ -76,8 +76,8 @@ worker per chunk, costing more than the parallelism saves.
     unconditionally, on the strength of `1.85x with threads, 3.54x with
     processes`. That was measured on a per-pair gather (`D[:, flat_idxs]`
     plus `reduceat`) which held the GIL and **no longer exists** -- the
-    statistic is now a sparse matmul, and permutations reach it through a
-    prefix scan. Both release the GIL. The old figure survived in a
+    statistic is now a sparse matmul, which permutations reach through a
+    prefix scan where that is the cheaper route. Both release the GIL. The old figure survived in a
     docstring for months across a change that reversed it, which is the
     reason this page exists.
 
@@ -122,6 +122,67 @@ A related trap: `stage == 3` is still reachable on the default path. It is
 entered whenever the skew-normal fit is *rejected*, regardless of `B3`, and
 the p-value then comes from the already-drawn `B2 = 4999` statistics. Only
 `stage == 2` means a skew-normal fit was actually used.
+
+## When the permutation prefix scan pays, and when it does not
+
+Under permutations every target reads the same draw rows and differs only in
+how far along each row it reads, so one gene's segment sums for *every*
+target are columns of a single cumulative sum along those rows. That is
+`PermutationPrefixSums`: one gather-and-scan of `B * m * (p + 2)`, where `m`
+is the width of the shared rows, in place of one sparse matmul of
+`B * n_trt * (p + 2)` per target.
+
+**Counting elements makes the scan look unconditionally better, and it is
+not.** An element costs far more on the scan than on the matmul, so the two
+counts are not comparable as they stand. Measured at one real screen's
+dimensions (`n_cells = 131,055`, `m = 406`, `p + 2 = 14`), one target, on an
+Apple M4 Max:
+
+| | scan (gather + `cumsum`) | matmul (`draws_to_matrix` + `@`) | ratio |
+|---|---|---|---|
+| stage 1, `B = 499`   | 13.6 ms  | 1.7 ms + 0.2 ms  | 7.2 |
+| stage 2, `B = 4,999` | 111.2 ms | 12.8 ms + 1.7 ms | 7.7 |
+
+The CSR build is counted in because `PermutationSliceDraws` deliberately does
+not memoize it. Unlike the IRLS threading figures this ratio is not a BLAS
+measurement -- the sparse matmul goes through scipy's sparsetools -- so the
+Accelerate caveat above does not apply to it.
+
+So the scan pays only when a gene's targets together demand more prefix than
+the scan computes, by that factor: `sum(n_trt) >= SCAN_BREAK_EVEN * m`, which
+is `prefix_scan_pays`, applied in `_gene_job` before the scan object is built
+at all. `SCAN_BREAK_EVEN` is 8.0, rounded up from the measurements above so
+that a borderline gene takes the route that is never much worse.
+
+The two regimes are far apart, which is why the exact constant matters little.
+A single-target call sits at a ratio of 1 and can never pay, while day0 pairs
+each gene with about 147 targets (34,886 pairs over 237 genes), whose cell
+counts put its demand at tens of times `m` however `m` is measured. It keeps
+the scan. Reported as
+[issue #2](https://github.com/broadinstitute/pysceptre/issues/2), where a
+single-target caller measured 182 ms to 87 ms per pair, 2.1x, for taking the
+matmul route instead.
+
+**The routes are bit-identical**, so this is a pure cost decision and nothing
+about it is user-visible. `test_prefix_sums_match_the_per_target_matmul_bit_for_bit`
+asserts the sums agree exactly, and
+`test_the_prefix_route_and_the_matmul_route_agree_end_to_end` asserts a whole
+analysis does; that second test needs enough targets to clear the gate, or it
+compares the matmul route against itself.
+
+Two alternatives were rejected. Replacing `cumsum` with `sum` when only one
+prefix is wanted drops one of the two large arrays but keeps the gather, and
+still loses: 35.6 ms against the matmul's 14.5 ms at stage 2 above. Exposing
+the route as a parameter would put a bit-identical implementation detail in
+the API for callers to get wrong.
+
+One thing the gate does not know: **the demand it sees is stage 1's.** Later
+stages are read only by the pairs that escalate, so a gene with many targets
+of which few escalate keeps a scan those few cannot cover. At real `m` the
+memory gate usually declines those stages anyway (`max_bytes` refuses day0's
+stage 2 by a factor of 3.6), and the escalating fraction is not knowable
+before the pairs are tested, so the over-estimate is left rather than guessed
+at.
 
 ## Pairwise QC appears in two different shapes
 

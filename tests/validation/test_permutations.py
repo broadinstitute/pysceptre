@@ -336,16 +336,69 @@ def test_the_prefix_route_and_the_matmul_route_agree_end_to_end():
     Asserted on a full run rather than on the sums alone, so that a mistake
     in *which* column a target reads -- an off-by-one in `n_trt` would be
     silent and plausible -- cannot pass.
+
+    **The target count is load-bearing.** `prefix_scan_pays` declines the
+    scan below `SCAN_BREAK_EVEN` targets' worth of prefix, so the default
+    five-target screen would take the matmul route in *both* runs and this
+    would compare a route against itself. Ten targets of `m` cells each is
+    above the gate; don't lower it.
     """
     from pysceptre.test_statistic.score_stat import PermutationPrefixSums
 
-    Y, genes, X, targets = _screen()
+    Y, genes, X, targets = _screen(n_targets=10)
     fast = _run(Y, genes, X, targets, resampling_mechanism="permutations")
     with mock.patch.object(PermutationPrefixSums, "statistics", return_value=None):
         slow = _run(Y, genes, X, targets, resampling_mechanism="permutations")
     np.testing.assert_array_equal(fast.p_value.to_numpy(), slow.p_value.to_numpy())
     np.testing.assert_array_equal(fast.z_orig.to_numpy(), slow.z_orig.to_numpy())
     np.testing.assert_array_equal(fast.stage.to_numpy(), slow.stage.to_numpy())
+
+
+def test_the_scan_is_declined_when_too_few_targets_would_read_it():
+    """The reported regression: one target, and the scan is 6-7x the matmul.
+
+    It computes the running sum of all `m` prefixes to read the one at
+    `n_trt`, and with a single target `n_trt == m`, so the whole scan serves
+    one read. Asserted end to end rather than on `prefix_scan_pays` alone,
+    because the gate is only useful if `_gene_job` consults it.
+    """
+    from pysceptre.test_statistic.score_stat import PermutationPrefixSums
+
+    Y, genes, X, targets = _screen(n_targets=1)
+    with mock.patch.object(
+        PermutationPrefixSums,
+        "statistics",
+        side_effect=AssertionError("a single-target call used the prefix scan"),
+    ):
+        _run(Y, genes, X, targets, resampling_mechanism="permutations")
+
+
+def test_the_scan_still_runs_when_enough_targets_share_it():
+    """The other side of the gate, so that fixing the regression cannot
+    quietly turn the scan off everywhere."""
+    from pysceptre.test_statistic.score_stat import PermutationPrefixSums
+
+    real = PermutationPrefixSums.statistics
+    Y, genes, X, targets = _screen(n_targets=10)
+    with mock.patch.object(
+        PermutationPrefixSums, "statistics", autospec=True, side_effect=real
+    ) as spy:
+        _run(Y, genes, X, targets, resampling_mechanism="permutations")
+    assert spy.call_count > 0
+
+
+def test_the_break_even_gate_scales_with_the_shared_row_width():
+    """`prefix_scan_pays` compares total demand against `m`, not target count:
+    the scan's cost is one row's width however many targets read it."""
+    from pysceptre.test_statistic.score_stat import SCAN_BREAK_EVEN, prefix_scan_pays
+
+    m = 406
+    assert not prefix_scan_pays(m, m), "one target can never cover a full scan"
+    assert prefix_scan_pays(int(np.ceil(SCAN_BREAK_EVEN * m)), m)
+    assert not prefix_scan_pays(int(np.ceil(SCAN_BREAK_EVEN * m)) - 1, m)
+    # Only the sum matters, so a wide row needs proportionally more of it.
+    assert prefix_scan_pays(int(np.ceil(SCAN_BREAK_EVEN * m)), m // 2)
+    assert not prefix_scan_pays(0, 0), "no shared rows, nothing to scan"
 
 
 def test_the_crt_does_not_use_the_prefix_route():

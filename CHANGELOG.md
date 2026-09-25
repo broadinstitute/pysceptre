@@ -2,6 +2,22 @@
 
 Notable changes per release. Dates are the release date.
 
+## Unreleased
+
+### Changed
+
+- **The permutation prefix scan is now chosen by cost, not taken always.**
+  `PermutationPrefixSums` computes one gene's segment sums for every target
+  at once, which is cheaper than a sparse matmul per target only when enough
+  targets read it: the scan costs about eight times the matmul per element,
+  so a gene tested against a single target paid 6 to 7x for the same numbers.
+  `prefix_scan_pays` now gates it on `sum(n_trt) >= 8 * m` and `_gene_job`
+  consults it before building the scan at all. The two routes are
+  bit-identical, so no result moves; single-target permutation calls get
+  about 2x. Reported as
+  [issue #2](https://github.com/broadinstitute/pysceptre/issues/2), and
+  `docs/design.md` has the measurements.
+
 ## 0.2.0
 
 ### Added

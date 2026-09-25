@@ -41,6 +41,7 @@ from ..test_statistic.score_stat import (
     PermutationPrefixSums,
     PermutationSliceDraws,
     StagedDraws,
+    prefix_scan_pays,
     stack_pieces,
 )
 
@@ -818,10 +819,15 @@ def _gene_job(job: tuple[str, list[str]]) -> dict[tuple[str, str], dict]:
     # Permutations share their draws across targets, so this gene's segment
     # sums for *every* target are one prefix scan along those shared rows --
     # see `PermutationPrefixSums`. Built once here and read by each target,
-    # in place of a matmul per target. The CRT has no shared ordering to scan
-    # along, so it keeps the matmul.
+    # in place of a matmul per target, but only where enough targets read it
+    # to cover the scan's higher cost per element (`prefix_scan_pays`). The
+    # CRT has no shared ordering to scan along, so it keeps the matmul.
     perms = st["permutations"]
-    prefix = PermutationPrefixSums(stacked, perms) if perms is not None else None
+    prefix = None
+    if perms is not None:
+        demand = sum(len(st["target_precomps"][t].trt_idxs) for t in targets_here)
+        if prefix_scan_pays(demand, perms.shape[1]):
+            prefix = PermutationPrefixSums(stacked, perms)
 
     out: dict[tuple[str, str], dict] = {}
     for target_id in targets_here:
@@ -1080,10 +1086,10 @@ def run_discovery_ntcells_complement(
     # Chunking exists to bound what a live target costs, and for permutations
     # that is now nothing. There is no logistic fit (`fit_all_targets`), the
     # draws are one shared array held by reference
-    # (`PermutationSliceDraws`), stage 1 is served from a per-gene scan
-    # without materializing anything per target (`PermutationPrefixSums`),
-    # and the escalation stages are rebuilt rather than cached. A target
-    # costs its `trt_idxs` and two pointers.
+    # (`PermutationSliceDraws`), a stage worth scanning is served from one
+    # per-gene scan without materializing anything per target
+    # (`PermutationPrefixSums`), and every other stage is rebuilt rather than
+    # cached. A target costs its `trt_idxs` and two pointers.
     #
     # The CRT is chunked as before: its draws are genuinely per-target and
     # large, which is what the budget is for.
