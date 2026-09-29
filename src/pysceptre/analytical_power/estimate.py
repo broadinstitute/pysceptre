@@ -6,9 +6,11 @@ has already been run: complement control group, explicit cutoff.
 
 Given a screen that has already been analysed, it answers per pair: if this
 element really did reduce this gene by X%, would this screen have detected it?
-No simulation and no fitted parameters. None of its inputs is a property of
-the *pair* -- expression and dispersion belong to the gene, cell counts to the
-element -- so it answers that question for pairs the screen never tested too.
+No simulation and no fitted parameters. On the default inputs none is a
+property of the *pair* -- expression and dispersion belong to the gene, cell
+counts to the element -- so it answers that question for pairs the screen
+never tested too. Per-pair expression, from `inputs.matched_expression_stats`,
+is accepted as well.
 
 Several plausible generalisations are deliberately not offered, and several
 arguments deliberately have no default. `docs/design.md`, "Analytical
@@ -79,6 +81,10 @@ def compute_power(
             `expression_mean` and `expression_size`. `expression_size` is the
             NB size -- theta, i.e. `1 / dispersion`.
 
+            With a `grna_target` column it is instead one row per pair, each
+            matched to its pair by `(grna_target, response_id)`. That is the
+            shape `inputs.matched_expression_stats` returns.
+
             **`expression_mean` is E[observed count in a cell]**, on the raw
             count scale, and the formula says so twice: `var_nb` is the
             variance of the negative binomial the counts themselves follow,
@@ -119,8 +125,8 @@ def compute_power(
         so a surprising number can be traced without recomputing it.
 
     Raises:
-        KeyError: a pair names a target with no gRNA counts, or a gene with no
-            baseline statistics. Never filled in silently: a missing input
+        KeyError: a pair names a target with no gRNA counts, or a gene (or,
+            with per-pair statistics, a pair) with no baseline statistics. Never filled in silently: a missing input
             would otherwise become a NaN power indistinguishable from a real
             one.
         ValueError: an argument is out of range, a key is duplicated, or the
@@ -155,11 +161,17 @@ def compute_power(
     # R joins these with `relationship = "many-to-one"`, which errors on a repeated key rather
     # than quietly taking one of them. Match that: a duplicated gene would silently pick a row,
     # and a duplicated gRNA would be counted twice into the target's sum.
-    dup_genes = baseline_expression_stats["response_id"].duplicated()
+    per_pair = "grna_target" in baseline_expression_stats.columns
+    gene_key = ["grna_target", "response_id"] if per_pair else ["response_id"]
+    dup_genes = baseline_expression_stats.duplicated(subset=gene_key)
     if dup_genes.any():
-        offenders = sorted(baseline_expression_stats.loc[dup_genes, "response_id"].unique())
+        offenders = baseline_expression_stats.loc[dup_genes, gene_key].drop_duplicates()
+        offenders = sorted(offenders.itertuples(index=False, name=None))
+        if not per_pair:
+            offenders = [g for (g,) in offenders]
+        what = "(grna_target, response_id) pair(s)" if per_pair else "response_id(s)"
         raise ValueError(
-            f"baseline_expression_stats has {len(offenders)} duplicated response_id(s), "
+            f"baseline_expression_stats has {len(offenders)} duplicated {what}, "
             f"including: {offenders[:5]}"
         )
     if "grna_id" in cells_per_grna.columns:
@@ -180,7 +192,7 @@ def compute_power(
             )
 
     targets = target_cell_counts(cells_per_grna).set_index("grna_target")
-    genes = baseline_expression_stats.set_index("response_id")
+    genes = baseline_expression_stats.set_index(gene_key)
 
     out = discovery_pairs.loc[:, ["grna_target", "response_id"]].reset_index(drop=True)
     unknown_targets = sorted(set(out["grna_target"]) - set(targets.index))
@@ -189,17 +201,27 @@ def compute_power(
             f"{len(unknown_targets)} target(s) in discovery_pairs have no rows in "
             f"cells_per_grna, including: {unknown_targets[:5]}"
         )
-    unknown_genes = sorted(set(out["response_id"]) - set(genes.index))
-    if unknown_genes:
-        raise KeyError(
-            f"{len(unknown_genes)} gene(s) in discovery_pairs have no rows in "
-            f"baseline_expression_stats, including: {unknown_genes[:5]}"
-        )
+    if per_pair:
+        lookup = pd.MultiIndex.from_frame(out[gene_key])
+        unknown_pairs = sorted(set(lookup) - set(genes.index))
+        if unknown_pairs:
+            raise KeyError(
+                f"{len(unknown_pairs)} pair(s) in discovery_pairs have no rows in "
+                f"baseline_expression_stats, including: {unknown_pairs[:5]}"
+            )
+    else:
+        lookup = out["response_id"]
+        unknown_genes = sorted(set(lookup) - set(genes.index))
+        if unknown_genes:
+            raise KeyError(
+                f"{len(unknown_genes)} gene(s) in discovery_pairs have no rows in "
+                f"baseline_expression_stats, including: {unknown_genes[:5]}"
+            )
 
     num_trt_cells = targets["num_trt_cells"].reindex(out["grna_target"]).to_numpy()
     num_trt_cells_sq = targets["num_trt_cells_sq"].reindex(out["grna_target"]).to_numpy()
-    expression_mean = genes["expression_mean"].reindex(out["response_id"]).to_numpy(dtype=float)
-    expression_size = genes["expression_size"].reindex(out["response_id"]).to_numpy(dtype=float)
+    expression_mean = genes["expression_mean"].reindex(lookup).to_numpy(dtype=float)
+    expression_size = genes["expression_size"].reindex(lookup).to_numpy(dtype=float)
 
     if np.any(expression_mean <= 0) or not np.all(np.isfinite(expression_mean)):
         raise ValueError("baseline_expression_stats['expression_mean'] must be finite and positive")

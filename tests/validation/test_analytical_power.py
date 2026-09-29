@@ -387,6 +387,47 @@ def test_duplicate_keys_raise(perturbplan_ground_truth):
         compute_power(pairs, dup_grna, baseline, **common)
 
 
+def test_per_pair_statistics_repeating_the_gene_values_change_nothing(perturbplan_ground_truth):
+    """The per-pair path is a lookup, not a different estimator.
+
+    Handing every pair its own gene's row must give the per-gene answer
+    exactly, which is what lets `matched_expression_stats` feed the unchanged
+    closed form.
+    """
+    gt = perturbplan_ground_truth
+    pairs, cells_per_grna, baseline = _frames(gt)
+    common = dict(
+        fold_change_mean=0.85,
+        fold_change_sd=0.13,
+        cutoff=1e-4,
+        num_total_cells=gt["num_total_cells"],
+    )
+    per_pair = pairs[["grna_target", "response_id"]].merge(baseline, on="response_id")
+    per_pair = per_pair.iloc[::-1].reset_index(drop=True)
+    by_gene = compute_power(pairs, cells_per_grna, baseline, **common)
+    by_pair = compute_power(pairs, cells_per_grna, per_pair, **common)
+    pd.testing.assert_frame_equal(by_gene, by_pair, check_exact=True)
+
+
+def test_per_pair_statistics_refuse_a_repeated_or_missing_pair(perturbplan_ground_truth):
+    gt = perturbplan_ground_truth
+    pairs, cells_per_grna, baseline = _frames(gt)
+    common = dict(
+        fold_change_mean=0.85,
+        fold_change_sd=0.13,
+        cutoff=1e-4,
+        num_total_cells=gt["num_total_cells"],
+    )
+    per_pair = pairs[["grna_target", "response_id"]].merge(baseline, on="response_id")
+
+    dup = pd.concat([per_pair, per_pair.iloc[[0]]], ignore_index=True)
+    with pytest.raises(ValueError, match=r"duplicated \(grna_target, response_id\)"):
+        compute_power(pairs, cells_per_grna, dup, **common)
+
+    with pytest.raises(KeyError, match="1 pair"):
+        compute_power(pairs, cells_per_grna, per_pair.iloc[1:], **common)
+
+
 def test_a_guide_shared_by_two_targets_is_counted_into_both(perturbplan_ground_truth):
     """The gRNA-to-target map is many-to-many, and R sums a shared guide into every target.
 
