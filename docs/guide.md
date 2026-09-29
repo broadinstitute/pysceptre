@@ -50,7 +50,9 @@ the ones that failed QC and were never tested. It is a port of
 sceptre and is validated against that package instead, so read its limits in
 [Design decisions](design.md#analytical-per-pair-power) before using it on a
 single pair. `run_discovery_analysis` does not call it, and
-[Tutorials](tutorials.md) shows the join.
+[Tutorials](tutorials.md) shows the join. `matched_expression_stats` is an
+optional per-pair input that carries the covariates into the estimate; see
+[Design decisions](design.md#covariates-through-the-information-matched-mean).
 
 ## If a design matrix is refused
 

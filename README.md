@@ -514,6 +514,14 @@ adjustment over the union each time.
   mean sits about **16 % below** the scale sceptre's own model works on, which
   makes the estimate conservative rather than wrong-shaped. Use it only to
   reproduce those numbers.
+- **A per-pair alternative that carries the covariates.**
+  `matched_expression_stats` gives each (target, gene) pair the mean that
+  matches the information sceptre's per-cell fit gives that target's cells,
+  which corrects batch-driven genes and the larger libraries of perturbed
+  cells. It improved agreement with simulation on two DC-TAP screens but has
+  not been checked on day0, so it is an option beside
+  `baseline_expression_stats_from_fits`, not a replacement -- see
+  [Design decisions](https://broadinstitute.github.io/pysceptre/design/#covariates-through-the-information-matched-mean).
 
 <!-- --8<-- [end:scope] -->
 

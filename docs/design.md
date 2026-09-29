@@ -424,8 +424,10 @@ would be a different estimator.
 
 ### Why the covariates can come from anywhere
 
-The estimator's inputs are not properties of the *pair*: expression mean and
-dispersion belong to the gene, cell counts to the element. That is measured
+On the default inputs the estimator's inputs are not properties of the
+*pair*: expression mean and dispersion belong to the gene, cell counts to the
+element. The information-matched mean below is per pair, but it is still
+composed from the gene's fit and the element's cells. That is measured
 rather than assumed: one screen processed through sceptre twice, under two
 designs sharing genes and elements but almost no pairs, gives covariates that
 match exactly across the entities the two runs share. So a pair's inputs
@@ -448,6 +450,84 @@ ondisc-backed response matrix forced. It held across a tenfold change in
 threshold and a tenfold range of effect size, which is real evidence it is not
 tuned to a corner, but whether it holds on another lab and protocol is
 untested.
+
+### Covariates through the information-matched mean
+
+`compute_power` summarises a gene by one `expression_mean` and treats every
+cell as if it had that mean. sceptre's score statistic does not: it is built
+cell by cell from the fitted means `mu_j = exp(Z_j b)`, and a cell contributes
+information `w_j = mu_j / (1 + mu_j / theta)`, the `w` of
+`precompute/pieces.py`. Two effects follow, in opposite directions.
+
+- **`w` is concave in `mu`**, so when `mu_j` varies a lot between cells (a
+  batch effect, library size) the mean of `mu` overstates the information the
+  test gets. DC-TAP K562's CYBA (`ENSG00000051523`), nearly absent from six of
+  eleven batches, is the worst case: one mean per gene reads its pairs too
+  high.
+- **An element's perturbed cells are not the average cell.** They have larger
+  libraries and carry more information than one mean per gene gives them. The
+  median of `info_ratio_pert` over the trans pairs, the perturbed cells'
+  average information over the average cell's, is 1.06 in K562 and 1.11 in
+  WTC11. That is where the estimate's slight conservatism on those screens
+  comes from.
+
+`inputs.matched_expression_stats` corrects both without a new fit and without
+touching the closed form. Per pair, with `P` the target's perturbed cells and
+`C` the rest, it averages `w` over each (`f_p`, `f_c`) and hands PerturbPlan
+the single mean that gives its statistic the same variance:
+
+    f               = (1/n_p + 1/n_c) / (1/(n_p f_p) + 1/(n_c f_c))
+    expression_mean = f / (1 - f / theta)
+
+Every `w_j < theta`, so `f` lies below theta too and the inversion cannot
+fail; there is no clamp to add. `expression_size` stays the fit's theta. The
+result has one row per pair, which is why `compute_power` accepts a
+`grna_target` column in `baseline_expression_stats`. This is the one input
+that *is* a property of the pair, so it exists only for pairs whose target
+has cells.
+
+**The averages and the counts use different cell sets, on purpose.** `f_p`
+and `f_c` average over the *union* of the target's cells and its complement,
+because that is what the test sees. `n_p` and `n_c` are PerturbPlan's own
+per-gRNA *sum* and `num_total_cells - n_p`, the first of the "Five things
+that look like simplifications and are not" above. That combination produced
+every number below. Do not tidy it into union/union or
+sum/sum without re-running the comparison.
+
+Agreement of the 0.8 call with WattEG's simulation at a 15% knockdown
+(`fold_change_mean=0.85`, `fold_change_sd=0`, `side="both"`, each screen's
+own discovery threshold as `cutoff`). "Over" is `compute_power >= 0.8` where
+the simulation is not, "under" the reverse. `test_matched_expression_dctap.py`
+reproduces the per-element column from the same inputs.
+
+| screen, pairs | pairs | one mean per gene | gene-level matched | per-element matched |
+|---|---:|---|---|---|
+| K562 cis    | 7,493   | 98.02% (41 over, 107 under)      | 97.68% (8 over, 166 under)     | **98.56%** (32 over, 76 under)       |
+| K562 trans  | 297,707 | 97.70% (1,617 over, 5,232 under) | 96.94% (300 over, 8,824 under) | **98.26%** (1,518 over, 3,648 under) |
+| WTC11 cis   | 6,574   | 97.61% (1 over, 156 under)       | 97.54% (1 over, 161 under)     | **99.04%** (16 over, 47 under)       |
+| WTC11 trans | 196,615 | 97.38% (28 over, 5,122 under)    | 97.17% (13 over, 5,558 under)  | **99.07%** (493 over, 1,331 under)   |
+
+The per-element mean improves all four, mostly by removing too-low calls,
+and it gives back some too-high ones. That is the trade to watch: an
+over-call is the error that closes a question wrongly.
+
+**The gene-level version is not offered.** Dropping the element split gives
+one matched mean per gene, `f = mean over all cells of w_j`. It fixes CYBA and
+nothing else, and it lowers agreement on all four tables, because it removes
+the too-high calls and adds more too-low ones by ignoring that perturbed cells
+are bigger.
+
+**What this does not establish.** One lab, two DC-TAP screens, one effect
+size, `fold_change_sd = 0` and `side="both"` only. The day0 comparison of
+`compute_power` has not been repeated with the matched mean, which is why it
+sits beside `baseline_expression_stats_from_fits` rather than replacing it.
+
+**What it still leaves out.** sceptre's statistic also subtracts the treated
+cells' projection onto the covariates (`lower_right` in
+`test_statistic/score_stat.py`). Matching `w` captures how much information
+the perturbed and control cells carry, not how much of the treatment
+indicator the covariates explain. For an element whose perturbed cells sit
+mostly in one batch that term matters, and the matched mean does not see it.
 
 ### Building the estimator's inputs
 
