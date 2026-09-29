@@ -23,6 +23,8 @@ import numpy as np
 import pandas as pd
 from scipy import sparse
 
+from .estimate import target_cell_counts
+
 
 class GeneFit(Protocol):
     """The two attributes a per-gene fit has to expose.
@@ -42,6 +44,7 @@ __all__ = [
     "poscounts_size_factors",
     "baseline_expression_stats",
     "baseline_expression_stats_from_fits",
+    "matched_expression_stats",
 ]
 
 
@@ -416,5 +419,155 @@ def baseline_expression_stats_from_fits(
         raise ValueError(
             f"{int(bad.sum())} gene(s) have a non-positive or non-finite fitted mean, including: "
             f"{out.loc[bad, 'response_id'].tolist()[:5]}"
+        )
+    return out
+
+
+def matched_expression_stats(
+    discovery_pairs: pd.DataFrame,
+    covariate_matrix: np.ndarray,
+    gene_fits: Mapping[str, GeneFit],
+    grna_target_cells: dict[str, np.ndarray],
+    cells_per_grna: pd.DataFrame,
+    num_total_cells: int,
+) -> pd.DataFrame:
+    """Per-pair baseline statistics that carry the covariates into `compute_power`.
+
+    An alternative to `baseline_expression_stats_from_fits`. Instead of one
+    mean per gene, each (target, gene) pair gets the single mean that gives
+    the closed form's statistic the same variance as sceptre's per-cell fit
+    does for that target's cells. A cell's information is
+    `w_j = mu_j / (1 + mu_j / theta)` with `mu_j = exp(Z_j @ coefs)`, and with
+    `f_p` and `f_c` its average over the target's perturbed cells and over the
+    complement,
+
+        f = (1/n_p + 1/n_c) / (1/(n_p f_p) + 1/(n_c f_c))
+        expression_mean = f / (1 - f / theta)
+
+    The last line inverts `w`, and it cannot fail: every `w_j < theta`, so `f`
+    does too.
+
+    Args:
+        discovery_pairs: columns `grna_target` and `response_id`, the pairs to
+            score.
+        covariate_matrix: `(n_cells, p)`, the same design matrix the fits were
+            produced with.
+        gene_fits: `gene_id` -> an object with `.fitted_coefs` and `.theta`,
+            as `discovery.py::fit_all_genes` returns.
+        grna_target_cells: target -> the indices, into the rows of
+            `covariate_matrix`, of the cells carrying any of its gRNAs (the
+            union), as `run_discovery_analysis` takes it. `f_p` and `f_c` are
+            averaged over these cells and the rest.
+        cells_per_grna: one row per gRNA, as `compute_power` takes it. `n_p`
+            is `target_cell_counts(cells_per_grna)["num_trt_cells"]`, the
+            per-gRNA **sum**, and `n_c = num_total_cells - n_p`.
+        num_total_cells: the value that will be passed to `compute_power`.
+
+    Returns:
+        `grna_target`, `response_id`, `expression_mean`, `expression_size`
+        and `info_ratio_pert`, one row per pair in the order supplied.
+        `expression_size` is the fit's theta. `info_ratio_pert` is `f_p` over
+        the gene's all-cell mean of `w`, kept so a surprising pair can be
+        traced. The frame can be passed to `compute_power` as its
+        `baseline_expression_stats`.
+
+    The averages use the union and the counts use the sum on purpose; do not
+    make them agree. See `docs/design.md`, "Covariates through the
+    information-matched mean".
+
+    Raises:
+        KeyError: a pair names a gene with no fit, a target with no cells in
+            `grna_target_cells`, or a target with no rows in `cells_per_grna`.
+        ValueError: the design and a fit disagree, a target has no cells or
+            all of them, or a result is not finite and positive.
+    """
+    Z = np.asarray(covariate_matrix, dtype=float)
+    if Z.ndim != 2:
+        raise ValueError(f"covariate_matrix must be 2-D, got shape {Z.shape}")
+    n_cells = Z.shape[0]
+
+    missing = [c for c in ("grna_target", "response_id") if c not in discovery_pairs.columns]
+    if missing:
+        raise KeyError(f"discovery_pairs is missing column(s): {missing}")
+    pairs = discovery_pairs.loc[:, ["grna_target", "response_id"]].reset_index(drop=True)
+
+    unknown_genes = sorted(set(pairs["response_id"]) - set(gene_fits))
+    if unknown_genes:
+        raise KeyError(
+            f"gene_fits has no entry for {len(unknown_genes)} gene(s): {unknown_genes[:5]}"
+        )
+    unknown_targets = sorted(set(pairs["grna_target"]) - set(grna_target_cells))
+    if unknown_targets:
+        raise KeyError(
+            f"grna_target_cells has no entry for {len(unknown_targets)} target(s): "
+            f"{unknown_targets[:5]}"
+        )
+    sums = target_cell_counts(cells_per_grna).set_index("grna_target")["num_trt_cells"]
+    uncounted = sorted(set(pairs["grna_target"]) - set(sums.index))
+    if uncounted:
+        raise KeyError(
+            f"{len(uncounted)} target(s) have no rows in cells_per_grna: {uncounted[:5]}"
+        )
+
+    cells = {}
+    for target in pairs["grna_target"].unique():
+        idx = np.unique(np.asarray(grna_target_cells[target], dtype=np.intp))
+        if idx.size == 0 or idx.size >= n_cells:
+            raise ValueError(
+                f"target {target!r} has {idx.size} of {n_cells} cells; both the perturbed cells "
+                "and the complement must be non-empty"
+            )
+        if idx[0] < 0 or idx[-1] >= n_cells:
+            raise ValueError(f"target {target!r} has cell indices outside [0, {n_cells})")
+        cells[target] = idx
+
+    n_p = sums.reindex(pairs["grna_target"]).to_numpy(dtype=float)
+    n_c = float(num_total_cells) - n_p
+    if np.any(n_p <= 0) or np.any(n_c <= 0):
+        raise ValueError(
+            "every pair needs a positive summed treated count and a non-empty complement, but "
+            f"{int(np.sum(n_p <= 0))} pair(s) have no treated cells and "
+            f"{int(np.sum(n_c <= 0))} have num_total_cells ({num_total_cells}) at or below "
+            "the summed count"
+        )
+
+    f_p = np.empty(len(pairs), dtype=float)
+    f_c = np.empty(len(pairs), dtype=float)
+    w_mean = np.empty(len(pairs), dtype=float)
+    theta = np.empty(len(pairs), dtype=float)
+    # Gene at a time, so each gene's w is built once for every target it is paired with and no
+    # (n_cells, n_genes) matrix ever exists.
+    for gene, rows in pairs.groupby("response_id", sort=False).indices.items():
+        fit = gene_fits[gene]
+        coefs = np.asarray(fit.fitted_coefs, dtype=float)
+        if coefs.shape != (Z.shape[1],):
+            raise ValueError(
+                f"gene {gene!r} was fitted with {coefs.size} coefficients but covariate_matrix "
+                f"has {Z.shape[1]} columns; these are not the same design"
+            )
+        th = float(fit.theta)
+        mu = np.exp(Z @ coefs)
+        w = mu / (1.0 + mu / th)
+        w_total = float(w.sum())
+        for r in rows:
+            idx = cells[pairs.at[r, "grna_target"]]
+            w_pert = float(w[idx].sum())
+            f_p[r] = w_pert / idx.size
+            f_c[r] = (w_total - w_pert) / (n_cells - idx.size)
+        w_mean[rows] = w_total / n_cells
+        theta[rows] = th
+
+    f = (1.0 / n_p + 1.0 / n_c) / (1.0 / (n_p * f_p) + 1.0 / (n_c * f_c))
+    out = pairs.assign(
+        expression_mean=f / (1.0 - f / theta),
+        expression_size=theta,
+        info_ratio_pert=f_p / w_mean,
+    )
+    mean = out["expression_mean"].to_numpy()
+    bad = ~np.isfinite(mean) | (mean <= 0)
+    if bad.any():
+        raise ValueError(
+            f"{int(bad.sum())} pair(s) have a non-positive or non-finite matched mean, including: "
+            f"{list(out.loc[bad, ['grna_target', 'response_id']].itertuples(index=False, name=None))[:5]}"
         )
     return out
