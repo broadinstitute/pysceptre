@@ -18,6 +18,7 @@ from .pipeline.api import (
     run_discovery_analysis,
     run_power_check,
 )
+from .specificity import run_specificity_check
 
 try:
     __version__ = version("pysceptre")
@@ -29,5 +30,6 @@ __all__ = [
     "run_discovery_analysis",
     "run_calibration_check",
     "run_power_check",
+    "run_specificity_check",
     "__version__",
 ]
