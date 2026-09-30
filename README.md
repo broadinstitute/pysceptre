@@ -374,6 +374,46 @@ would have failed QC at all.
 
 <!-- --8<-- [end:tutorial-power] -->
 
+### `pysceptre.run_specificity_check`
+
+The question sceptre's calibration and power checks leave open: of the links a
+screen discovered, how many are more than background? A test between an
+element and a gene on another chromosome cannot be direct regulation, so how
+often those tests are called at the cis cutoff is how often a test is called
+without it. Like `compute_power`, it does not come from sceptre, and it has no
+R counterpart to be validated against.
+
+```python
+from pysceptre import run_specificity_check
+from pysceptre.analytical_power import bh_nominal_cutoff
+
+result = run_specificity_check(
+    cis_result,              # discovery on same-chromosome element-gene pairs
+    trans_result,            # the same test, elements x cis genes on other chromosomes
+    element_positions,       # grna_target, chrom, centre (the screen's own coordinates)
+    gene_positions,          # response_id, chrom, tss
+    cutoff=bh_nominal_cutoff(p_values, alpha=0.1),
+    control_targets=tss_controls,
+    seed=0,
+)
+result.by_distance                # cis rate, matched background, links above background
+result.by_distance_without_broad  # the same without the broad-effect elements
+result.broad_effect               # elements with far more background calls than the rest
+result.far_links                  # each far link: can it run through another gene?
+```
+
+| Argument | Notes |
+|---|---|
+| `element_positions` | From the screen's own coordinate table, **never** parsed from target names: names can be on a different genome build from the annotation. |
+| `trans_result` | Must come from the same test as `cis_result`. Pairs outside the cis elements and cis genes are ignored, as are genes on the element's chromosome and on chrY. |
+| `control_targets` | Targets that are not elements, such as TSS positive controls. Left out of the counts and still used as TSS knockdowns. |
+| `seed` | An int, or a `Generator` to continue drawing from. |
+
+The background is matched gene for gene rather than pooled, because
+well-expressed genes are called more often, and its intervals are a bootstrap
+over elements. What the result means and what it has been checked against is in
+[Design decisions](https://broadinstitute.github.io/pysceptre/design/#specificity-check).
+
 ### Lower-level building blocks
 
 `run_discovery_analysis` is a thin wrapper around
@@ -522,6 +562,12 @@ adjustment over the union each time.
   not been checked on day0, so it is an option beside
   `baseline_expression_stats_from_fits`, not a replacement -- see
   [Design decisions](https://broadinstitute.github.io/pysceptre/design/#covariates-through-the-information-matched-mean).
+- **`run_specificity_check` is also not sceptre's, and has no R reference.**
+  It counts how many discovered links exceed a background measured on tests
+  across chromosomes. Its reference is the analysis it was ported from, which it
+  reproduces on three screens; nothing external has checked it. The
+  fingerprint part of that analysis is not included -- see
+  [Design decisions](https://broadinstitute.github.io/pysceptre/design/#specificity-check).
 
 <!-- --8<-- [end:scope] -->
 

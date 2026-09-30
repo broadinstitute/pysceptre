@@ -55,6 +55,34 @@ nothing under `src/` imports the `io` extra; the file-reading glue lives in
 
 ::: pysceptre.analytical_power.inputs.bh_nominal_cutoff
 
+## Specificity check
+
+How many discovered links are more than background, measured on tests between
+elements and genes on other chromosomes. Not from sceptre; see
+[Design decisions](design.md#specificity-check).
+
+::: pysceptre.specificity.check.run_specificity_check
+
+::: pysceptre.specificity.check.SpecificityResult
+
+### Its pieces
+
+::: pysceptre.specificity.background.cis_links
+
+::: pysceptre.specificity.background.background_pairs
+
+::: pysceptre.specificity.background.above_background_by_distance
+
+::: pysceptre.specificity.background.broad_effect_elements
+
+::: pysceptre.specificity.background.nearest_tss
+
+::: pysceptre.specificity.lookup.tss_targets
+
+::: pysceptre.specificity.lookup.gene_lookup
+
+::: pysceptre.specificity.lookup.detour_check
+
 ## Lower-level building blocks
 
 Most users will not need to go below `run_discovery_analysis`. Each pipeline

@@ -4,8 +4,9 @@ Standalone Python port of the statistical engine behind
 [`sceptre`](https://github.com/Katsevich-Lab/sceptre)'s discovery analysis for
 single-cell CRISPR screens.
 
-**Scope: three validated sceptre paths plus one estimator that is not
-sceptre's, not a general sceptre reimplementation.** The three are discovery
+**Scope: three validated sceptre paths plus two things that are not
+sceptre's (an estimator and a check), not a general sceptre
+reimplementation.** The three are discovery
 analysis, the calibration check and the power check, all on the complement
 control group + CRT (conditional randomization test) resampling, high-MOI
 path. Non-complement control groups, low-MOI, `assign_grnas()`, `run_qc()`
@@ -30,6 +31,14 @@ screen *could* have detected rather than what it did, and its ground truth is
 PerturbPlan's own R rather than sceptre's. Its scope limits are its own:
 complement control group only, explicit cutoff only, and no
 minimum-detectable-effect-size path. `docs/design.md` has them.
+
+`specificity/` is a **fifth**, and it has no external ground truth at all.
+`run_specificity_check` measures how many discovered links exceed a background
+taken from tests across chromosomes. It is ported from WattEG-paper's
+`analysis/direct_indirect.py`, and `test_specificity_days.py` reproduces that
+notebook on three screens; nothing outside it validates the method. The
+notebook's fingerprint check is deliberately left out. `docs/design.md`,
+"Specificity check", has the rest.
 
 **One carve-out from "no `run_qc()`".** The calibration and power checks
 *construct or receive* their own pairs, so both must decide which are testable
@@ -65,12 +74,17 @@ src-layout -- the importable package lives under `src/`, so it is only on
   - `analytical_power/` -- the closed-form per-pair power estimate, ported
                            from PerturbPlan (MIT, `THIRD_PARTY_LICENSES`). Not
                            from sceptre, and not part of the discovery path.
+  - `specificity/`      -- the specificity check: links above a background
+                           measured across chromosomes. Tables in, tables out;
+                           no count matrix.
 - `tests/validation/`   -- the whole suite, in one place. **Most** files
                            compare against R ground truth rather than only
                            internal consistency, but not all: the permutation
                            tests are internal-consistency only, and the
                            analytical power tests compare against
-                           PerturbPlan's R, not sceptre's. Slow on a fresh
+                           PerturbPlan's R, not sceptre's, and the
+                           specificity tests against the notebook they were
+                           ported from. Slow on a fresh
                            venv while numba JIT-compiles, fast once its cache
                            is warm.
 - `docker/`             -- one Dockerfile, the minimal pysceptre runtime

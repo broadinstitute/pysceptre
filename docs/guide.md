@@ -54,6 +54,17 @@ single pair. `run_discovery_analysis` does not call it, and
 optional per-pair input that carries the covariates into the estimate; see
 [Design decisions](design.md#covariates-through-the-information-matched-mean).
 
+## A fifth, also not sceptre's
+
+`run_specificity_check` asks how many of the links a screen discovered are
+more than background: how often a test is called without regulation, measured
+on tests between elements and genes on other chromosomes, matched gene for
+gene and bootstrapped over elements. It needs a discovery result on the cis
+pairs, one from the same test on those elements against genes elsewhere, and
+positions for both. It has no R counterpart; read
+[Design decisions](design.md#specificity-check) for what it has been checked
+against.
+
 ## If a design matrix is refused
 
 `covariate_matrix` is checked before any fitting and a rank-deficient design

@@ -18,6 +18,11 @@ screen *could* have detected, per pair and without simulation. It answers a
 different question, it is a port of PerturbPlan rather than of sceptre, and it
 is validated against that package instead.
 
+**`run_specificity_check`** asks how many of the links a screen discovered are
+more than background, measured on tests between elements and genes on other
+chromosomes. It is not sceptre's either, and nothing external validates it:
+its reference is the analysis it was ported from.
+
 What is deliberately *not* implemented, and which paths are exercised rather
 than validated, is in [Scope and limitations](scope.md); read it before
 assuming a path works.

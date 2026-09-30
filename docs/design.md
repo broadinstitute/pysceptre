@@ -747,6 +747,116 @@ and were never tested, are dropped before the correction rather than inflating
 its denominator. On day0 it reproduces R's derived threshold,
 `0.00072628634455531758`, exactly.
 
+## Specificity check
+
+`specificity/` answers the question sceptre's two other checks leave open. The
+calibration check asks whether the pipeline invents effects, the power check
+whether it recovers effects it should. Neither says how many of the links a
+screen *did* discover are real. Like `analytical_power/`, this is not a port of
+sceptre and has no R counterpart; unlike it, there is no external
+implementation to validate against either. Its reference is the analysis it
+was ported from, WattEG-paper's `analysis/direct_indirect.py`, which itself
+started from EngreitzLab/CRISPR_indirect_effects (DC-TAP Fig. 4 and S3).
+
+A **link** is an element-gene pair on the same chromosome, called at the
+screen's cutoff with a negative effect. "Direct" and "indirect", the original
+names, are not used: the background is mostly noise and genes that shift with
+any perturbation, not indirect regulation.
+
+### The background, matched gene for gene
+
+An element cannot regulate a gene on another chromosome directly, so how often
+those tests are called at the **cis** cutoff, with a negative effect, is how
+often a test is called without regulation. `background_pairs` takes the
+screen's elements against its cis genes on other chromosomes, drops chrY, and
+keeps tested pairs only.
+
+**One pooled rate is biased**, because well-expressed genes are called more
+often and the mix of genes differs between distance bins. So each gene gets
+its own rate `r_g`, the share of its background tests called, and a bin's
+background is the mean of `r_g` over the bin's tested pairs: a gene counts as
+often as it is tested there. Links above background is
+`(cis rate - background) / cis rate`.
+
+**The bootstrap draws elements, not pairs.** An element's cis and background
+tests stay together, and every `r_g` is recomputed in each draw. The notebook
+built a dense elements by bins by genes tensor for this; the port sums over
+pairs in blocks of draws instead, which gives the same numbers (to 1e-13 on
+three screens) and does not grow with the square of the panel.
+`test_specificity.py` keeps the dense formulation as its reference.
+
+**Per-gene rates are noisy where the background is low.** A gene with no
+background call gets a rate of zero, which is an underestimate rather than a
+measurement. Shrinkage toward the pooled rate is open, and not done.
+
+### Broad-effect elements
+
+Some elements lower many genes on other chromosomes, far beyond the
+background: a one-sided binomial test of the element's background calls
+against the pooled rate, flagged at `p < 1e-3`. They make their own
+background, which a per-gene rate cannot see, so the check reports them and
+repeats the by-distance table without them.
+
+**Remove them from both sides.** Removing their cis links while keeping their
+background calls inflates the background. `above_background_by_distance` only
+counts the background tests of elements present in `links`, so dropping an
+element from `links` drops it from both sides; do not loosen that filter.
+
+### The TSS lookup and the detour check
+
+Every target within 1 kb of a measured gene's TSS knocks that gene down,
+whether or not the design labelled it a control. Its effects on every other
+measured gene give a gene-to-gene table (`gene_lookup`). A far link E to H is
+a **detour** when E also lowers some G, either as a link or by sitting on G's
+TSS, whose TSS knockdown lowers H. `detour_check` reports `detour`,
+`detour (nominal)` (only at `p < 0.05`), `no detour` (such G were tested
+against H and none lowers it) and `can't check` (no G was tested against H).
+
+A target equidistant from two measured TSSs, a bidirectional promoter, is
+assigned the alphabetically first. The notebook's sort was not stable and
+picked one arbitrarily; on day4 that is the one place the two differ
+(`chr17:28357330-28357839`, 57.5 bp from both POLDIP2 and TMEM199), and it
+changes no detour status. A promoter knocks down both genes, which one gene
+per target cannot express.
+
+### Measured on three screens
+
+day0, day2 and day4 of an endothelial differentiation, cis and background both
+tested with pysceptre's permutation test, cutoff BH at 10% over each screen's
+cis pairs, 2,000 draws. `test_specificity_days.py` reproduces these from the
+same inputs.
+
+| | day0 | day2 | day4 |
+|---|---|---|---|
+| links within 50 kb above background, lowest bin | 0.98 | 0.97 | 0.98 |
+| far links (> 100 kb) above background | 0.20 (-0.30 to 0.44) | 0.45 (0.28 to 0.57) | 0.55 (0.37 to 0.66) |
+| same, without broad-effect elements | 0.18 (-0.33 to 0.43) | 0.50 (0.28 to 0.63) | 0.66 (0.53 to 0.74) |
+| background rate | 0.084% | 0.142% | 0.087% |
+| broad-effect elements | 4 | 40 | 16 |
+| far links: detour, nominal detour, no detour, can't check | 0, 0, 1, 25 | 12, 5, 9, 41 | 0, 0, 5, 47 |
+
+On day2 the elements with the most background calls sit at the TSSs of FOXH1
+(74 bp for one of them), KDR (0 bp) and HAND1 (81 bp).
+
+### What it does not establish, and what is left out
+
+- **No ground truth outside the notebook.** The pooled version (one rate, no
+  matching) could be checked value for value against CRISPR_indirect_effects'
+  R on DC-TAP; that has not been done. The matched rate, the broad-effect flag
+  and the detour check have no external reference at all.
+- **The fingerprint check is not implemented.** The notebook's fourth part
+  asks whether a far link E to G also lowers G's own downstream genes, scored
+  with `compute_power` on the matched mean. Near links, which the background
+  says are real, recover far less of their expected fingerprint on day4 than
+  on day2, and until that is understood it is not shipped.
+- **Positions are the caller's.** Distances come from `element_positions` and
+  `gene_positions`, never from target names. On DC-TAP the target names are
+  hg19 coordinates and the TSSs hg38, which put near links into the far bins
+  in the notebook's first pass.
+- **Same test on both sides.** The cis and background results should come
+  from the same test. Mixing R's CRT on one side with pysceptre on the other
+  is an untested assumption.
+
 ## gRNA integration strategies
 
 sceptre tests whatever it calls a `grna_group`, and
