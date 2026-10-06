@@ -281,3 +281,17 @@ def test_roundtrip_through_group_names():
     assert set(rebuilt) == set(targets)
     for name, cells in rebuilt.items():
         assert np.array_equal(cells, targets[name])
+
+
+def test_the_group_count_is_capped_at_every_possible_group():
+    """R uses every combination once its count rule asks for at least that many,
+    where the sampler used to give up: 120 groups of 3 from 10 NT gRNAs, 125 asked."""
+    import math
+
+    from pysceptre.pipeline.calibration import build_ntc_groups, n_synthetic_groups
+
+    ids = [f"nt{i}" for i in range(10)]
+    assert n_synthetic_groups(2500, 100, 1.0) >= math.comb(10, 3) > 100
+    groups = build_ntc_groups(ids, 3, 2500, 100, 1.0, np.random.default_rng(0))
+    assert len(groups) == math.comb(10, 3)
+    assert len({tuple(g) for g in groups}) == math.comb(10, 3)

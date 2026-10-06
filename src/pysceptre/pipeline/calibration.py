@@ -196,7 +196,10 @@ def build_ntc_groups(
     n_possible = math.comb(n_ntc, calibration_group_size)
     if n_possible <= _N_GROUPS_FLOOR:
         return [list(c) for c in itertools.combinations(range(n_ntc), calibration_group_size)]
-    n_groups = n_synthetic_groups(n_calibration_pairs, n_genes, pass_qc_rate)
+    # R caps the count at every possible group, and then has all of them.
+    n_groups = min(n_synthetic_groups(n_calibration_pairs, n_genes, pass_qc_rate), n_possible)
+    if n_groups == n_possible:
+        return [list(c) for c in itertools.combinations(range(n_ntc), calibration_group_size)]
     return sample_ntc_groups(
         ntc_grna_ids,
         calibration_group_size,
