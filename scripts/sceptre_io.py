@@ -34,6 +34,13 @@ which carry the target. Readers select the kind they want by name, never by
 excluding the others, so a new kind cannot leak into an existing selection.
 The `target` units remain the union and remain what an analysis uses.
 
+**Low MOI.** An object analysed with sceptre's `nt_cells` control group stores
+its NT gRNAs as positions within an NT-cell pool, `all_nt_idxs`, rather than as
+cells. The exporter decodes them, so `ntc_grna_cells` is in cell space for
+every object, and carries the pool itself in R's order as `all_nt_idxs`. The
+settings a run needs are `SceptreExport.moi`, `.control_group` and
+`.resampling_mechanism`, and `SceptreExport.analysis_kwargs()` gathers them.
+
 `_load_intermediate` reads the columnar form `export_sceptre_dataset.R`
 emits. That exists only so `scripts/make_h5mu.py` can convert a dataset out
 of R once; it is not an input format, and it costs 1.17 GB of RSS because the
@@ -108,20 +115,89 @@ class SceptreExport:
     # intervals, so they have to travel with the dataset.
     positive_control_pairs: pd.DataFrame | None = None
     power_result: pd.DataFrame | None = None
+    # R's NT-cell pool, `grna_assignments$all_nt_idxs`, which sceptre builds only
+    # for the nt_cells control group: 0-based, in this export's cell space, and
+    # in R's order (the NT units' cells concatenated in `ntc_grna_cells` order),
+    # never sorted. None for a complement object.
+    all_nt_idxs: np.ndarray | None = None
 
     @property
     def side(self) -> str:
         """Sidedness as `run_discovery_analysis` spells it."""
         return {-1: "left", 0: "both", 1: "right"}[self.metadata["side_code"]]
 
+    @property
+    def low_moi(self) -> bool:
+        """Whether the source object was low MOI. False for an export without the key."""
+        return _analysis_settings(self.metadata)["low_moi"]
+
+    @property
+    def moi(self) -> str:
+        """`"low"` or `"high"`."""
+        return "low" if self.low_moi else "high"
+
+    @property
+    def control_group(self) -> str:
+        """`"complement"` or `"nt_cells"`.
+
+        Read from `control_group`, else from R's `control_group_complement`,
+        else `"complement"`.
+        """
+        return _analysis_settings(self.metadata)["control_group"]
+
+    @property
+    def resampling_mechanism(self) -> str:
+        """`"crt"` or `"permutations"`.
+
+        Read from `resampling_mechanism`, else from R's `run_permutations`, else
+        `"crt"`.
+        """
+        return _analysis_settings(self.metadata)["resampling_mechanism"]
+
+    def analysis_kwargs(self) -> dict:
+        """Keyword arguments that configure a run the way the source object was.
+
+        Returns `moi`, `control_group`, `resampling_mechanism` and `side`, plus
+        `resampling_approximation` and `multiple_testing_alpha` when the export
+        records them, and `ntc_grna_cells` when the control group is
+        `"nt_cells"`. For `run_discovery_analysis` and `run_power_check`:
+
+            run_discovery_analysis(e.response_matrix, e.gene_ids,
+                                   e.covariate_matrix, e.grna_target_cells,
+                                   e.pairs, **e.analysis_kwargs())
+
+        `run_calibration_check` needs `ntc_grna_cells` under either control
+        group, so pass `e.ntc_grna_cells` to it directly and drop that key
+        from these.
+
+        `ntc_grna_cells` iterates in R's unit order, so concatenating its values
+        reproduces `all_nt_idxs`.
+        """
+        m = self.metadata
+        kwargs = {
+            "moi": self.moi,
+            "control_group": self.control_group,
+            "resampling_mechanism": self.resampling_mechanism,
+            "side": self.side,
+        }
+        if "resampling_approximation" in m:
+            kwargs["resampling_approximation"] = str(m["resampling_approximation"])
+        if "multiple_testing_alpha" in m:
+            kwargs["multiple_testing_alpha"] = float(m["multiple_testing_alpha"])
+        if self.control_group == "nt_cells":
+            kwargs["ntc_grna_cells"] = self.ntc_grna_cells
+        return kwargs
+
     def describe(self) -> str:
         m = self.metadata
         return (
             f"{m['n_genes']} genes x {m['n_cells']} cells, {m['n_targets']} targets, "
-            f"{m['n_pairs']} pairs, side={self.side}, "
-            f"resampling={'permutations' if m['run_permutations'] else 'crt'}, "
+            f"{m['n_pairs']} pairs, side={self.side}, moi={self.moi}, "
+            f"control_group={self.control_group}, "
+            f"resampling={self.resampling_mechanism}, "
             f"B1/B2/B3={m['B1']}/{m['B2']}/{m['B3']}, "
             f"ntc_grnas={len(self.ntc_grna_cells) if self.ntc_grna_cells else 0}, "
+            f"nt_pool={'absent' if self.all_nt_idxs is None else self.all_nt_idxs.size}, "
             f"targeting_grnas="
             f"{len(self.targeting_grna_cells) if self.targeting_grna_cells else 0}, "
             f"sceptre {m['sceptre_version']}"
@@ -269,14 +345,14 @@ def subset_to_cells_in_use(export: SceptreExport) -> SceptreExport:
     keep = np.flatnonzero(in_use)
     new_pos = np.cumsum(in_use) - 1
 
+    def remap_one(idxs: np.ndarray) -> np.ndarray:
+        # Order-preserving, which `all_nt_idxs` relies on.
+        return new_pos[idxs[in_use[idxs]]].astype(np.int64)
+
     def remap(cells: dict[str, np.ndarray] | None) -> dict[str, np.ndarray] | None:
         if cells is None:
             return None
-        out = {}
-        for unit, idxs in cells.items():
-            kept = idxs[in_use[idxs]]
-            out[unit] = new_pos[kept].astype(np.int64)
-        return out
+        return {unit: remap_one(idxs) for unit, idxs in cells.items()}
 
     matrix = export.response_matrix
     if hasattr(matrix, "rows"):
@@ -300,6 +376,7 @@ def subset_to_cells_in_use(export: SceptreExport) -> SceptreExport:
         grna_target_cells=remap(export.grna_target_cells),
         ntc_grna_cells=remap(export.ntc_grna_cells),
         targeting_grna_cells=remap(export.targeting_grna_cells),
+        all_nt_idxs=None if export.all_nt_idxs is None else remap_one(export.all_nt_idxs),
         in_use=np.ones(keep.size, dtype=bool),
         metadata=metadata,
     )
@@ -440,7 +517,11 @@ def load_h5mu(path: str | Path, backed: bool = False, all_cells: bool = False) -
             list(mdata.uns.get("discovery_result_bool_columns", [])),
         )
 
+    raw_pool = mdata.uns.get("all_nt_idxs")
+    all_nt_idxs = None if raw_pool is None else np.asarray(raw_pool, dtype=np.int64)
+
     _check_shapes(metadata, response_matrix, covariate_matrix, gene_ids, grna_target_cells)
+    _check_nt_pool(metadata, ntc_grna_cells, all_nt_idxs)
     export = SceptreExport(
         response_matrix=response_matrix,
         gene_ids=gene_ids,
@@ -458,6 +539,7 @@ def load_h5mu(path: str | Path, backed: bool = False, all_cells: bool = False) -
         calibration_result=calibration_result,
         positive_control_pairs=positive_control_pairs,
         power_result=power_result,
+        all_nt_idxs=all_nt_idxs,
     )
     return export if all_cells else subset_to_cells_in_use(export)
 
@@ -683,6 +765,8 @@ def write_h5mu(export: SceptreExport, path: str | Path, compression: str | None 
         "response_id": export.pairs["response_id"].to_numpy().astype(object),
         "grna_target": export.pairs["grna_target"].to_numpy().astype(object),
     }
+    if export.all_nt_idxs is not None:
+        mdata.uns["all_nt_idxs"] = np.asarray(export.all_nt_idxs, dtype=np.int64)
     for key, frame in (
         ("grna_target_data_frame", export.grna_target_data_frame),
         ("discovery_pairs_with_info", export.discovery_pairs_with_info),
@@ -773,8 +857,11 @@ def _load_intermediate(export_dir: Path) -> SceptreExport:
     calibration_result = _optional("calibration_result.parquet")
     positive_control_pairs = _optional("positive_control_pairs.parquet")
     power_result = _optional("power_result.parquet")
+    pool = _optional("all_nt_idxs.parquet")
+    all_nt_idxs = None if pool is None else pool["cell_index"].to_numpy(dtype=np.int64)
 
     _check_shapes(metadata, response_matrix, covariate_matrix, gene_ids, grna_target_cells)
+    _check_nt_pool(metadata, ntc_grna_cells, all_nt_idxs)
     return SceptreExport(
         response_matrix=response_matrix,
         gene_ids=gene_ids,
@@ -792,7 +879,64 @@ def _load_intermediate(export_dir: Path) -> SceptreExport:
         calibration_result=calibration_result,
         positive_control_pairs=positive_control_pairs,
         power_result=power_result,
+        all_nt_idxs=all_nt_idxs,
     )
+
+
+def _analysis_settings(metadata: dict) -> dict:
+    """`low_moi`, `control_group` and `resampling_mechanism` from export metadata.
+
+    Each is read from its own key, else from the logical R slot older exports
+    already carry, else defaults to high MOI, complement and CRT.
+    """
+    if "control_group" in metadata:
+        control_group = str(metadata["control_group"])
+    elif "control_group_complement" in metadata:
+        control_group = "complement" if bool(metadata["control_group_complement"]) else "nt_cells"
+    else:
+        control_group = "complement"
+    if "resampling_mechanism" in metadata:
+        mechanism = str(metadata["resampling_mechanism"])
+    elif "run_permutations" in metadata:
+        mechanism = "permutations" if bool(metadata["run_permutations"]) else "crt"
+    else:
+        mechanism = "crt"
+    return {
+        "low_moi": bool(metadata.get("low_moi", False)),
+        "control_group": control_group,
+        "resampling_mechanism": mechanism,
+    }
+
+
+def _check_nt_pool(metadata, ntc_grna_cells, all_nt_idxs):
+    """Refuse an nt_cells export whose NT units cannot be cells, and check the pool.
+
+    An nt_cells object stores its NT gRNAs as positions within its NT-cell
+    pool. An export of one without `all_nt_idxs` was written before the
+    exporter decoded them, so its `ntc_grna` units hold positions, not cells.
+    When the pool is present, the NT units' cells must partition it.
+    """
+    if _analysis_settings(metadata)["control_group"] == "nt_cells" and all_nt_idxs is None:
+        raise ValueError(
+            "this export comes from a sceptre object with the nt_cells control group but "
+            "carries no all_nt_idxs: it was written before the exporter decoded sceptre's NT "
+            "gRNA positions, so its ntc_grna units are positions within R's NT-cell pool, not "
+            "cells. Re-export it with scripts/export_sceptre_dataset.R."
+        )
+    if all_nt_idxs is None:
+        return
+    n_cells = metadata["n_cells"]
+    if all_nt_idxs.size and (all_nt_idxs.min() < 0 or all_nt_idxs.max() >= n_cells):
+        raise ValueError(f"all_nt_idxs has cell indices outside [0, {n_cells})")
+    if np.unique(all_nt_idxs).size != all_nt_idxs.size:
+        raise ValueError("all_nt_idxs lists a cell more than once")
+    units = list((ntc_grna_cells or {}).values())
+    member = np.concatenate(units) if units else np.empty(0, dtype=np.int64)
+    if member.size != all_nt_idxs.size or not np.array_equal(np.sort(member), np.sort(all_nt_idxs)):
+        raise ValueError(
+            f"the {len(units)} NT gRNAs' cells ({member.size} memberships) do not partition "
+            f"all_nt_idxs ({all_nt_idxs.size} cells)"
+        )
 
 
 def _check_shapes(metadata, response_matrix, covariate_matrix, gene_ids, grna_target_cells):

@@ -13,6 +13,8 @@ running it; this half needs neither, so it runs in CI.
 
 from __future__ import annotations
 
+import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -22,7 +24,8 @@ import pytest
 
 pytest.importorskip("mudata", reason="the io extra is not installed")
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
+sys.path.insert(0, str(SCRIPTS))
 
 from sceptre_io import SceptreExport, load_export, write_h5mu  # noqa: E402
 
@@ -253,3 +256,204 @@ def test_a_backed_read_of_an_all_cells_file_is_refused_not_mis_served(tmp_path):
     path = write_h5mu(_masked_export(), tmp_path / "dataset.h5mu")
     with pytest.raises(ValueError, match="all_cells=True"):
         load_export(path, backed=True)
+
+
+# --- low MOI --------------------------------------------------------------------------------
+#
+# An nt_cells object stores its NT gRNAs as positions within an NT-cell pool, `all_nt_idxs`.
+# The exporter decodes them to cells and carries the pool in R's order, which is not sorted.
+
+NT_POOL = [30, 31, 12, 13, 14]
+
+
+def _lowmoi_export(*, in_use: np.ndarray | None = None) -> SceptreExport:
+    """A low-MOI nt_cells export: one gRNA per cell, so the NT units are disjoint and share
+    no cell with a target. The pool is the NT units' cells concatenated in unit order, which
+    is how R builds it, and deliberately unsorted."""
+    export = _export(in_use=in_use)
+    export.ntc_grna_cells = {"ntc_1": np.array([30, 31]), "ntc_2": np.array([12, 13, 14])}
+    export.all_nt_idxs = np.array(NT_POOL)
+    export.metadata.update(
+        {
+            "low_moi": True,
+            "control_group": "nt_cells",
+            "resampling_mechanism": "permutations",
+            "control_group_complement": False,
+            "run_permutations": True,
+            "side": "both",
+            "resampling_approximation": "skew_normal",
+            "multiple_testing_alpha": 0.1,
+            "B3": 24999,
+        }
+    )
+    return export
+
+
+def test_low_moi_settings_survive_the_round_trip(tmp_path):
+    back = load_export(write_h5mu(_lowmoi_export(), tmp_path / "dataset.h5mu"))
+    assert back.low_moi is True
+    assert (back.moi, back.control_group, back.resampling_mechanism) == (
+        "low",
+        "nt_cells",
+        "permutations",
+    )
+    assert back.metadata["side"] == back.side == "both"
+
+
+def test_the_nt_pool_keeps_rs_order(tmp_path):
+    """Sorting the pool would move every cell R's permutation draws index by position."""
+    back = load_export(write_h5mu(_lowmoi_export(), tmp_path / "dataset.h5mu"))
+    assert np.array_equal(back.all_nt_idxs, NT_POOL)
+    assert list(back.ntc_grna_cells) == ["ntc_1", "ntc_2"]
+    assert np.array_equal(np.concatenate(list(back.ntc_grna_cells.values())), back.all_nt_idxs)
+
+
+def test_analysis_kwargs_carry_the_nt_cells_for_an_nt_cells_export(tmp_path):
+    back = load_export(write_h5mu(_lowmoi_export(), tmp_path / "dataset.h5mu"))
+    kwargs = back.analysis_kwargs()
+    assert {k: v for k, v in kwargs.items() if k != "ntc_grna_cells"} == {
+        "moi": "low",
+        "control_group": "nt_cells",
+        "resampling_mechanism": "permutations",
+        "side": "both",
+        "resampling_approximation": "skew_normal",
+        "multiple_testing_alpha": 0.1,
+    }
+    assert kwargs["ntc_grna_cells"] is back.ntc_grna_cells
+
+
+def test_analysis_kwargs_for_a_complement_export_leave_the_nt_cells_out(written):
+    assert written.analysis_kwargs() == {
+        "moi": "high",
+        "control_group": "complement",
+        "resampling_mechanism": "crt",
+        "side": "both",
+    }
+    assert written.all_nt_idxs is None
+
+
+@pytest.mark.parametrize(
+    ("r_logicals", "expected"),
+    [
+        ({}, ("high", "complement", "crt")),
+        (
+            {"control_group_complement": True, "run_permutations": True},
+            ("high", "complement", "permutations"),
+        ),
+    ],
+)
+def test_an_export_without_the_settings_keys_falls_back(tmp_path, r_logicals, expected):
+    """Old exports carry R's two logicals, or nothing: high MOI, complement and CRT."""
+    export = _export()
+    export.metadata.pop("run_permutations")
+    export.metadata.update(r_logicals)
+    back = load_export(write_h5mu(export, tmp_path / "dataset.h5mu"))
+    assert (back.moi, back.control_group, back.resampling_mechanism) == expected
+
+
+def test_an_nt_cells_export_without_its_pool_is_refused(tmp_path):
+    """What the exporter wrote for an nt_cells object before it decoded the NT positions:
+    `control_group_complement` false, no settings keys, no pool. Its NT units are positions,
+    so reading them as cells would be silently wrong."""
+    export = _export()
+    export.metadata["control_group_complement"] = False
+    path = write_h5mu(export, tmp_path / "dataset.h5mu")
+    with pytest.raises(ValueError, match="Re-export"):
+        load_export(path)
+
+
+@pytest.mark.parametrize(
+    "pool",
+    [
+        [30, 31, 12, 13],  # a cell missing
+        [30, 31, 12, 13, 14, 15],  # a cell no NT unit carries
+        [30, 31, 12, 13, 13],  # a cell twice
+        [30, 31, 12, 13, 400],  # out of range
+    ],
+)
+def test_a_pool_the_nt_units_do_not_partition_is_refused(tmp_path, pool):
+    export = _lowmoi_export()
+    export.all_nt_idxs = np.array(pool)
+    with pytest.raises(ValueError, match="all_nt_idxs"):
+        load_export(write_h5mu(export, tmp_path / "dataset.h5mu"))
+
+
+def test_subsetting_moves_the_nt_pool_without_reordering_it(tmp_path):
+    """Cell 2 fails QC, so every NT cell above it shifts down by one, in place."""
+    mask = np.ones(N_CELLS, dtype=bool)
+    mask[2] = False
+    export = _lowmoi_export(in_use=mask)
+    export.metadata["all_cells"] = True
+    export.metadata["n_cells_in_use"] = int(mask.sum())
+    path = write_h5mu(export, tmp_path / "dataset.h5mu")
+
+    assert np.array_equal(load_export(path, all_cells=True).all_nt_idxs, NT_POOL)
+    sub = load_export(path)
+    assert np.array_equal(sub.all_nt_idxs, [29, 30, 11, 12, 13])
+    assert np.array_equal(np.concatenate(list(sub.ntc_grna_cells.values())), sub.all_nt_idxs)
+
+
+def _write_intermediate(export: SceptreExport, directory: Path) -> Path:
+    """The columnar layout `export_sceptre_dataset.R` writes, from a SceptreExport."""
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "metadata.json").write_text(json.dumps(export.metadata))
+    coo = export.response_matrix.tocoo()
+    pd.DataFrame({"gene_index": coo.row, "cell_index": coo.col, "value": coo.data}).to_parquet(
+        directory / "response_matrix.parquet"
+    )
+    pd.DataFrame(
+        {"gene_index": np.arange(len(export.gene_ids)), "response_id": export.gene_ids}
+    ).to_parquet(directory / "gene_ids.parquet")
+    pd.DataFrame(export.covariate_matrix, columns=export.metadata["covariate_names"]).to_parquet(
+        directory / "covariate_matrix.parquet"
+    )
+    pd.DataFrame({"in_use": export.in_use}).to_parquet(directory / "cell_annotation.parquet")
+    units = [(u, "target", u, c) for u, c in export.grna_target_cells.items()]
+    units += [(u, "ntc_grna", "non-targeting", c) for u, c in (export.ntc_grna_cells or {}).items()]
+    pd.DataFrame(
+        {
+            "unit_id": [u for u, _, _, c in units for _ in c],
+            "cell_index": np.concatenate([c for *_, c in units]),
+        }
+    ).to_parquet(directory / "grna_assignments.parquet")
+    pd.DataFrame(
+        {
+            "unit_id": [u for u, *_ in units],
+            "grna_target": [t for _, _, t, _ in units],
+            "unit_kind": [k for _, k, _, _ in units],
+        }
+    ).to_parquet(directory / "grna_annotation.parquet")
+    export.pairs.to_parquet(directory / "pairs.parquet")
+    if export.all_nt_idxs is not None:
+        pd.DataFrame({"cell_index": export.all_nt_idxs}).to_parquet(
+            directory / "all_nt_idxs.parquet"
+        )
+    return directory
+
+
+def test_make_h5mu_carries_the_nt_pool_and_removes_its_parquet(tmp_path):
+    """The conversion an R export goes through, end to end on the Python side."""
+    pytest.importorskip("pyarrow", reason="the io extra is not installed")
+    directory = _write_intermediate(_lowmoi_export(), tmp_path / "export")
+    subprocess.run(
+        [sys.executable, str(SCRIPTS / "make_h5mu.py"), str(directory)],
+        check=True,
+        capture_output=True,
+    )
+    assert not (directory / "all_nt_idxs.parquet").exists()
+    back = load_export(directory)
+    assert np.array_equal(back.all_nt_idxs, NT_POOL)
+    assert (back.moi, back.control_group, back.resampling_mechanism) == (
+        "low",
+        "nt_cells",
+        "permutations",
+    )
+
+
+def test_an_old_nt_cells_intermediate_is_refused(tmp_path):
+    pytest.importorskip("pyarrow", reason="the io extra is not installed")
+    export = _export(targeting=False)
+    export.metadata["control_group_complement"] = False
+    directory = _write_intermediate(export, tmp_path / "export")
+    with pytest.raises(ValueError, match="Re-export"):
+        load_export(directory)

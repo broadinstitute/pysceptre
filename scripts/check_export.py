@@ -3,9 +3,10 @@
 
 That test covers the format contract on a 40-cell fixture and runs in CI. This
 covers the properties that only appear at scale and only on a real screen --
-the many-to-many gRNA -> target map, the two cell spaces, and the size of what
-`--all-cells` changes -- so it needs a dataset and is run by hand after touching
-the exporter.
+the many-to-many gRNA -> target map, the two cell spaces, the size of what
+`--all-cells` changes, and for a low-MOI object the NT-cell pool and the
+one-gRNA-per-cell invariant -- so it needs a dataset and is run by hand after
+touching the exporter.
 
     scripts/check_export.py <export>                    # one export
     scripts/check_export.py <export> --compare <other>  # and against another
@@ -78,6 +79,8 @@ def check_one(export, label: str) -> None:
             f"{len(cells):,} units",
         )
 
+    check_nt_cells(export)
+
     if export.targeting_grna_cells is None or export.grna_target_data_frame is None:
         print("   no individual targeting gRNAs; skipping the union round-trip")
         return
@@ -107,6 +110,48 @@ def check_one(export, label: str) -> None:
     )
 
 
+def check_nt_cells(export) -> None:
+    """The NT side of an export: R's pool order, and the low-MOI invariants.
+
+    `all_nt_idxs` must be the NT units' cells concatenated in unit order, which
+    is how R builds it and so what lets a reader reproduce R's order from
+    `ntc_grna_cells` alone. Low MOI keeps one gRNA per cell, so the NT units
+    must not share cells and no target cell may be an NT cell.
+    """
+    print(
+        f"   settings: moi={export.moi}, control_group={export.control_group}, "
+        f"resampling_mechanism={export.resampling_mechanism}"
+    )
+    ntc = export.ntc_grna_cells
+    if not ntc:
+        return
+    member = np.concatenate(list(ntc.values()))
+    pool = export.all_nt_idxs
+    if pool is not None:
+        check(
+            "all_nt_idxs is the NT units' cells concatenated in unit order",
+            np.array_equal(pool, member),
+            f"{pool.size:,} NT cells, {'sorted' if np.all(np.diff(pool) > 0) else 'unsorted'}",
+        )
+    else:
+        print(f"   all_nt_idxs: absent (control_group={export.control_group})")
+    if not export.low_moi:
+        return
+    check(
+        "low MOI: NT units are pairwise disjoint",
+        member.size == np.unique(member).size,
+        f"{member.size:,} memberships, {np.unique(member).size:,} distinct cells",
+    )
+    targets = [c for c in export.grna_target_cells.values() if c.size]
+    target_cells = np.unique(np.concatenate(targets)) if targets else np.empty(0, dtype=np.int64)
+    shared = np.intersect1d(target_cells, member)
+    check(
+        "low MOI: no target cell is an NT cell",
+        shared.size == 0,
+        f"{target_cells.size:,} target cells, {shared.size} shared",
+    )
+
+
 def compare(a, b, label_a: str, label_b: str) -> None:
     print(f"\n== {label_a} == {label_b} ==")
     check("gene_ids", a.gene_ids == b.gene_ids)
@@ -131,6 +176,13 @@ def compare(a, b, label_a: str, label_b: str) -> None:
             attr,
             set(x) == set(y) and all(np.array_equal(np.sort(x[k]), np.sort(y[k])) for k in y),
             f"{len(x):,} units",
+        )
+    if a.all_nt_idxs is not None and b.all_nt_idxs is not None:
+        check("all_nt_idxs, in order", np.array_equal(a.all_nt_idxs, b.all_nt_idxs))
+    else:
+        print(
+            f"   all_nt_idxs: compared only when both sides carry it ({a.control_group}, "
+            f"{b.control_group})"
         )
     check("pairs", a.pairs.equals(b.pairs), f"{len(a.pairs):,} rows")
 

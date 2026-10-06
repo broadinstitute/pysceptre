@@ -29,6 +29,60 @@ qc_passing_pairs <- function(so) {
   )
 }
 
+slot_or_null <- function(object, name) {
+  if (methods::.hasSlot(object, name)) methods::slot(object, name) else NULL
+}
+
+# Each NT gRNA's cells as cells_in_use positions, whichever control group the object uses.
+#
+# With the complement control group sceptre already stores them that way. With nt_cells,
+# update_indiv_grna_assignments_for_nt_cells() (R/cellwise_qc_functs.R, sceptre 0.10.3) replaces
+# them with positions WITHIN grna_assignments$all_nt_idxs: gRNA i becomes start_i:stop_i, and
+# all_nt_idxs holds the cells. Written out unconverted, those positions read as cell indices.
+#
+# Both cases are checked against the pre-QC assignment mapped through cells_in_use, which reaches
+# the same cells without going through either encoding.
+nt_grna_cells_in_use <- function(so, to_in_use) {
+  indiv_nt <- so@grna_assignments$indiv_nt_grna_idxs
+  all_nt_idxs <- so@grna_assignments$all_nt_idxs
+  if (length(indiv_nt) == 0) return(indiv_nt)
+  if (!is.null(all_nt_idxs)) {
+    positions <- as.integer(unlist(indiv_nt, use.names = FALSE))
+    # sceptre builds the positions as consecutive runs over unique(unlist(cells)), so they cover
+    # 1..length(all_nt_idxs) exactly once, in order, only when the NT gRNAs' cell sets are
+    # disjoint. Anything else means the decoding below would pick the wrong cells.
+    if (!identical(positions, seq_along(all_nt_idxs))) {
+      stop("grna_assignments$indiv_nt_grna_idxs does not partition all_nt_idxs in order (",
+           length(positions), " positions, ", length(all_nt_idxs), " NT cells): either the NT ",
+           "gRNAs share cells or sceptre changed its nt_cells encoding.", call. = FALSE)
+    }
+    indiv_nt <- lapply(indiv_nt, function(p) all_nt_idxs[p])
+  } else if (!isTRUE(so@control_group_complement)) {
+    stop("control_group_complement is FALSE but grna_assignments has no all_nt_idxs, so the ",
+         "NT gRNA indices cannot be decoded.", call. = FALSE)
+  }
+
+  initial <- so@initial_grna_assignment_list
+  checkable <- intersect(names(indiv_nt), names(initial))
+  mismatched <- Filter(function(grna_id) {
+    expected <- to_in_use[initial[[grna_id]]]
+    !identical(sort(as.integer(expected[expected > 0L])), sort(as.integer(indiv_nt[[grna_id]])))
+  }, checkable)
+  if (length(mismatched) > 0) {
+    stop(length(mismatched), " of ", length(checkable), " NT gRNAs do not match the pre-QC ",
+         "assignment restricted to cells_in_use, including: ",
+         paste(utils::head(mismatched, 3), collapse = ", "), call. = FALSE)
+  }
+  cat("   ", length(indiv_nt), "NT gRNAs",
+      if (!is.null(all_nt_idxs)) "decoded from positions within all_nt_idxs;" else "in cell space;",
+      length(checkable), "match the pre-QC assignment exactly\n")
+  if (length(checkable) < length(indiv_nt)) {
+    cat("    NOTE:", length(indiv_nt) - length(checkable),
+        "NT gRNAs are absent from @initial_grna_assignment_list and were not cross-checked\n")
+  }
+  indiv_nt
+}
+
 # The .parquet files written here are an intermediate, not the dataset:
 # scripts/make_h5mu.py converts them and deletes them.
 # ONE CELL SPACE PER FILE. By default that is `cells_in_use`, the QC-passing cells an analysis
@@ -131,9 +185,10 @@ export_sceptre_object <- function(so, out_dir, all_genes = TRUE, all_cells = TRU
   # used as a union. Exporting the union table alone therefore drops every NTC
   # -- not by oversight, but because "non-targeting" is not a key in it.
   #
-  # Both kinds are already relative to cells_in_use and 1-based, and both go
-  # through this one code path: re-deriving assignments independently is what
-  # once reproduced only 39 of 2,974 targets.
+  # Both kinds are relative to cells_in_use and 1-based once the NT gRNAs are decoded (see
+  # nt_grna_cells_in_use: an nt_cells object stores them as positions in its NT-cell pool), and
+  # both go through this one code path: re-deriving assignments independently is what once
+  # reproduced only 39 of 2,974 targets.
   cat("Exporting gRNA assignments...\n")
   # Both slots index positions *within cells_in_use*. Under `all_cells` the file's space is
   # absolute, so they are mapped out to it -- the one place the target and NTC units move, and they
@@ -143,15 +198,26 @@ export_sceptre_object <- function(so, out_dir, all_genes = TRUE, all_cells = TRU
   # individual guides, and that property is defined in the cells_in_use space -- converting first
   # would leave the check comparing absolute positions against relative ones.
   grna_group_idxs <- so@grna_assignments$grna_group_idxs
-  indiv_nt <- so@grna_assignments$indiv_nt_grna_idxs
+  # R's NT-cell pool, present only for the nt_cells control group. Its order is the order R
+  # indexes the pool by position, so it is written as is, never sorted.
+  all_nt_idxs <- so@grna_assignments$all_nt_idxs
+
+  # Absolute cell position -> cells_in_use position (0 where QC removed the cell).
+  n_total_cells <- ncol(response_matrix)
+  to_in_use <- integer(n_total_cells)
+  to_in_use[cells_in_use] <- seq_along(cells_in_use)
+  # cells_in_use position -> this file's cell space, applied after the round-trip checks, which are
+  # defined in the cells_in_use space where the property lives.
+  to_file_cells <- if (all_cells) function(rel) cells_in_use[rel] else identity
+
+  indiv_nt <- nt_grna_cells_in_use(so, to_in_use)
 
   as_rows <- function(idx_list) {
     if (is.null(idx_list) || length(idx_list) == 0) return(NULL)
     do.call(rbind, lapply(names(idx_list), function(unit) {
       idxs <- idx_list[[unit]]
       if (length(idxs) == 0) return(NULL)
-      data.frame(unit_id = unit,
-                 cell_index = as.integer(if (all_cells) cells_in_use[idxs] else idxs) - 1L)
+      data.frame(unit_id = unit, cell_index = as.integer(to_file_cells(idxs)) - 1L)
     }))
   }
   assignment_rows <- rbind(as_rows(grna_group_idxs), as_rows(indiv_nt))
@@ -216,13 +282,7 @@ export_sceptre_object <- function(so, out_dir, all_genes = TRUE, all_cells = TRU
   #
   # So `--all-cells` adds cells to the EXPRESSION side only: more matrix columns, for the
   # whole-matrix geometric means poscounts needs. It adds no gRNA memberships.
-  n_total_cells <- ncol(response_matrix)
-  to_in_use <- integer(n_total_cells)
-  to_in_use[cells_in_use] <- seq_along(cells_in_use)
-  # cells_in_use position -> this file's cell space, applied after the round-trip check, which is
-  # defined in the cells_in_use space where the property lives.
-  to_file_cells <- if (all_cells) function(rel) cells_in_use[rel] else identity
-
+  # (`to_in_use` and `to_file_cells` are built above, where the NT gRNAs needed them first.)
   targeting_ids <- setdiff(unique(names(initial)),
                            unique(names(target_of)[target_of == "non-targeting"]))
   targeting_ids <- targeting_ids[targeting_ids %in% names(target_of)]
@@ -332,6 +392,13 @@ export_sceptre_object <- function(so, out_dir, all_genes = TRUE, all_cells = TRU
       format(nrow(assignment_rows), big.mark = ","), "membership rows\n")
   if (is.null(indiv_nt) || length(indiv_nt) == 0) {
     cat("    no individual NTC gRNAs; the calibration check is not runnable from this export\n")
+  }
+  # The nt_cells pool in R's order, 0-based in this file's cell space. It equals the NT units'
+  # cells concatenated in unit order (nt_grna_cells_in_use checked the partition that implies).
+  if (!is.null(all_nt_idxs)) {
+    write_parquet(data.frame(cell_index = as.integer(to_file_cells(all_nt_idxs)) - 1L),
+                  file.path(out_dir, "all_nt_idxs.parquet"))
+    cat("    all_nt_idxs:", length(all_nt_idxs), "NT cells, in R's order\n")
   }
 
   # The calibration check's pairs and results, when the object has been through
@@ -453,6 +520,26 @@ export_sceptre_object <- function(so, out_dir, all_genes = TRUE, all_cells = TRU
     exported_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%S%z"),
     source_object = source_label
   )
+  # The settings as set_analysis_parameters() and run_qc() name them, which is what a low-MOI run
+  # has to match. The two strings restate control_group_complement and run_permutations, which stay
+  # for older readers. A slot an older sceptre object lacks is left out rather than written as
+  # null, which the h5mu writer cannot store.
+  cellwise <- slot_or_null(so, "cellwise_qc_thresholds")
+  settings <- list(
+    low_moi = so@low_moi,
+    control_group = if (so@control_group_complement) "complement" else "nt_cells",
+    resampling_mechanism = if (so@run_permutations) "permutations" else "crt",
+    side = c("left", "both", "right")[so@side_code + 2L],
+    multiple_testing_method = slot_or_null(so, "multiple_testing_method"),
+    grna_assignment_method = slot_or_null(so, "grna_assignment_method"),
+    response_n_umis_range = cellwise$response_n_umis_range,
+    response_n_nonzero_range = cellwise$response_n_nonzero_range,
+    p_mito_threshold = cellwise$p_mito_threshold,
+    # Distinct cells carrying an NT gRNA; under nt_cells, the control group's size.
+    n_nt_cells = length(unique(unlist(indiv_nt, use.names = FALSE)))
+  )
+  settings <- settings[!vapply(settings, function(v) is.null(v) || length(v) == 0, logical(1))]
+  metadata <- c(metadata, settings)
   write_json(metadata, file.path(out_dir, "metadata.json"),
              auto_unbox = TRUE, pretty = TRUE)
 

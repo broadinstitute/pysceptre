@@ -32,6 +32,7 @@ INTERMEDIATE_FILES = (
     "cell_annotation.parquet",
     "grna_assignments.parquet",
     "grna_annotation.parquet",
+    "all_nt_idxs.parquet",
     "grna_target_data_frame.parquet",
     "pairs.parquet",
     "discovery_pairs_with_info.parquet",

@@ -195,3 +195,75 @@ def test_backed_requires_a_converted_dataset(tmp_path):
     (tmp_path / "metadata.json").write_text("{}")
     with pytest.raises(ValueError, match="backed reads need a dataset.h5mu"):
         load_export(tmp_path, backed=True)
+
+
+@pytest.fixture
+def lowmoi_dataset(tmp_path):
+    """A low-MOI nt_cells dataset: disjoint NT units, none sharing a cell with a target, and
+    R's NT pool in R's order, which is not sorted."""
+    rng = np.random.default_rng(1)
+    n_genes, n_cells = 30, 200
+    X = sparse.random(n_genes, n_cells, density=0.3, format="csr", random_state=1)
+    X.data = np.ceil(X.data * 20).astype(np.float64)
+    order = rng.permutation(n_cells)
+    targets = {f"t{i}": np.sort(order[20 * i : 20 * (i + 1)]) for i in range(3)}
+    ntc = {f"ntc{i}": np.sort(order[60 + 15 * i : 60 + 15 * (i + 1)]) for i in range(4)}
+    pool = np.concatenate(list(ntc.values()))
+    export = SceptreExport(
+        response_matrix=X,
+        gene_ids=[f"g{i}" for i in range(n_genes)],
+        covariate_matrix=rng.normal(size=(n_cells, 2)),
+        grna_target_cells=targets,
+        pairs=pd.DataFrame({"response_id": ["g0", "g1"], "grna_target": ["t0", "t1"]}),
+        metadata={
+            "n_cells": n_cells,
+            "n_genes": n_genes,
+            "n_targets": len(targets),
+            "n_pairs": 2,
+            "n_covariates": 2,
+            "n_nonzero": X.nnz,
+            "covariate_names": ["a", "b"],
+            "side_code": -1,
+            "run_permutations": True,
+            "control_group_complement": False,
+            "low_moi": True,
+            "control_group": "nt_cells",
+            "resampling_mechanism": "permutations",
+            "B1": 499,
+            "B2": 4999,
+            "B3": 24999,
+            "sceptre_version": "0.10.3",
+        },
+        ntc_grna_cells=ntc,
+        all_nt_idxs=pool,
+    )
+    return write_h5mu(export, tmp_path / "dataset.h5mu"), pool
+
+
+def test_a_backed_read_carries_the_low_moi_settings_and_nt_pool(lowmoi_dataset):
+    """Everything but the response matrix is read eagerly either way, so a backed read must
+    hand an nt_cells run the same settings, NT cells and pool order as an eager one."""
+    from sceptre_io import load_export
+
+    path, pool = lowmoi_dataset
+    assert not np.all(np.diff(pool) > 0), "the fixture's pool must be unsorted to test order"
+    eager = load_export(path.parent)
+    backed = load_export(path.parent, backed=True)
+    try:
+        assert isinstance(backed.response_matrix, BackedResponseMatrix)
+        assert np.array_equal(backed.all_nt_idxs, pool)
+        assert np.array_equal(eager.all_nt_idxs, pool)
+        kb, ke = backed.analysis_kwargs(), eager.analysis_kwargs()
+        assert kb.keys() == ke.keys()
+        assert {k: v for k, v in kb.items() if k != "ntc_grna_cells"} == {
+            "moi": "low",
+            "control_group": "nt_cells",
+            "resampling_mechanism": "permutations",
+            "side": "left",
+        }
+        assert list(kb["ntc_grna_cells"]) == list(ke["ntc_grna_cells"])
+        for unit, cells in ke["ntc_grna_cells"].items():
+            assert np.array_equal(kb["ntc_grna_cells"][unit], cells)
+        assert np.array_equal(np.concatenate(list(kb["ntc_grna_cells"].values())), pool)
+    finally:
+        backed.response_matrix.close()
