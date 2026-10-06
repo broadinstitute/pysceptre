@@ -94,6 +94,56 @@ def permutation_draws(n_cells: int, m: int, b: int, rng: np.random.Generator) ->
     return out
 
 
+def nested_permutation_draws(
+    n_control: int, m: int, M: int, b: int, rng: np.random.Generator
+) -> np.ndarray:
+    """`b` draws for the NT-cells control group, as a `(b, M)` index array.
+
+    For every `k` in `[m, M]`, the first `k` entries of each row are a uniformly
+    random `k`-subset of `{0, ..., n_control + k - 1}`. A target with `n_trt`
+    treated cells is tested against `n_control` NT cells, so its combined
+    vector has `n_control + n_trt` positions and its draws are the first
+    `n_trt` entries of each row: one shared array serves every target whose
+    size lies in `[m, M]`.
+
+    Same law as sceptre's `hybrid_fisher_iwor_sampler(N, m, M, B)`, built
+    backwards from a uniform ordering instead of forwards from a shuffle. See
+    docs/design.md, "Permutations against the NT cells".
+    """
+    if b < 0 or m < 0 or M < m or n_control < 0:
+        raise ValueError(
+            f"need 0 <= m <= M, b >= 0 and n_control >= 0, got "
+            f"n_control={n_control}, m={m}, M={M}, b={b}"
+        )
+    out = permutation_draws(n_control + M, M, b, rng)
+    if b == 0 or M == 0:
+        return out
+
+    # pos[r, k]: where element `n_control + k` sits in row r, or M if absent.
+    pos = np.full((b, M), M, dtype=np.int32)
+    big_r, big_c = np.nonzero(out >= n_control)
+    pos[big_r, out[big_r, big_c] - n_control] = big_c
+    rows = np.arange(b)
+
+    # Shrink each row's prefix from M to m one position at a time. Going from
+    # length i to i - 1 removes element `n_control + i - 1` when the prefix
+    # holds it, and a uniformly chosen member otherwise; the removed element
+    # is parked at position i - 1, outside every shorter prefix.
+    for i in range(M, m, -1):
+        last = i - 1
+        held = pos[:, last]
+        j = np.where(held < i, held, rng.integers(0, i, size=b))
+        a_j = out[rows, j]
+        a_last = out[rows, last]
+        out[rows, j] = a_last
+        out[rows, last] = a_j
+        moved = a_j >= n_control
+        pos[rows[moved], a_j[moved] - n_control] = last
+        moved = a_last >= n_control
+        pos[rows[moved], a_last[moved] - n_control] = j[moved]
+    return out
+
+
 def draws_for_target(perms: np.ndarray, n_trt: int) -> list[np.ndarray]:
     """Each permutation's first `n_trt` cells, as one index array per draw.
 

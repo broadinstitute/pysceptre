@@ -64,13 +64,14 @@ def annotate_pairwise_qc(
     *,
     n_nonzero_trt_thresh: int = 7,
     n_nonzero_cntrl_thresh: int = 7,
+    control_cells: np.ndarray | None = None,
 ) -> pd.DataFrame:
     """Add `n_nonzero_trt`, `n_nonzero_cntrl` and `pass_qc` to `pairs`.
 
     The counts come from the same sparse matmul the calibration check uses,
     so the two paths cannot drift apart on what "enough cells" means. The
-    control group is the complement, so its count is a subtraction rather than
-    a second pass.
+    control group is the complement unless `control_cells` (the NT cells) is
+    given; see `pairwise_qc.nonzero_counts`.
     """
     targets = list(dict.fromkeys(pairs["grna_target"]))
     missing = [t for t in targets if t not in grna_target_cells]
@@ -81,7 +82,12 @@ def annotate_pairwise_qc(
     if unknown:
         raise KeyError(f"genes not present in gene_ids: {unknown[:5]}")
 
-    trt, cntrl = nonzero_counts(response_matrix, [grna_target_cells[t] for t in targets], n_cells)
+    trt, cntrl = nonzero_counts(
+        response_matrix,
+        [grna_target_cells[t] for t in targets],
+        n_cells,
+        control_cells=control_cells,
+    )
     tcol = {t: j for j, t in enumerate(targets)}
     rows = pairs["response_id"].map(gene_index).to_numpy()
     cols = pairs["grna_target"].map(tcol).to_numpy()

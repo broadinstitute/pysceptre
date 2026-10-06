@@ -27,16 +27,13 @@ sum(fitted_probabilities) exactly equals the observed treated-cell count)
 -- a few million entries per target, not billions:
   1. Draw M_j ~ Binomial(B, p_j) for every cell at once (vectorized, O(n_cells)).
   2. Generate sum(M_j) candidate (cell, slot) pairs by sampling each cell's
-     M_j slots *with* replacement from {0,...,B-1} (an approximation to the
-     WOR placement R's algorithm uses -- justified because M_j << B in
-     practice, so collisions are rare) then de-duplicating the (cell, slot)
-     pairs in one vectorized `np.unique` pass. Since set membership is
-     binary, a de-duplicated with-replacement draw and an exact
-     without-replacement draw are indistinguishable except for the rare
-     event of an actual collision, which just means that cell effectively
-     used one fewer of its M_j "budget" -- a negligible effect on a
-     resampling distribution that is already not being matched bit-for-bit
-     against R's RNG.
+     M_j slots *with* replacement from {0,...,B-1}, an approximation to the
+     WOR placement R's algorithm uses. **Nothing is de-duplicated**: a cell
+     that lands on the same slot twice is listed, and counted, twice in that
+     resample. About half the inclusion probability of listings repeat, so
+     the approximation is only used where targets are a tiny share of the
+     cells; `crt_index_sampler` chooses (see docs/design.md, "The CRT sampler
+     draws with replacement").
   3. Group the resulting (cell, slot) pairs by slot. Since slot values are
      bounded integers in [0, B), this is a counting-sort problem (O(n + B)),
      not a general comparison-sort one -- profiling showed a numpy
@@ -101,9 +98,10 @@ def _group_by_position_numpy(
 def crt_index_sampler_fast(
     fitted_probabilities: np.ndarray, B: int, rng: np.random.Generator
 ) -> list[np.ndarray]:
-    """Returns a length-B list of 0-based integer arrays: synthetic_idxs[b] is
-    the set of cell indices treated in synthetic draw b. See module docstring
-    for the sparse-generation strategy (O(B * n_trt) rather than O(B * n_cells))."""
+    """Returns a length-B list of 0-based integer arrays: synthetic_idxs[b] holds
+    the cells treated in synthetic draw b, and may list a cell more than once.
+    See the module docstring for the sparse-generation strategy (O(B * n_trt)
+    rather than O(B * n_cells)) and for when that repeat matters."""
     n_cells = fitted_probabilities.size
     M = rng.binomial(B, fitted_probabilities)
     total = int(M.sum())
@@ -127,6 +125,106 @@ def crt_index_sampler_fast(
         sorted_cells, starts, boundaries = _group_by_position_numpy(cell_ids, positions, B)
 
     return [sorted_cells[starts[b] : boundaries[b]] for b in range(B)]
+
+
+def crt_index_sampler_exact(
+    fitted_probabilities: np.ndarray, B: int, rng: np.random.Generator
+) -> list[np.ndarray]:
+    """`crt_index_sampler_fast` without its approximation, for large probabilities.
+
+    Same return shape: a length-B list of 0-based cell-index arrays, each
+    ascending. Cell j is in each draw independently with probability
+    `fitted_probabilities[j]`, which is the law of R's binomial count plus
+    without-replacement placement, and no cell is ever listed twice in a draw.
+    Work stays proportional to the number of inclusions: each cell's draw
+    positions are the partial sums of geometric gaps.
+
+    For the NT-cells control group, where a target is a large share of its
+    combined cells. See docs/design.md, "The CRT against the NT cells".
+    """
+    p = np.clip(np.asarray(fitted_probabilities, dtype=float), 0.0, 1.0)
+    if B <= 0:
+        return []
+    live = np.flatnonzero(p > 0)
+    cells_out: list[np.ndarray] = []
+    draws_out: list[np.ndarray] = []
+    # Every cell starts before draw 0, then walks forward until it passes B - 1.
+    cursor = np.full(live.size, -1, dtype=np.int64)
+
+    def walk(todo: np.ndarray) -> None:
+        pj = p[live[todo]]
+        mean = B * pj
+        n_gaps = np.ceil(mean + 6.0 * np.sqrt(mean * (1.0 - pj)) + 10.0).astype(np.int64)
+        owner = np.repeat(todo, n_gaps)
+        # Capped at B + 1, which already overshoots from the -1 start.
+        gaps = np.minimum(rng.geometric(np.repeat(pj, n_gaps)), B + 1)
+        ends = np.cumsum(n_gaps)
+        steps = np.cumsum(gaps)
+        steps -= np.repeat(steps[ends - n_gaps] - gaps[ends - n_gaps], n_gaps)
+        position = np.repeat(cursor[todo], n_gaps) + steps
+        keep = position < B
+        cells_out.append(live[owner[keep]])
+        draws_out.append(position[keep])
+        cursor[todo] = position[ends - 1]
+
+    # The first pass in blocks of cells, to bound the gap arrays; consecutive
+    # blocks consume the stream exactly as one call would.
+    first = np.ceil(B * p[live] + 6.0 * np.sqrt(B * p[live] * (1.0 - p[live])) + 10.0)
+    bounds = np.searchsorted(
+        np.cumsum(first), np.arange(1, 1 + int(first.sum() // _GAPS_PER_BLOCK)) * _GAPS_PER_BLOCK
+    )
+    for block in np.split(np.arange(live.size), bounds):
+        if block.size:
+            walk(block)
+    todo = np.flatnonzero(cursor < B)
+    passes = 1
+    while todo.size:
+        walk(todo)
+        todo = todo[cursor[todo] < B]
+        passes += 1
+
+    cell_ids = np.concatenate(cells_out) if cells_out else np.empty(0, dtype=np.int64)
+    positions = np.concatenate(draws_out) if draws_out else np.empty(0, dtype=np.int64)
+    if cell_ids.size == 0:
+        return [np.empty(0, dtype=np.int64) for _ in range(B)]
+    # The first pass leaves cells ascending; only later passes can disorder them.
+    if passes > 1:
+        order = np.argsort(cell_ids, kind="stable")
+        cell_ids, positions = cell_ids[order], positions[order]
+    # Input ordered by cell, so the counting sort leaves each draw ascending.
+    if _HAVE_NUMBA:
+        sorted_cells, starts, boundaries = _counting_sort_group(cell_ids, positions, B)
+    else:
+        order = np.argsort(positions, kind="stable")
+        sorted_cells = cell_ids[order]
+        counts = np.bincount(positions, minlength=B)
+        boundaries = np.cumsum(counts)
+        starts = boundaries - counts
+    return [sorted_cells[starts[b] : boundaries[b]] for b in range(B)]
+
+
+# A target above this share of its cells gets the exact sampler: the fast one
+# repeats about half the share of its listings. See docs/design.md, "The CRT
+# sampler draws with replacement".
+EXACT_SAMPLER_ABOVE_SHARE = 2e-3
+
+# Geometric gaps drawn per block of cells in the exact sampler's first pass.
+_GAPS_PER_BLOCK = 4_000_000
+
+
+def crt_index_sampler(
+    fitted_probabilities: np.ndarray, B: int, rng: np.random.Generator, n_trt: int
+) -> list[np.ndarray]:
+    """The CRT draw for a target with `n_trt` treated cells among `fitted_probabilities`.
+
+    `crt_index_sampler_exact` when the target is more than
+    `EXACT_SAMPLER_ABOVE_SHARE` of the cells, `crt_index_sampler_fast`
+    otherwise. The choice depends only on the two counts, never on fitted
+    values, so it cannot change with how a run is chunked.
+    """
+    if n_trt > EXACT_SAMPLER_ABOVE_SHARE * fitted_probabilities.size:
+        return crt_index_sampler_exact(fitted_probabilities, B, rng)
+    return crt_index_sampler_fast(fitted_probabilities, B, rng)
 
 
 def crt_index_sampler_naive(

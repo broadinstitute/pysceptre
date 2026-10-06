@@ -32,6 +32,8 @@ def nonzero_counts(
     group_cell_lists: list[np.ndarray],
     n_cells: int,
     gene_chunk: int = 4096,
+    *,
+    control_cells: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Per (gene, group): treated and control nonzero-cell counts.
 
@@ -39,14 +41,19 @@ def nonzero_counts(
 
     This is R's `compute_n_trt_cells_matrix`, done as one sparse-sparse matmul
     of the binarized response matrix against the membership matrix rather than
-    a loop over pairs. The control group is the *complement*, so its count is
-    `total nonzero for the gene - treated nonzero` and needs no second pass --
-    which is the whole reason the complement control group is cheap here.
+    a loop over pairs. With the complement control group (the default) the
+    control count is `total nonzero for the gene - treated nonzero`. With
+    `control_cells`, the NT cells, it is the gene's nonzero count over those
+    cells, the same for every group, as in R's
+    `compute_nt_nonzero_matrix_and_n_ok_pairs_v3`.
 
     The response matrix is binarized, never densified: only the sparsity
     pattern matters for a nonzero count, so `data` is replaced with ones and
     the (n_genes, n_cells) structure is left alone.
     """
+    n_groups = len(group_cell_lists)
+    if control_cells is not None:
+        group_cell_lists = list(group_cell_lists) + [np.asarray(control_cells)]
     G = _membership_matrix(group_cell_lists, n_cells)
 
     def block_counts(block):
@@ -76,5 +83,9 @@ def nonzero_counts(
     else:
         trt, n_nonzero_tot = block_counts(response_matrix)
 
+    if control_cells is not None:
+        n_nonzero_control = trt[:, n_groups]
+        trt = trt[:, :n_groups]
+        return trt, np.repeat(n_nonzero_control[:, None], n_groups, axis=1)
     cntrl = n_nonzero_tot[:, None] - trt
     return trt, cntrl

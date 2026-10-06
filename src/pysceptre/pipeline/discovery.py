@@ -1,26 +1,34 @@
-"""Complement-mode discovery-analysis orchestration.
+"""Discovery-analysis orchestration, for both of sceptre's control groups.
 
-Verified against `run_crt_in_memory_v2`: for high-MOI/complement,
-`run_outer_regression` is always true and `subset_to_nt_cells` is always
-false, so each gene's Poisson/NB precomputation is fit exactly ONCE, against
-the *full* covariate matrix (all cells), and cached/reused across every gRNA
-target it's paired with (this is the `crt_glm_factored_out` code path) --
-there is no per-pair GLM refit. Similarly each target's logistic
-precomputation + CRT draw happens once and is reused across every gene
-paired with it.
+**Complement** (`run_discovery_ntcells_complement`). Verified against
+`run_crt_in_memory_v2`: for the complement, `run_outer_regression` is always
+true and `subset_to_nt_cells` is false outside the calibration check, so each
+gene's Poisson/NB precomputation is fit exactly ONCE, against the *full*
+covariate matrix (all cells), and cached/reused across every gRNA target it's
+paired with (this is the `crt_glm_factored_out` code path) -- there is no
+per-pair GLM refit. Similarly each target's logistic precomputation + CRT draw
+happens once and is reused across every gene paired with it.
 
 This is the actual batching opportunity for the "quickly run" performance
 goal: all genes share one design matrix (the full covariate matrix), so the
 per-gene Poisson fit is one batched `fit_poisson_glm_batch` call, not a
 per-gene loop; likewise all targets share it for the logistic fit.
+
+**NT cells** (`run_discovery_nt_cells`, low MOI only). R's
+`discovery_ntcells_perm_test` and `discovery_ntcells_crt` test each pair on its
+target's cells together with the NT cells, so the response GLM is fit once per
+pair and nothing is shared across a gene's targets. See docs/design.md, "Low
+MOI and the NT-cells control group".
 """
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import itertools
 import os
 import sys
+import threading
 import warnings
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
@@ -29,14 +37,22 @@ from functools import partial
 
 import numpy as np
 import pandas as pd
+from scipy import sparse
 
-from ..crt.permutations import permutation_draws
-from ..crt.sampler import crt_index_sampler_fast
-from ..glm.irls import fit_binomial_glm_batch, fit_poisson_glm_batch, x_outer_flat
+from ..crt.permutations import nested_permutation_draws, permutation_draws
+from ..crt.sampler import crt_index_sampler
+from ..glm.design import redundant_columns
+from ..glm.irls import (
+    fit_binomial_glm_batch,
+    fit_poisson_glm_batch,
+    one_blas_thread,
+    x_outer_flat,
+)
 from ..glm.nb_theta import estimate_theta
 from ..precompute.pieces import compute_precomputation_pieces
-from ..test_statistic.resampling import run_low_level_test_full
+from ..test_statistic.resampling import PairResult, run_low_level_test_full
 from ..test_statistic.score_stat import (
+    FirstStagePermutationDraws,
     ListDraws,
     PermutationPrefixSums,
     PermutationSliceDraws,
@@ -189,11 +205,13 @@ def _as_pct(fold_change: float) -> float:
 
 
 def _get_row(response_matrix, i: int) -> np.ndarray:
-    """Returns gene row i as a dense 1D float array, for either a dense
-    ndarray (n_genes, n_cells) or a scipy.sparse matrix in CSR-like format."""
-    if hasattr(response_matrix, "toarray"):
-        return np.asarray(response_matrix[i].toarray()).ravel().astype(float)
-    return np.asarray(response_matrix[i], dtype=float)
+    """Returns gene row i as a dense 1D float array, for a dense ndarray
+    (n_genes, n_cells), a scipy.sparse matrix, or a backed reader whose rows
+    are either."""
+    row = response_matrix[i]
+    if sparse.issparse(row):
+        return np.asarray(row.toarray()).ravel().astype(float)
+    return np.asarray(row, dtype=float).ravel()
 
 
 def _format_bytes(n: float) -> str:
@@ -423,13 +441,16 @@ def summarize_gene_fits(gene_precomps: dict[str, GenePrecomputation]) -> dict[st
     return summary
 
 
-def _warn_about_degenerate_gene_fits(gene_precomps: dict[str, GenePrecomputation]) -> None:
+def _warn_about_degenerate_gene_fits(gene_precomps: dict, unit: str = "gene") -> None:
     """One summary warning for the whole gene set rather than per-gene spam.
 
     These conditions were previously computed and thrown away -- `estimate_theta`
     returns a method code that says whether the MLE succeeded, and the smallest
     eigenvalue of Zt_wZ says whether D is meaningful -- so a run could report a
     statistic built on a degenerate fit with no indication.
+
+    `unit="pair"` words it for the NT-cells path, whose fits are keyed by
+    `(gene_id, target_id)` and not returned, so it names example pairs.
     """
     summary = summarize_gene_fits(gene_precomps)
     n = len(gene_precomps)
@@ -460,7 +481,14 @@ def _warn_about_degenerate_gene_fits(gene_precomps: dict[str, GenePrecomputation
             f"{len(summary['theta_fallback'])} where the dispersion MLE failed "
             f"and fell back to {' / '.join(methods)}"
         )
-    if parts:
+    if parts and unit == "pair":
+        affected = list(dict.fromkeys(k for keys in summary.values() for k in keys))
+        warnings.warn(
+            f"degenerate pair fits out of {n}: " + "; ".join(parts) + ". "
+            f"Affected (gene, target) pairs include {affected[:5]}.",
+            stacklevel=3,
+        )
+    elif parts:
         warnings.warn(
             f"degenerate gene fits out of {n}: " + "; ".join(parts) + ". "
             "Call pysceptre.pipeline.discovery.summarize_gene_fits for the "
@@ -530,7 +558,7 @@ def _target_draw_job(job: tuple[int, int, str]) -> tuple[str, TargetPrecomputati
     trt_idxs = st["grna_target_cells"][target_id]
     if perms is None:
         rng = np.random.default_rng(target_seed_sequence(st["seed"], target_id))
-        synthetic_idxs = crt_index_sampler_fast(fitted_probabilities, st["B_total"], rng)
+        synthetic_idxs = crt_index_sampler(fitted_probabilities, st["B_total"], rng, len(trt_idxs))
         draws = ListDraws(synthetic_idxs, st["n_cells"])
     else:
         # Permutations: every target reads the same draws, taking a prefix
@@ -663,6 +691,11 @@ _THREAD_ABOVE_N_CHUNKS = 8
 
 _BYTES_PER_INDEX = 8  # int64 cell index
 
+# Most threads the NT-cells gene pool uses off Linux. Its per-pair fits hold the
+# GIL, so more threads contend rather than help; see docs/design.md, "One fit
+# per pair".
+_NT_THREAD_CAP = 4
+
 
 def target_bytes_per_item(
     n_cells: int, B_total: int, n_trt_values, *, include_fit: bool = True
@@ -752,7 +785,9 @@ def _resolve_target_chunk_size(
             n_cells, B_total, n_trt_values, n_targets, chunk_memory_gb, include_fit=include_fit
         ),
     )
-    if fitted >= chunk_size:
+    # The budget chunk is capped at the target count, so fewer targets than
+    # `chunk_size` is not a reduction: one chunk holds them all either way.
+    if fitted >= min(chunk_size, n_targets):
         return chunk_size
 
     per_target = target_bytes_per_item(n_cells, B_total, n_trt_values, include_fit=include_fit)
@@ -852,30 +887,62 @@ def _gene_job(job: tuple[str, list[str]]) -> dict[tuple[str, str], dict]:
             side_code=st["side_code"],
             null_statistics_fn=null_fn,
         )
-        half_width = _CI_Z * result.se_fold_change
-        out[(gene_id, target_id)] = {
-            "response_id": gene_id,
-            "grna_target": target_id,
-            "p_value": result.p_value,
-            "fold_change": result.fold_change,
-            "se_fold_change": result.se_fold_change,
-            # The effect size people actually read, with its interval.
-            # `log2(fold_change)` is not returned: it is a pure transform of a
-            # column already present, so it would be bytes rather than
-            # information.
-            #
-            # `_es` because `DataFrame.pct_change` is a pandas method. Named
-            # `pct_change`, attribute access returns the method rather than
-            # the column, and arithmetic on it raises a TypeError about
-            # 'method' rather than a KeyError -- which cost time twice here
-            # before the column was renamed.
-            "pct_change_es": _as_pct(result.fold_change),
-            "pct_change_es_ci_low": _as_pct(result.fold_change - half_width),
-            "pct_change_es_ci_high": _as_pct(result.fold_change + half_width),
-            "z_orig": result.z_orig,
-            "stage": result.stage,
-        }
+        out[(gene_id, target_id)] = _result_row(gene_id, target_id, result)
     return out
+
+
+_RESULT_COLUMNS = [
+    "response_id",
+    "grna_target",
+    "p_value",
+    "fold_change",
+    "se_fold_change",
+    "pct_change_es",
+    "pct_change_es_ci_low",
+    "pct_change_es_ci_high",
+    "z_orig",
+    "stage",
+]
+
+
+def _check_pairs(pairs: pd.DataFrame, gene_ids: list[str], grna_target_cells: dict) -> None:
+    """Refuse pairs naming a gene or a target the inputs do not hold, before any work."""
+    known_genes = set(gene_ids)
+    genes = [g for g in pd.unique(pairs["response_id"]) if g not in known_genes]
+    if genes:
+        raise ValueError(f"pairs name {len(genes)} gene(s) not in gene_ids, e.g. {genes[:5]}")
+    targets = [t for t in pd.unique(pairs["grna_target"]) if t not in grna_target_cells]
+    if targets:
+        raise ValueError(
+            f"pairs name {len(targets)} target(s) not in grna_target_cells, e.g. {targets[:5]}"
+        )
+
+
+def _result_row(gene_id: str, target_id: str, result) -> dict:
+    """One output row from a `PairResult`; both control groups report this shape."""
+    half_width = _CI_Z * result.se_fold_change
+    return {
+        "response_id": gene_id,
+        "grna_target": target_id,
+        "p_value": result.p_value,
+        "fold_change": result.fold_change,
+        "se_fold_change": result.se_fold_change,
+        # The effect size people actually read, with its interval.
+        # `log2(fold_change)` is not returned: it is a pure transform of a
+        # column already present, so it would be bytes rather than
+        # information.
+        #
+        # `_es` because `DataFrame.pct_change` is a pandas method. Named
+        # `pct_change`, attribute access returns the method rather than
+        # the column, and arithmetic on it raises a TypeError about
+        # 'method' rather than a KeyError -- which cost time twice here
+        # before the column was renamed.
+        "pct_change_es": _as_pct(result.fold_change),
+        "pct_change_es_ci_low": _as_pct(result.fold_change - half_width),
+        "pct_change_es_ci_high": _as_pct(result.fold_change + half_width),
+        "z_orig": result.z_orig,
+        "stage": result.stage,
+    }
 
 
 def _limit_blas_threads() -> None:
@@ -974,6 +1041,27 @@ def _map_jobs(fn, jobs: list, n_jobs: int, backend: str | None = None):
             yield from ex.map(fn, jobs)
 
 
+# The engines share module-level worker state (`_WORKER_STATE`, `_GENE_FIT_STATE`),
+# so two analyses in one process run one after the other rather than interleave.
+_ENGINE_LOCK = threading.RLock()
+
+
+def _one_analysis_at_a_time(engine):
+    """Serialize calls to `engine`, under one BLAS-thread limit for the whole call.
+
+    The limit is process-wide, so per-fit limits taken in worker threads only
+    nest cleanly inside an outer one.
+    """
+
+    @functools.wraps(engine)
+    def serialized(*args, **kwargs):
+        with _ENGINE_LOCK, one_blas_thread():
+            return engine(*args, **kwargs)
+
+    return serialized
+
+
+@_one_analysis_at_a_time
 def run_discovery_ntcells_complement(
     response_matrix,
     gene_ids: list[str],
@@ -991,11 +1079,20 @@ def run_discovery_ntcells_complement(
     chunk_memory_gb: float = _DEFAULT_CHUNK_MEMORY_GB,
     n_jobs: int = 1,
     resampling_mechanism: str = "crt",
+    permutations: np.ndarray | None = None,
+    permutation_width: int | None = None,
 ) -> pd.DataFrame:
     """pairs: DataFrame with columns 'response_id', 'grna_target' -- the
     QC-passed pairs to test. Returns a DataFrame with one row per pair:
     response_id, grna_target, p_value, fold_change, se_fold_change, pct_change_es,
     pct_change_es_ci_low, pct_change_es_ci_high, z_orig, stage.
+
+    Under `resampling_mechanism="permutations"` the shared draws are a
+    `(B1 + B2 + B3, width)` array of cell indices whose rows are random
+    orderings, and each target reads the first `n_trt` entries of each row.
+    `permutation_width` sets the width, which defaults to the largest target
+    in `grna_target_cells`; `permutations` supplies the draws themselves
+    instead of drawing them, for example R's own.
 
     Targets are fit and CRT-drawn in chunks of `target_chunk_size` rather than
     all at once: each target's B1+B2+B3 synthetic index sets are individually
@@ -1019,6 +1116,7 @@ def run_discovery_ntcells_complement(
     # results do not depend on target order or on which other targets are in
     # the run. See `target_seed_sequence`. Entropy is resolved once here so an
     # unseeded run still draws it a single time.
+    _check_pairs(pairs, gene_ids, grna_target_cells)
     entropy = resolve_entropy(seed)
 
     # Fit only the genes some pair mentions. `gene_ids` labels every row of
@@ -1052,7 +1150,9 @@ def run_discovery_ntcells_complement(
         n_jobs=n_jobs,
     )
 
-    pairs_by_target = {target_id: group for target_id, group in pairs.groupby("grna_target")}
+    pairs_by_target = {
+        target_id: group for target_id, group in pairs.groupby("grna_target", observed=True)
+    }
     target_ids_needed = [t for t in grna_target_cells if t in pairs_by_target]
 
     # Permutation draws are generated **once for the whole analysis**, not
@@ -1067,14 +1167,27 @@ def run_discovery_ntcells_complement(
     # target set makes M independent of the *pair list*, so adding pairs for
     # targets already present cannot move a result. Only adding a larger
     # target to the dataset can.
-    permutations = None
-    if resampling_mechanism == "permutations":
+    if resampling_mechanism != "permutations":
+        if permutations is not None or permutation_width is not None:
+            raise ValueError("permutations and permutation_width apply only to permutations")
+    elif permutations is None:
         m = max(len(v) for v in grna_target_cells.values())
+        if permutation_width is not None:
+            if permutation_width < m:
+                raise ValueError(
+                    f"permutation_width={permutation_width} is narrower than the largest "
+                    f"target, which has {m} cells"
+                )
+            m = int(permutation_width)
         permutations = permutation_draws(
             covariate_matrix.shape[0],
             m,
             B1 + B2 + B3,
             np.random.default_rng(entropy),
+        )
+    else:
+        permutations = _check_shared_draws(
+            permutations, B1 + B2 + B3, [len(grna_target_cells[t]) for t in target_ids_needed]
         )
 
     # **Permutations are not chunked at all**, which makes the loop below
@@ -1113,7 +1226,7 @@ def run_discovery_ntcells_complement(
 
     gene_row_index = {gene_id: i for i, gene_id in enumerate(gene_ids)}
     pairs_by_gene: dict[str, list[str]] = {}
-    for gene_id, group in pairs.groupby("response_id"):
+    for gene_id, group in pairs.groupby("response_id", observed=True):
         pairs_by_gene[str(gene_id)] = list(group["grna_target"])
 
     # **A chunk's targets are prepared while the previous chunk's genes are
@@ -1139,8 +1252,8 @@ def run_discovery_ntcells_complement(
     # target seeds from its own name (`target_seed_sequence`), so preparing a
     # chunk earlier cannot change what it draws.
     #
-    # The cost is one extra chunk of target state alive at a time, so peak
-    # memory carries two chunks rather than one.
+    # The cost is the prepared chunks alive beside the one under test, so peak
+    # memory carries up to `_PREFETCH_DEPTH + 1` chunks rather than one.
     prep_draw_jobs = max(1, resolve_n_jobs(n_jobs) // max(1, _PREFETCH_DEPTH))
 
     def _prepare(ids: list[str]) -> dict[str, TargetPrecomputation]:
@@ -1163,7 +1276,56 @@ def run_discovery_ntcells_complement(
     starts = list(range(0, len(target_ids_needed), target_chunk_size))
     chunks = [target_ids_needed[i : i + target_chunk_size] for i in starts]
 
-    rows: dict[tuple[str, str], dict] = {}
+    rows = _run_target_chunks(
+        chunks,
+        _prepare,
+        _gene_job,
+        pairs_by_gene,
+        dict(
+            response_matrix=response_matrix,
+            covariate_matrix=covariate_matrix,
+            gene_precomps=gene_precomps,
+            permutations=permutations,
+            gene_row_index=gene_row_index,
+            B1=B1,
+            B2=B2,
+            B3=B3,
+            fit_parametric_curve=fit_parametric_curve,
+            side_code=side_code,
+        ),
+        n_jobs,
+    )
+    # Emit in the original target-major order, so inverting the loops above is
+    # not observable in the output.
+    ordered = [
+        rows[(row.response_id, target_id)]
+        for target_id in target_ids_needed
+        for row in pairs_by_target[target_id].itertuples(index=False)
+    ]
+    return pd.DataFrame(ordered, columns=_RESULT_COLUMNS)
+
+
+def _run_target_chunks(
+    chunks: list[list[str]],
+    prepare,
+    gene_job,
+    pairs_by_gene: dict[str, list[str]],
+    shared_state: dict,
+    n_jobs: int,
+    gene_backend: str | None = None,
+    gene_n_jobs: int | None = None,
+) -> dict:
+    """Test every pair one chunk of targets at a time, gene-outer within a chunk.
+
+    `prepare(ids)` builds a chunk's target state; `gene_job((gene_id, targets))`
+    tests one gene against the chunk's targets it is paired with, reading
+    `shared_state` and the chunk's `target_precomps` from `_WORKER_STATE`.
+    `gene_backend` and `gene_n_jobs` override the gene pool's backend and
+    width; by default they follow `gene_job_backend` and `n_jobs`.
+    Chunks are prepared up to `_PREFETCH_DEPTH` ahead when `n_jobs > 1`.
+    Returns the result rows keyed by `(gene_id, target_id)`.
+    """
+    rows: dict = {}
     # **Only when the caller asked for parallelism.** The prefetch runs on a
     # thread of its own, so enabling it at `n_jobs=1` would quietly make a
     # single-worker run use two cores -- measured 831.0 s against 579.1 s on
@@ -1172,7 +1334,10 @@ def run_discovery_ntcells_complement(
     # and every matched-core comparison against R depend on it.
     # Chosen once, from the chunk count: a run that builds a pool per chunk
     # pays fork repeatedly, one that builds a single pool does not.
-    gene_backend = gene_job_backend(len(chunks))
+    if gene_backend is None:
+        gene_backend = gene_job_backend(len(chunks))
+    if gene_n_jobs is None:
+        gene_n_jobs = n_jobs
     # PYSCEPTRE_PREFETCH_DEPTH overrides the default, for tuning on a
     # machine whose balance differs.
     _d = os.environ.get("PYSCEPTRE_PREFETCH_DEPTH", "")
@@ -1184,13 +1349,13 @@ def run_discovery_ntcells_complement(
         # Prime the pipeline so `depth` fits are in flight before the first
         # chunk's genes are tested, rather than one.
         for i in range(depth):
-            pending.append(prefetch.submit(_prepare, chunks[i]))
+            pending.append(prefetch.submit(prepare, chunks[i]))
 
         for chunk_i, chunk_ids in enumerate(chunks):
-            target_precomps = pending.popleft().result() if pending else _prepare(chunk_ids)
+            target_precomps = pending.popleft().result() if pending else prepare(chunk_ids)
             ahead = chunk_i + depth
             if prefetch is not None and ahead < len(chunks):
-                pending.append(prefetch.submit(_prepare, chunks[ahead]))
+                pending.append(prefetch.submit(prepare, chunks[ahead]))
 
             # Gene-outer inside the chunk so each gene's pieces are rebuilt once
             # per chunk rather than once per pair: 244 genes x ~15 chunks is ~3,660
@@ -1235,20 +1400,8 @@ def run_discovery_ntcells_complement(
             # concurrently would change every p-value, and chunk-parallelism would
             # multiply `chunk_memory_gb` by the worker count instead of sharing one
             # chunk's draws.
-            _WORKER_STATE.update(
-                response_matrix=response_matrix,
-                covariate_matrix=covariate_matrix,
-                gene_precomps=gene_precomps,
-                permutations=permutations,
-                gene_row_index=gene_row_index,
-                target_precomps=target_precomps,
-                B1=B1,
-                B2=B2,
-                B3=B3,
-                fit_parametric_curve=fit_parametric_curve,
-                side_code=side_code,
-            )
-            for produced in _map_jobs(_gene_job, gene_jobs, n_jobs, backend=gene_backend):
+            _WORKER_STATE.update(shared_state, target_precomps=target_precomps)
+            for produced in _map_jobs(gene_job, gene_jobs, gene_n_jobs, backend=gene_backend):
                 rows.update(produced)
             _WORKER_STATE.clear()
 
@@ -1260,11 +1413,419 @@ def run_discovery_ntcells_complement(
             # exception, so a failed run does not wait on a chunk nobody
             # will consume.
             prefetch.shutdown(wait=False, cancel_futures=True)
-    # Emit in the original target-major order, so inverting the loops above is
-    # not observable in the output.
+    return rows
+
+
+def _check_shared_draws(perms, n_draws: int, n_trt_values) -> np.ndarray:
+    """Validate caller-supplied shared permutation draws and return them as int64.
+
+    They must be an integer `(n_draws, width)` array at least as wide as the
+    largest tested target.
+    """
+    perms = np.asarray(perms)
+    if perms.ndim != 2 or perms.shape[0] != n_draws:
+        raise ValueError(
+            f"permutations must have shape (B1 + B2 + B3, width) = ({n_draws}, width), "
+            f"got {perms.shape}"
+        )
+    if not np.issubdtype(perms.dtype, np.integer):
+        raise ValueError(f"permutations must hold integer cell positions, got {perms.dtype}")
+    widest = max(n_trt_values, default=0)
+    if perms.shape[1] < widest:
+        raise ValueError(
+            f"permutations are {perms.shape[1]} wide but a tested target has {widest} cells"
+        )
+    return perms.astype(np.int64, copy=False)
+
+
+@dataclass
+class NtTargetPrecomputation:
+    """One target's state against the NT cells, held for the length of its chunk.
+
+    `cells` is R's `c(trt_idxs, all_nt_idxs)`: the target's cells in ascending
+    order, then the NT cells in pool order. Everything else is indexed by
+    position in `cells`, so the treated cells are positions `[0, n_trt)`.
+    """
+
+    cells: np.ndarray
+    n_trt: int
+    X: np.ndarray
+    x_outer: np.ndarray
+    # CRT only: the logistic fit over `cells` that the draws come from.
+    fitted_probabilities: np.ndarray | None
+    draws: StagedDraws
+
+
+def combined_cells(trt_cells: np.ndarray, nt_cells: np.ndarray) -> np.ndarray:
+    """R's `c(trt_idxs, all_nt_idxs)`: a target's cells, ascending, then the NT cells."""
+    return np.concatenate([np.sort(np.asarray(trt_cells, dtype=np.int64)), nt_cells])
+
+
+def check_nt_cells_targets(
+    grna_target_cells: dict[str, np.ndarray],
+    target_ids: list[str],
+    nt_cells: np.ndarray,
+    covariate_matrix: np.ndarray,
+) -> set[str]:
+    """Refuse tested targets the NT-cells test cannot be run on, and find the
+    ones it has nothing to test on.
+
+    No target cell may be an NT cell, and the covariates must be estimable on
+    its cells together with the NT cells -- where R's
+    `perform_response_precomputation` would stop on an NA coefficient. A
+    target with no cells is let through; its pairs come back NaN.
+
+    Returns the targets whose treated cells the covariates predict exactly on
+    those cells, for example a batch holding the target's cells and no NT
+    cell. Their statistic is zero over zero, so their pairs are reported NaN.
+
+    Raises:
+        ValueError: naming the targets at fault.
+    """
+    is_nt = np.zeros(covariate_matrix.shape[0], dtype=bool)
+    is_nt[nt_cells] = True
+    shared = {t: int(np.count_nonzero(is_nt[grna_target_cells[t]])) for t in target_ids}
+    shared = {t: k for t, k in shared.items() if k}
+    if shared:
+        example = next(iter(shared))
+        raise ValueError(
+            f"{len(shared)} tested target(s) share cells with the NT cells, e.g. {example!r} "
+            f"({shared[example]} cells). With control_group='nt_cells' a cell must carry at most "
+            "one gRNA, which is what sceptre's low-MOI QC enforces by removing cells with zero "
+            "or two or more gRNAs. Remove those cells upstream, or use "
+            "control_group='complement'."
+        )
+    # Adding rows cannot lower a matrix's rank, so a full-rank design over the NT cells
+    # clears every target at once -- of both problems below, since a treated indicator
+    # that is zero on the NT cells then cannot lie in the span of the columns.
+    if not redundant_columns(covariate_matrix[nt_cells])[1]:
+        return set()
+    bad: dict[str, list[int]] = {}
+    separated: set[str] = set()
+    for t in target_ids:
+        cells = combined_cells(grna_target_cells[t], nt_cells)
+        X = covariate_matrix[cells]
+        redundant = redundant_columns(X)[1]
+        if redundant:
+            bad[t] = redundant
+            continue
+        indicator = np.zeros((cells.size, 1))
+        indicator[: cells.size - nt_cells.size] = 1.0
+        if redundant_columns(np.hstack([X, indicator]))[1]:
+            separated.add(t)
+    if bad:
+        example = next(iter(bad))
+        raise ValueError(
+            f"the covariates cannot be estimated on the cells of {len(bad)} target(s) together "
+            f"with the NT cells, e.g. {example!r}: covariate_matrix column(s) {bad[example]} "
+            "are linear combinations of the ones before them on those cells. sceptre stops "
+            "here too. Drop the column(s), or use control_group='complement'."
+        )
+    return separated
+
+
+def nt_target_bytes_per_item(
+    n_control: int, p: int, B1: int, B_total: int, n_trt_values, *, crt: bool
+) -> float:
+    """Bytes one target costs a chunk on the NT-cells path.
+
+    Its combined cell index, design rows and their outer products, plus, for
+    the CRT, the logistic-fit arrays, the draws and their sparse stage
+    matrices, or, for permutations, the cached first stage. Sized at the mean
+    target, since a chunk's total is a sum.
+    """
+    if len(n_trt_values) == 0:
+        return 0.0
+    mean = float(np.mean(np.asarray(n_trt_values, dtype=float)))
+    n_combined = n_control + mean
+    held = n_combined * _BYTES_PER_FLOAT * (1 + p + p * p)
+    # A treated cell in a stage's CSR costs a float64 value and an index.
+    per_listing = _BYTES_PER_FLOAT + _BYTES_PER_INDEX
+    if crt:
+        # The draws' own index arrays, plus the CSR built from them.
+        return (
+            held
+            + irls_bytes_per_column(int(n_combined))
+            + B_total * mean * (_BYTES_PER_INDEX + per_listing)
+        )
+    return held + B1 * mean * per_listing
+
+
+def _nt_target_job(job: tuple[int, str]) -> tuple[str, NtTargetPrecomputation]:
+    """One target's combined design, and its resamples over the combined cells."""
+    token, target_id = job
+    st = _TARGET_STATE[token]
+    nt_cells = st["nt_cells"]
+    cells = combined_cells(st["grna_target_cells"][target_id], nt_cells)
+    n_trt = cells.size - nt_cells.size
+    X = st["covariate_matrix"][cells]
+    x_outer = x_outer_flat(X)
+    perms = st["permutations"]
+    if perms is None:
+        indicator = np.zeros(cells.size)
+        indicator[:n_trt] = 1.0
+        fitted = fit_binomial_glm_batch(X, indicator, X_outer_flat=x_outer).fitted_values
+        rng = np.random.default_rng(target_seed_sequence(st["seed"], target_id))
+        draws: StagedDraws = ListDraws(
+            crt_index_sampler(fitted, st["B_total"], rng, n_trt), cells.size
+        )
+    else:
+        fitted = None
+        draws = FirstStagePermutationDraws(perms, n_trt, cells.size)
+    return target_id, NtTargetPrecomputation(
+        cells=cells,
+        n_trt=n_trt,
+        X=X,
+        x_outer=x_outer,
+        fitted_probabilities=fitted,
+        draws=draws,
+    )
+
+
+def prepare_nt_targets(
+    grna_target_cells: dict[str, np.ndarray],
+    target_ids: list[str],
+    nt_cells: np.ndarray,
+    covariate_matrix: np.ndarray,
+    *,
+    B_total: int,
+    seed,
+    permutations: np.ndarray | None = None,
+    n_jobs: int = 1,
+) -> dict[str, NtTargetPrecomputation]:
+    """Per-target state for the NT-cells control group.
+
+    Under the CRT each target gets a logistic fit over its combined cells and
+    `B_total` draws from it, from a stream keyed by the target's name (see
+    `target_seed_sequence`), as R's `discovery_ntcells_crt` does. Under
+    permutations (`permutations` given) each target reads the shared draws.
+    """
+    token = next(_TARGET_STATE_SEQ)
+    _TARGET_STATE[token] = dict(
+        grna_target_cells=grna_target_cells,
+        nt_cells=nt_cells,
+        covariate_matrix=covariate_matrix,
+        permutations=permutations,
+        seed=seed,
+        B_total=B_total,
+    )
+    out: dict[str, NtTargetPrecomputation] = {}
+    try:
+        for target_id, precomp in _map_jobs(
+            _nt_target_job, [(token, t) for t in target_ids], n_jobs, backend="thread"
+        ):
+            out[target_id] = precomp
+    finally:
+        _TARGET_STATE.pop(token, None)
+    return out
+
+
+def _nt_gene_job(
+    job: tuple[str, list[str]],
+) -> dict[tuple[str, str], tuple[dict, GenePrecomputation | None]]:
+    """One gene's pairs against the current chunk's targets, each pair with its own fit.
+
+    The gene's response GLM is refit on every pair's combined cells, as in R's
+    `discovery_ntcells_perm_test` and `discovery_ntcells_crt`; one pair at a
+    time, so a fit depends on nothing but its pair (see `_GENE_BATCH_WIDTH`).
+    Returns each pair's result row with its fit diagnostics.
+    """
+    gene_id, targets_here = job
+    st = _WORKER_STATE
+    y_all = _get_row(st["response_matrix"], st["gene_row_index"][gene_id])
+    lo, hi = _THETA_BOUNDS
+    out: dict[tuple[str, str], tuple[dict, GenePrecomputation | None]] = {}
+    for target_id in targets_here:
+        if target_id in st["separated"]:
+            untested = PairResult(np.nan, np.nan, np.nan, np.nan, np.nan, None)
+            out[(gene_id, target_id)] = (_result_row(gene_id, target_id, untested), None)
+            continue
+        target = st["target_precomps"][target_id]
+        y = y_all[target.cells]
+        fit = fit_poisson_glm_batch(target.X, y, X_outer_flat=target.x_outer)
+        theta_est, method = estimate_theta(
+            y=y, mu=fit.fitted_values, dfr=target.cells.size - target.X.shape[1]
+        )
+        theta = max(min(theta_est, hi), lo)
+        pieces = compute_precomputation_pieces(y, target.X, fit.coefs, theta)
+        result = run_low_level_test_full(
+            y=y,
+            mu=pieces.mu,
+            a=pieces.a,
+            w=pieces.w,
+            D=pieces.D,
+            trt_idxs=np.arange(target.n_trt),
+            synthetic_idxs=target.draws,
+            B1=st["B1"],
+            B2=st["B2"],
+            B3=st["B3"],
+            fit_parametric_curve=st["fit_parametric_curve"],
+            side_code=st["side_code"],
+        )
+        fit_info = GenePrecomputation(
+            fitted_coefs=fit.coefs,
+            theta=theta,
+            theta_method=method,
+            theta_clamped=not (lo <= theta_est <= hi),
+            glm_converged=bool(fit.converged),
+            min_eigenvalue=pieces.min_eigenvalue,
+            max_eigenvalue=pieces.max_eigenvalue,
+            n_covariates=pieces.D.shape[0],
+        )
+        out[(gene_id, target_id)] = (_result_row(gene_id, target_id, result), fit_info)
+    return out
+
+
+@_one_analysis_at_a_time
+def run_discovery_nt_cells(
+    response_matrix,
+    gene_ids: list[str],
+    covariate_matrix: np.ndarray,
+    grna_target_cells: dict[str, np.ndarray],
+    nt_cells: np.ndarray,
+    pairs: pd.DataFrame,
+    *,
+    B1: int = 499,
+    B2: int = 4999,
+    B3: int = 0,
+    fit_parametric_curve: bool = True,
+    side_code: int = 0,
+    seed: int | None = None,
+    target_chunk_size: int = _DEFAULT_TARGET_CHUNK_SIZE,
+    chunk_memory_gb: float = _DEFAULT_CHUNK_MEMORY_GB,
+    n_jobs: int = 1,
+    resampling_mechanism: str = "crt",
+    permutations: np.ndarray | None = None,
+) -> pd.DataFrame:
+    """The discovery test with the NT cells as the control group, sceptre's low-MOI default.
+
+    Each pair is tested on its target's cells together with the NT cells, so
+    the gene's response GLM is fit once per pair rather than once per gene.
+    `nt_cells` is the NT pool as 0-based cell indices, in the order R keeps
+    `all_nt_idxs`; it must not share a cell with any tested target.
+
+    Under the CRT each target draws its resamples from a logistic fit over its
+    own combined cells. Under permutations one shared `(B1 + B2 + B3, M)` array
+    serves every target, from `nested_permutation_draws` sized by the smallest
+    and largest nonempty target in `grna_target_cells`; `permutations` supplies
+    that array instead (R's own `hybrid_fisher_iwor_sampler` output, say).
+
+    Takes and returns the same things as `run_discovery_ntcells_complement`
+    otherwise. See docs/design.md, "Low MOI and the NT-cells control group".
+    """
+    if resampling_mechanism not in ("crt", "permutations"):
+        raise ValueError(f"unknown resampling_mechanism {resampling_mechanism!r}")
+    _check_pairs(pairs, gene_ids, grna_target_cells)
+    entropy = resolve_entropy(seed)
+    nt_cells = np.asarray(nt_cells, dtype=np.int64)
+    if nt_cells.size == 0:
+        raise ValueError("nt_cells is empty; the NT-cells control group needs NT cells")
+    B_total = B1 + B2 + B3
+
+    pairs_by_target = {
+        target_id: group for target_id, group in pairs.groupby("grna_target", observed=True)
+    }
+    target_ids_needed = [t for t in grna_target_cells if t in pairs_by_target]
+    separated = check_nt_cells_targets(
+        grna_target_cells, target_ids_needed, nt_cells, covariate_matrix
+    )
+    if separated:
+        warnings.warn(
+            f"{len(separated)} target(s) are reported NaN, e.g. {sorted(separated)[:5]}: on "
+            "their cells and the NT cells together the covariates predict which cells are "
+            "treated exactly, for example a batch with no NT cells, so there is nothing left "
+            "to test.",
+            stacklevel=3,
+        )
+    n_trt_values = [len(grna_target_cells[t]) for t in target_ids_needed]
+
+    if resampling_mechanism == "crt":
+        if permutations is not None:
+            raise ValueError("permutations apply only to resampling_mechanism='permutations'")
+    elif permutations is None:
+        # R's rule: the range of nonempty group sizes over every target, not
+        # only the tested ones, so the pair list cannot move the draws.
+        sizes = [len(v) for v in grna_target_cells.values() if len(v)]
+        permutations = nested_permutation_draws(
+            nt_cells.size, min(sizes), max(sizes), B_total, np.random.default_rng(entropy)
+        )
+    else:
+        permutations = _check_shared_draws(permutations, B_total, n_trt_values)
+
+    per_target = nt_target_bytes_per_item(
+        nt_cells.size,
+        covariate_matrix.shape[1],
+        B1,
+        B_total,
+        n_trt_values,
+        crt=permutations is None,
+    )
+    budget_chunk = chunk_size_for_budget(per_target, len(target_ids_needed), chunk_memory_gb)
+    if budget_chunk < min(target_chunk_size, len(target_ids_needed)):
+        warnings.warn(
+            f"reducing target_chunk_size from {target_chunk_size} to {budget_chunk} to stay "
+            f"within chunk_memory_gb={chunk_memory_gb}: each target needs about "
+            f"{_format_bytes(per_target)} against {nt_cells.size:,} NT cells. Chunk size "
+            "affects only peak memory, not results.",
+            stacklevel=3,
+        )
+    target_chunk_size = max(1, min(target_chunk_size, budget_chunk))
+
+    gene_row_index = {gene_id: i for i, gene_id in enumerate(gene_ids)}
+    pairs_by_gene = {
+        str(gene_id): list(group["grna_target"])
+        for gene_id, group in pairs.groupby("response_id", observed=True)
+    }
+    prep_jobs = max(1, resolve_n_jobs(n_jobs) // max(1, _PREFETCH_DEPTH))
+
+    def _prepare(ids: list[str]) -> dict[str, NtTargetPrecomputation]:
+        return prepare_nt_targets(
+            grna_target_cells,
+            [t for t in ids if t not in separated],
+            nt_cells,
+            covariate_matrix,
+            B_total=B_total,
+            seed=entropy,
+            permutations=permutations,
+            n_jobs=prep_jobs,
+        )
+
+    chunks = [
+        target_ids_needed[i : i + target_chunk_size]
+        for i in range(0, len(target_ids_needed), target_chunk_size)
+    ]
+    # Each pair is a GLM fit, so a gene job holds the GIL far longer here than on
+    # the complement path: processes wherever they exist, and few threads where
+    # they do not. See docs/design.md, "One fit per pair".
+    if parallel_backend() == "fork":
+        nt_backend, nt_jobs = "fork", n_jobs
+    else:
+        nt_backend, nt_jobs = "thread", min(resolve_n_jobs(n_jobs), _NT_THREAD_CAP)
+    produced = _run_target_chunks(
+        chunks,
+        _prepare,
+        _nt_gene_job,
+        pairs_by_gene,
+        dict(
+            response_matrix=response_matrix,
+            gene_row_index=gene_row_index,
+            separated=separated,
+            B1=B1,
+            B2=B2,
+            B3=B3,
+            fit_parametric_curve=fit_parametric_curve,
+            side_code=side_code,
+        ),
+        n_jobs,
+        gene_backend=nt_backend,
+        gene_n_jobs=nt_jobs,
+    )
+    _warn_about_degenerate_gene_fits(
+        {key: fit for key, (_, fit) in produced.items() if fit is not None}, unit="pair"
+    )
     ordered = [
-        rows[(row.response_id, target_id)]
+        produced[(row.response_id, target_id)][0]
         for target_id in target_ids_needed
         for row in pairs_by_target[target_id].itertuples(index=False)
     ]
-    return pd.DataFrame(ordered)
+    return pd.DataFrame(ordered, columns=_RESULT_COLUMNS)

@@ -121,6 +121,17 @@ def test_a_chunk_already_within_budget_is_left_alone_and_silent():
         assert _resolve_target_chunk_size(1_000, 499, [10], 50, 8, 4.0) == 8
 
 
+def test_fewer_targets_than_the_chunk_size_is_not_a_reduction():
+    """Ten targets under the default chunk of 200 fit one chunk whatever the
+    budget says, so there is nothing to warn about. This used to report
+    "reducing target_chunk_size from 200 to 10" on every small run."""
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert _resolve_target_chunk_size(1_000, 5498, [40] * 10, 10, 200, 1.0) == 200
+
+
 def test_severity_note_appears_only_when_the_chunk_collapses_to_one():
     with pytest.warns(UserWarning, match="may still exhaust memory") as severe:
         _resolve_target_chunk_size(REAL_CELLS, int(NO_APPROX_B), N_TRT, 2875, 200, 4.0)

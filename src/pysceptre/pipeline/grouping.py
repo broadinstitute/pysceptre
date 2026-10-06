@@ -159,14 +159,15 @@ def aggregate_bonferroni(result: pd.DataFrame) -> pd.DataFrame:
         raise KeyError(f"result is missing column(s): {absent}")
 
     # `pass_qc` is not a column `run_discovery_analysis` produces: it is handed pairs that have
-    # already passed QC, so every row it returns was testable. When the column is absent every
-    # row therefore counts as passing, and the Bonferroni factor is the number of guides in the
-    # group. Supply it -- `pipeline/pairwise_qc.py` computes it at guide resolution -- to get R's
-    # behaviour for a target whose guides individually fail, which is the case this cannot see.
+    # already passed QC. When the column is absent a row counts as passing unless its p-value is
+    # NaN -- a guide with no treated cells, which R's pairwise QC would have failed -- and the
+    # Bonferroni factor is the number of guides that remain. Supply it -- `pipeline/pairwise_qc.py`
+    # computes it at guide resolution -- to get R's behaviour for a target whose guides fail the
+    # thresholds, which is the case this cannot see.
     result = result.copy()
     synthesised_pass_qc = "pass_qc" not in result.columns
     if synthesised_pass_qc:
-        result["pass_qc"] = True
+        result["pass_qc"] = result["p_value"].notna()
 
     carried = [
         c

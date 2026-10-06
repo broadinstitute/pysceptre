@@ -115,6 +115,32 @@ def draws_to_matrix(synthetic_idxs: list[np.ndarray], n_cells: int) -> sparse.cs
     )
 
 
+def prefix_matrix(
+    perms: np.ndarray, lo: int, hi: int, n_trt: int, n_cells: int
+) -> sparse.csr_matrix:
+    """Rows `[lo, hi)` of `perms`, each cut to its first `n_trt` entries, as 0/1 CSR.
+
+    The same matrix `draws_to_matrix(draws_for_target(perms[lo:hi], n_trt))`
+    builds, entries in the same order, without a Python list of rows.
+    """
+    if n_trt > perms.shape[1]:
+        raise ValueError(
+            f"target needs {n_trt} cells but the shared draws hold only "
+            f"{perms.shape[1]}; they are sized by the largest target, so this "
+            "means the draws were built for a different target set"
+        )
+    indices = np.ascontiguousarray(perms[lo:hi, :n_trt]).ravel()
+    if indices.size and (indices.min() < 0 or indices.max() >= n_cells):
+        raise ValueError(
+            f"resample cell indices out of range for n_cells={n_cells}: "
+            f"[{indices.min()}, {indices.max()}]"
+        )
+    indptr = np.arange(hi - lo + 1, dtype=np.int64) * n_trt
+    return sparse.csr_matrix(
+        (np.ones(indices.size), indices, indptr), shape=(hi - lo, n_cells), copy=False
+    )
+
+
 class StagedDraws:
     """A target's resamples, materialized one stage at a time.
 
@@ -217,7 +243,7 @@ class PermutationSliceDraws(StagedDraws):
         lo, hi = max(0, int(lo)), min(int(hi), self.n_draws)
         if hi <= lo:
             return sparse.csr_matrix((0, self.n_cells))
-        return draws_to_matrix(self._index_arrays(lo, hi), self.n_cells)
+        return prefix_matrix(self._perms, lo, hi, self._n_trt, self.n_cells)
 
     def _index_arrays(self, lo: int, hi: int) -> list[np.ndarray]:
         # Delegates rather than repeating the one-line slice, because the
@@ -227,6 +253,27 @@ class PermutationSliceDraws(StagedDraws):
         # memory, and when the sort was dropped both had to be edited for the
         # analysis to change at all.
         return draws_for_target(self._perms[lo:hi], self._n_trt)
+
+
+class FirstStagePermutationDraws(PermutationSliceDraws):
+    """`PermutationSliceDraws` that memoizes the stage starting at draw 0.
+
+    For the NT-cells control group, where every gene paired with a target
+    reads that target's first stage and the target is dropped with its chunk,
+    so the cache lives no longer than the chunk. Later stages are rebuilt on
+    each call, as in the parent.
+    """
+
+    __slots__ = ()
+
+    def slice(self, lo: int, hi: int) -> sparse.csr_matrix:
+        if int(lo) > 0:
+            return super().slice(lo, hi)
+        key = (0, min(int(hi), self.n_draws))
+        hit = self._cache.get(key)
+        if hit is None:
+            hit = self._cache[key] = super().slice(lo, hi)
+        return hit
 
 
 def as_staged_draws(draws, n_cells: int) -> StagedDraws:

@@ -14,7 +14,9 @@ import math
 
 import numpy as np
 import pandas as pd
+from scipy import sparse
 
+from ..glm.design import redundant_columns
 from .calibration import (
     build_negative_control_pairs,
     negative_control_pairs_from_names,
@@ -22,6 +24,7 @@ from .calibration import (
 from .discovery import (
     _DEFAULT_CHUNK_MEMORY_GB,
     _DEFAULT_TARGET_CHUNK_SIZE,
+    run_discovery_nt_cells,
     run_discovery_ntcells_complement,
 )
 from .grouping import aggregate_bonferroni, singleton_pairs, sort_like_r
@@ -35,30 +38,136 @@ _SIDE_CODES = {"left": -1, "both": 0, "right": 1}
 _RESAMPLING_APPROXIMATIONS = ("skew_normal", "no_approximation")
 _RESAMPLING_MECHANISMS = ("crt", "permutations")
 _GRNA_INTEGRATION_STRATEGIES = ("union", "singleton", "bonferroni")
+_MOIS = ("high", "low")
+_CONTROL_GROUPS = ("complement", "nt_cells")
+
+
+def resolve_analysis_settings(
+    moi: str, control_group: str | None, resampling_mechanism: str | None
+) -> tuple[str, str]:
+    """`(control_group, resampling_mechanism)` with R's defaults filled in.
+
+    Ports the defaults of sceptre's `set_analysis_parameters`: high MOI uses the
+    complement control group and the CRT; low MOI uses the NT cells and
+    permutations. Either can be overridden, except that the NT cells are refused
+    in high MOI. R silently replaces any high-MOI control group with the
+    complement; refusing is stricter, so an explicit setting is never ignored.
+
+    Raises:
+        ValueError: an unknown value, or `control_group="nt_cells"` with
+            `moi="high"`.
+    """
+    if moi not in _MOIS:
+        raise ValueError(f"moi must be one of {list(_MOIS)}, got {moi!r}")
+    low = moi == "low"
+    if control_group is None:
+        control_group = "nt_cells" if low else "complement"
+    if control_group not in _CONTROL_GROUPS:
+        raise ValueError(
+            f"control_group must be one of {list(_CONTROL_GROUPS)}, got {control_group!r}"
+        )
+    if control_group == "nt_cells" and not low:
+        raise ValueError(
+            "control_group='nt_cells' needs moi='low'. In high MOI a cell carries several "
+            "gRNAs, so the cells with an NT gRNA are not untreated; sceptre quietly uses the "
+            "complement there instead, and pysceptre refuses rather than ignore the setting."
+        )
+    if resampling_mechanism is None:
+        resampling_mechanism = "permutations" if low else "crt"
+    if resampling_mechanism not in _RESAMPLING_MECHANISMS:
+        raise ValueError(
+            f"resampling_mechanism must be one of {list(_RESAMPLING_MECHANISMS)}, "
+            f"got {resampling_mechanism!r}"
+        )
+    return control_group, resampling_mechanism
+
+
+def nt_cell_pool(ntc_grna_cells: dict[str, np.ndarray], n_cells: int) -> np.ndarray:
+    """The NT cells, as R's `all_nt_idxs`: each NT gRNA's cells in iteration order.
+
+    Each gRNA's cells are sorted and concatenated in the dict's order, which is
+    R's order when the dict is built in R's gRNA order. The order decides which
+    cell each resample position refers to, so a different order is a different
+    Monte Carlo draw: every p-value moves at the resampling resolution, and
+    fitted values in their last bits. Build the dict in a fixed order.
+
+    Raises:
+        ValueError: no NT cells, an index out of range, or a cell under two NT
+            gRNAs -- sceptre's low-MOI QC removes every cell with more than one
+            gRNA, and the NT-cells analysis assumes it.
+    """
+    if not ntc_grna_cells:
+        raise ValueError(
+            "the NT-cells control group needs ntc_grna_cells, the cells of each individual "
+            "non-targeting gRNA"
+        )
+    parts = [np.unique(np.asarray(c, dtype=np.int64)) for c in ntc_grna_cells.values()]
+    pool = np.concatenate(parts) if parts else np.empty(0, dtype=np.int64)
+    if pool.size == 0:
+        raise ValueError("ntc_grna_cells holds no cells")
+    if pool.min() < 0 or pool.max() >= n_cells:
+        raise ValueError(
+            f"ntc_grna_cells indices out of range for n_cells={n_cells}: "
+            f"[{pool.min()}, {pool.max()}]"
+        )
+    n_shared = pool.size - np.unique(pool).size
+    if n_shared:
+        raise ValueError(
+            f"{n_shared} cell(s) are listed under more than one non-targeting gRNA. In low MOI "
+            "each cell carries at most one gRNA: sceptre's QC removes cells with zero or two "
+            "or more before the analysis, and the NT-cells control group relies on it. Remove "
+            "those cells upstream."
+        )
+    return pool
+
+
+def _nt_pool_for(control_group: str, ntc_grna_cells, n_cells: int) -> np.ndarray | None:
+    """The NT pool when the control group needs one; refuses NT cells it would ignore."""
+    if control_group == "nt_cells":
+        return nt_cell_pool(ntc_grna_cells, n_cells)
+    if ntc_grna_cells is not None:
+        raise ValueError(
+            "ntc_grna_cells is only used with control_group='nt_cells'; the complement "
+            "control group does not single out the NT cells."
+        )
+    return None
+
+
+class _CellSubset:
+    """Rows of a backed response matrix, restricted to some cells, read on demand."""
+
+    def __init__(self, base, cells: np.ndarray):
+        self._base = base
+        self._cells = np.asarray(cells, dtype=np.int64)
+        self.shape = (base.shape[0], self._cells.size)
+
+    def rows(self, start: int, stop: int) -> sparse.csr_matrix:
+        return sparse.csr_matrix(self._base.rows(start, stop))[:, self._cells]
+
+    def __getitem__(self, i):
+        if isinstance(i, slice):
+            return self.rows(i.start or 0, self.shape[0] if i.stop is None else i.stop)
+        return sparse.csr_matrix(self._base[int(i)])[:, self._cells]
+
+    def toarray(self):
+        raise NotImplementedError("refusing to densify a backed response matrix")
+
+
+def _restrict_cells(response_matrix, cells: np.ndarray):
+    """`response_matrix` with only `cells`, in that order, as its columns."""
+    if hasattr(response_matrix, "rows"):
+        return _CellSubset(response_matrix, cells)
+    if sparse.issparse(response_matrix):
+        return sparse.csr_matrix(response_matrix)[:, cells]
+    return np.asarray(response_matrix)[:, cells]
 
 
 def _validate_covariate_matrix(covariate_matrix: np.ndarray, n_cells: int | None = None) -> None:
     """Refuse a design matrix the GLM cannot fit, and say which columns are at fault.
 
-    A rank-deficient design fails inside the batched weighted least squares as
-    `numpy.linalg.LinAlgError: Singular matrix`, eight frames deep and with no
-    mention of covariates. Since `covariate_matrix` is built by the caller --
-    there is no formula DSL to catch an aliased contrast -- that is a likely
-    mistake with an unhelpful symptom, so it is caught here instead.
-
-    Rank comes from the singular values of `R` in a thin QR of the matrix,
-    with the same relative tolerance `numpy.linalg.matrix_rank` uses. The QR
-    is what makes it both cheap and correct: `R` is p x p, so every rank
-    question after it is tiny, and because `Q` has orthonormal columns the
-    rank of any column subset of `R` equals that of the same subset of the
-    matrix.
-
-    **Not the Gram matrix.** `X.T @ X` looks like the natural p x p route and
-    is the thing the fit depends on -- `Zt_wZ` is it reweighted, and positive
-    weights cannot restore rank -- but its eigenvalues are the *squares* of
-    the singular values, so it squares the condition number. A design whose
-    columns span fourteen orders of magnitude, raw UMI counts beside a small
-    covariate say, is full rank and the Gram route rejected it.
+    Without this a rank-deficient design fails deep inside the batched weighted
+    least squares as a bare `LinAlgError`, with no mention of covariates. The
+    rank test is `glm.design.redundant_columns`.
 
     Raises:
         ValueError: not 2-D, empty, non-finite entries, a row count that
@@ -84,30 +193,13 @@ def _validate_covariate_matrix(covariate_matrix: np.ndarray, n_cells: int | None
         bad = np.flatnonzero(~np.all(np.isfinite(X), axis=0)).tolist()
         raise ValueError(f"covariate_matrix has non-finite values in column(s) {bad[:10]}")
 
-    eps = np.finfo(float).eps
-    r = np.linalg.qr(X, mode="r")
-
-    def _rank(block: np.ndarray) -> int:
-        sv = np.linalg.svd(block, compute_uv=False)
-        if sv.size == 0 or sv[0] <= 0:
-            return 0
-        return int(np.sum(sv > sv[0] * max(n, block.shape[1]) * eps))
-
-    rank = _rank(r)
+    # Redundant columns are named left to right, so the first of a collinear set is kept --
+    # R's convention, and the useful one, since column 0 is usually the intercept.
+    rank, redundant = redundant_columns(X)
     if rank == 0:
         raise ValueError("covariate_matrix is all zeros")
-    if rank == p:
+    if not redundant:
         return
-
-    # Which columns are redundant, reported left to right so the first of a collinear set is
-    # kept and the later ones are named -- the same convention R's `lm` follows when it drops
-    # aliased terms, and the more useful one, since column 0 is usually the intercept.
-    kept: list[int] = []
-    for j in range(p):
-        trial = kept + [j]
-        if _rank(r[:, trial]) == len(trial):
-            kept.append(j)
-    redundant = [j for j in range(p) if j not in kept]
     raise ValueError(
         f"covariate_matrix is rank deficient: rank {rank} of {p} columns. "
         f"Column(s) {redundant} are linear combinations of the ones before them, so the "
@@ -126,6 +218,9 @@ def run_discovery_analysis(
     pairs: pd.DataFrame,
     *,
     side: str = "both",
+    moi: str = "high",
+    control_group: str | None = None,
+    ntc_grna_cells: dict[str, np.ndarray] | None = None,
     grna_integration_strategy: str = "union",
     grna_target_data_frame: pd.DataFrame | None = None,
     drop_duplicate_design_rows: bool = False,
@@ -135,13 +230,26 @@ def run_discovery_analysis(
     target_chunk_size: int = _DEFAULT_TARGET_CHUNK_SIZE,
     chunk_memory_gb: float = _DEFAULT_CHUNK_MEMORY_GB,
     n_jobs: int = 1,
-    resampling_mechanism: str = "crt",
+    resampling_mechanism: str | None = None,
 ) -> pd.DataFrame:
     """response_matrix: (n_genes, n_cells) dense ndarray or scipy.sparse matrix.
     gene_ids: row labels for response_matrix, in order.
     covariate_matrix: (n_cells, p) already formula-expanded design matrix.
     grna_target_cells: dict[target -> 0-based treated-cell indices].
     pairs: DataFrame['response_id', 'grna_target'] -- QC-passed pairs to test.
+    moi: `"high"` (default) or `"low"`, sceptre's `import_data(moi=)`. It sets
+        the defaults of `control_group` and `resampling_mechanism`, as R's
+        `set_analysis_parameters` does, and is the only way to reach the NT
+        cells.
+    control_group: `"complement"` or `"nt_cells"`; `None` takes the MOI's
+        default, `"complement"` in high MOI and `"nt_cells"` in low MOI. With
+        `"nt_cells"` each pair is tested on its target's cells against the NT
+        cells only, and the gene's GLM is refit for every pair, as in R.
+    ntc_grna_cells: dict[NTC gRNA id -> 0-based cell indices], required with
+        `control_group="nt_cells"` and refused otherwise. The NT cells are their
+        union, which must share no cell with a tested target, and no cell may
+        sit under two NT gRNAs: sceptre's low-MOI QC removes every cell with
+        more than one gRNA, and this path relies on that.
     multiple_testing_alpha: only used to size the `no_approximation` resampling
         budget, exactly as R's `run_qc` does. pysceptre does *not* apply any
         multiple-testing correction to the returned p-values.
@@ -149,11 +257,11 @@ def run_discovery_analysis(
         batch/hold in memory at once (see pipeline/discovery.py) -- lower this
         if you hit memory pressure, raise it for a modest speed gain if you
         have memory to spare.
-    resampling_mechanism: `"crt"` (default) or `"permutations"`, matching
-        sceptre's own option for high-MOI data. The CRT draws each target's
-        synthetic treated set from that target's own fitted probabilities;
-        permutations draw one set of random subsets, sized by the largest
-        target, and reuse it for every target.
+    resampling_mechanism: `"crt"` or `"permutations"`; `None` takes the MOI's
+        default, `"crt"` in high MOI and `"permutations"` in low MOI, as in R.
+        The CRT draws each target's synthetic treated set from that target's
+        own fitted probabilities; permutations draw one set of random subsets,
+        sized by the targets present, and reuse it for every target.
 
         The choice is a real trade and is left to the caller.
         **Permutations cannot be reproducible across a change of pair list**:
@@ -183,9 +291,58 @@ def run_discovery_analysis(
         it. You should not normally need to change this; the default is the
         fastest and leanest setting measured. Reductions to
         `target_chunk_size` are warned about and do not change results.
+    """
+    control_group, resampling_mechanism = resolve_analysis_settings(
+        moi, control_group, resampling_mechanism
+    )
+    nt_cells = _nt_pool_for(control_group, ntc_grna_cells, response_matrix.shape[1])
+    return _run_discovery(
+        response_matrix,
+        gene_ids,
+        covariate_matrix,
+        grna_target_cells,
+        pairs,
+        side=side,
+        nt_cells=nt_cells,
+        grna_integration_strategy=grna_integration_strategy,
+        grna_target_data_frame=grna_target_data_frame,
+        drop_duplicate_design_rows=drop_duplicate_design_rows,
+        resampling_approximation=resampling_approximation,
+        multiple_testing_alpha=multiple_testing_alpha,
+        seed=seed,
+        target_chunk_size=target_chunk_size,
+        chunk_memory_gb=chunk_memory_gb,
+        n_jobs=n_jobs,
+        resampling_mechanism=resampling_mechanism,
+    )
 
-    Targets sceptre's complement-control-group + CRT discovery-analysis path
-    (the only valid combination for high-MOI data -- see pipeline/discovery.py).
+
+def _run_discovery(
+    response_matrix,
+    gene_ids: list[str],
+    covariate_matrix: np.ndarray,
+    grna_target_cells: dict[str, np.ndarray],
+    pairs: pd.DataFrame,
+    *,
+    side: str,
+    nt_cells: np.ndarray | None,
+    grna_integration_strategy: str,
+    grna_target_data_frame: pd.DataFrame | None,
+    drop_duplicate_design_rows: bool,
+    resampling_approximation: str,
+    multiple_testing_alpha: float,
+    seed: int | None,
+    target_chunk_size: int,
+    chunk_memory_gb: float,
+    n_jobs: int,
+    resampling_mechanism: str,
+    permutation_width: int | None = None,
+) -> pd.DataFrame:
+    """`run_discovery_analysis` once the settings are resolved.
+
+    `nt_cells` is the NT pool for the NT-cells control group and `None` for the
+    complement. `permutation_width` sets the shared permutation width on the
+    complement path (see `run_discovery_ntcells_complement`).
     """
     if side not in _SIDE_CODES:
         raise ValueError(f"side must be one of {sorted(_SIDE_CODES)}, got {side!r}")
@@ -193,6 +350,8 @@ def run_discovery_analysis(
     # LinAlgError from deep inside the batched solve. The calibration and power checks
     # reach this function too, so one call covers all three entry points.
     _validate_covariate_matrix(covariate_matrix, n_cells=response_matrix.shape[1])
+    covariate_matrix = np.asarray(covariate_matrix, dtype=float)
+    grna_target_cells = {t: np.asarray(c, dtype=np.int64) for t, c in grna_target_cells.items()}
     if resampling_approximation not in _RESAMPLING_APPROXIMATIONS:
         raise ValueError(
             f"resampling_approximation must be one of "
@@ -263,7 +422,7 @@ def run_discovery_analysis(
         resampling_mechanism,
     )
 
-    result = run_discovery_ntcells_complement(
+    engine_args = dict(
         response_matrix=response_matrix,
         gene_ids=gene_ids,
         covariate_matrix=covariate_matrix,
@@ -279,6 +438,12 @@ def run_discovery_analysis(
         n_jobs=n_jobs,
         resampling_mechanism=resampling_mechanism,
     )
+    if nt_cells is None:
+        result = run_discovery_ntcells_complement(
+            **engine_args, permutation_width=permutation_width
+        )
+    else:
+        result = run_discovery_nt_cells(**engine_args, nt_cells=nt_cells)
     if not per_guide:
         return result
 
@@ -307,12 +472,15 @@ def run_calibration_check(
     pass_qc_rate: float = 1.0,
     negative_control_pairs: pd.DataFrame | None = None,
     side: str = "both",
+    moi: str = "high",
+    control_group: str | None = None,
     resampling_approximation: str = "skew_normal",
     multiple_testing_alpha: float = 0.1,
     seed: int | None = None,
     target_chunk_size: int = _DEFAULT_TARGET_CHUNK_SIZE,
     chunk_memory_gb: float = _DEFAULT_CHUNK_MEMORY_GB,
     n_jobs: int = 1,
+    resampling_mechanism: str | None = None,
 ) -> pd.DataFrame:
     """Run sceptre's calibration check: the discovery test over negative controls.
 
@@ -326,6 +494,13 @@ def run_calibration_check(
         keyed by individual gRNA, not by target -- a target-keyed mapping
         collapses every non-targeting gRNA into one entry (and in sceptre's own
         object, omits them entirely), leaving nothing to regroup.
+    moi, control_group, resampling_mechanism: as in `run_discovery_analysis`,
+        with the same MOI-dependent defaults. With `control_group="nt_cells"`
+        the whole check runs on the NT cells alone, as in R: the synthetic
+        targets are tested against the remaining NT cells, so it needs at
+        least two NT gRNAs and no cell under two of them. Under permutations
+        the shared draws are as wide as the `calibration_group_size` largest
+        NT gRNAs together, R's rule.
     n_calibration_pairs: how many pairs to test. R defaults this to the number
         of discovery pairs that passed QC.
     calibration_group_size: how many NTC gRNAs per synthetic target. R's
@@ -343,13 +518,50 @@ def run_calibration_check(
 
     Returns the same columns as `run_discovery_analysis`.
     """
+    control_group, resampling_mechanism = resolve_analysis_settings(
+        moi, control_group, resampling_mechanism
+    )
+    # Checked here, before the NT-cells restriction below gives both matrices the
+    # same width and hides a mismatch.
+    _validate_covariate_matrix(covariate_matrix, n_cells=response_matrix.shape[1])
+    covariate_matrix = np.asarray(covariate_matrix, dtype=float)
+    n_cells = covariate_matrix.shape[0]
+    ntc_grna_cells = {g: np.asarray(c, dtype=np.int64) for g, c in ntc_grna_cells.items()}
+    # R drops the NT gRNAs QC left without cells before it builds any group; a
+    # supplied pair may still name one, and it then contributes no cells.
+    with_cells = {g: c for g, c in ntc_grna_cells.items() if len(c)}
+    if control_group == "nt_cells":
+        if len(with_cells) < 2:
+            raise ValueError(
+                "a calibration check against the NT cells needs at least two non-targeting "
+                "gRNAs, one to stand in for a target and one to leave as the control group"
+            )
+        # R's `subset_to_nt_cells`: the NT cells become the whole universe, so the
+        # complement of a synthetic target is the rest of the NT cells.
+        pool = nt_cell_pool(with_cells, n_cells)
+        position = np.full(n_cells, -1, dtype=np.int64)
+        position[pool] = np.arange(pool.size)
+        ntc_grna_cells = {g: position[np.unique(c)] for g, c in ntc_grna_cells.items()}
+        with_cells = {g: c for g, c in ntc_grna_cells.items() if len(c)}
+        response_matrix = _restrict_cells(response_matrix, pool)
+        covariate_matrix = covariate_matrix[pool]
+        n_cells = pool.size
+        redundant = redundant_columns(np.asarray(covariate_matrix, dtype=float))[1]
+        if redundant:
+            raise ValueError(
+                f"on the NT cells alone, covariate_matrix column(s) {redundant} are linear "
+                "combinations of the ones before them, so the calibration check's GLM cannot be "
+                "fit there; sceptre stops here too. Drop the column(s), or use "
+                "control_group='complement'."
+            )
+
     if negative_control_pairs is None:
         rng = np.random.default_rng(seed)
         synthetic_target_cells, pairs = build_negative_control_pairs(
             response_matrix,
             gene_ids,
-            ntc_grna_cells,
-            covariate_matrix.shape[0],
+            with_cells,
+            n_cells,
             n_calibration_pairs=n_calibration_pairs,
             calibration_group_size=calibration_group_size,
             n_nonzero_trt_thresh=n_nonzero_trt_thresh,
@@ -359,23 +571,48 @@ def run_calibration_check(
         )
     else:
         pairs = negative_control_pairs.reset_index(drop=True)
-        synthetic_target_cells = negative_control_pairs_from_names(
-            pairs, ntc_grna_cells, covariate_matrix.shape[0]
-        )
+        synthetic_target_cells = negative_control_pairs_from_names(pairs, ntc_grna_cells, n_cells)
+        if control_group == "nt_cells":
+            # Construction never builds one, but a supplied group can leave the NT
+            # cells, here the whole universe, with no control cells at all.
+            whole = [t for t, c in synthetic_target_cells.items() if len(c) == n_cells]
+            if whole:
+                raise ValueError(
+                    f"{len(whole)} synthetic target(s) hold every NT cell, e.g. {whole[0]!r}, "
+                    "which leaves no control cells against the NT cells"
+                )
 
-    return run_discovery_analysis(
-        response_matrix=response_matrix,
-        gene_ids=gene_ids,
-        covariate_matrix=covariate_matrix,
-        grna_target_cells=synthetic_target_cells,
-        pairs=pairs,
+    permutation_width = None
+    engine_seed = seed
+    if resampling_mechanism == "permutations":
+        sizes = sorted((len(c) for c in with_cells.values()), reverse=True)
+        permutation_width = max(
+            sum(sizes[:calibration_group_size]),
+            max(len(c) for c in synthetic_target_cells.values()),
+        )
+        # The shared draws get a stream of their own: `rng` above chose the pairs they test.
+        if seed is not None:
+            engine_seed = int(np.random.SeedSequence(seed).spawn(1)[0].generate_state(1)[0])
+
+    return _run_discovery(
+        response_matrix,
+        gene_ids,
+        covariate_matrix,
+        synthetic_target_cells,
+        pairs,
         side=side,
+        nt_cells=None,
+        grna_integration_strategy="union",
+        grna_target_data_frame=None,
+        drop_duplicate_design_rows=False,
         resampling_approximation=resampling_approximation,
         multiple_testing_alpha=multiple_testing_alpha,
-        seed=seed,
+        seed=engine_seed,
         target_chunk_size=target_chunk_size,
         chunk_memory_gb=chunk_memory_gb,
         n_jobs=n_jobs,
+        resampling_mechanism=resampling_mechanism,
+        permutation_width=permutation_width,
     )
 
 
@@ -389,12 +626,16 @@ def run_power_check(
     n_nonzero_trt_thresh: int = 7,
     n_nonzero_cntrl_thresh: int = 7,
     side: str = "both",
+    moi: str = "high",
+    control_group: str | None = None,
+    ntc_grna_cells: dict[str, np.ndarray] | None = None,
     resampling_approximation: str = "skew_normal",
     multiple_testing_alpha: float = 0.1,
     seed: int | None = None,
     target_chunk_size: int = _DEFAULT_TARGET_CHUNK_SIZE,
     chunk_memory_gb: float = _DEFAULT_CHUNK_MEMORY_GB,
     n_jobs: int = 1,
+    resampling_mechanism: str | None = None,
 ) -> pd.DataFrame:
     """Run sceptre's power check: the discovery test over positive controls.
 
@@ -417,7 +658,10 @@ def run_power_check(
         filtered**: the returned frame has a `pass_qc` column and NaN
         results for pairs that did not meet them. Dropping them would
         overstate power by hiding the controls the screen had too few cells
-        to test.
+        to test. With `control_group="nt_cells"` the control count is the
+        gene's nonzero NT cells, as in R.
+    moi, control_group, ntc_grna_cells, resampling_mechanism: as in
+        `run_discovery_analysis`, with the same MOI-dependent defaults.
 
     Returns one row per supplied pair, with `pass_qc`, `n_nonzero_trt` and
     `n_nonzero_cntrl` alongside the usual columns. No multiple-testing
@@ -433,6 +677,12 @@ def run_power_check(
                 "targeting genomic intervals -- pass positive_control_pairs explicitly."
             )
 
+    control_group, resampling_mechanism = resolve_analysis_settings(
+        moi, control_group, resampling_mechanism
+    )
+    covariate_matrix = np.asarray(covariate_matrix, dtype=float)
+    grna_target_cells = {t: np.asarray(c, dtype=np.int64) for t, c in grna_target_cells.items()}
+    nt_cells = _nt_pool_for(control_group, ntc_grna_cells, covariate_matrix.shape[0])
     annotated = annotate_pairwise_qc(
         positive_control_pairs[["response_id", "grna_target"]],
         response_matrix,
@@ -441,6 +691,7 @@ def run_power_check(
         covariate_matrix.shape[0],
         n_nonzero_trt_thresh=n_nonzero_trt_thresh,
         n_nonzero_cntrl_thresh=n_nonzero_cntrl_thresh,
+        control_cells=nt_cells,
     )
     testable = annotated[annotated["pass_qc"]][["response_id", "grna_target"]]
     if testable.empty:
@@ -449,19 +700,27 @@ def run_power_check(
             f"trt >= {n_nonzero_trt_thresh}, cntrl >= {n_nonzero_cntrl_thresh})"
         )
 
-    tested = run_discovery_analysis(
-        response_matrix=response_matrix,
-        gene_ids=gene_ids,
-        covariate_matrix=covariate_matrix,
-        grna_target_cells={t: grna_target_cells[t] for t in testable["grna_target"].unique()},
-        pairs=testable.reset_index(drop=True),
+    # Every target is passed, not only the tested ones: the engine tests only
+    # the targets in `pairs`, and permutations size their shared draws over all
+    # of them, as R does.
+    tested = _run_discovery(
+        response_matrix,
+        gene_ids,
+        covariate_matrix,
+        grna_target_cells,
+        testable.reset_index(drop=True),
         side=side,
+        nt_cells=nt_cells,
+        grna_integration_strategy="union",
+        grna_target_data_frame=None,
+        drop_duplicate_design_rows=False,
         resampling_approximation=resampling_approximation,
         multiple_testing_alpha=multiple_testing_alpha,
         seed=seed,
         target_chunk_size=target_chunk_size,
         chunk_memory_gb=chunk_memory_gb,
         n_jobs=n_jobs,
+        resampling_mechanism=resampling_mechanism,
     )
     return merge_qc_failures(tested, annotated)
 

@@ -1,9 +1,10 @@
-"""Standalone Python port of sceptre's CRT discovery-analysis statistical engine.
+"""Standalone Python port of sceptre's discovery-analysis statistical engine.
 
-Targets one validated analysis path -- the complement control group + CRT
-resampling mechanism used for high-MOI single-cell CRISPR screens -- and
-batches the per-gene/per-target linear algebra into vectorized numpy calls.
-See README.md for scope, limitations, and validation against the R package.
+Covers sceptre's discovery analysis, calibration check and power check for
+high- and low-MOI single-cell CRISPR screens -- the complement and NT-cells
+control groups, with CRT or permutation resampling -- and batches the
+per-gene/per-target linear algebra into vectorized numpy calls. See README.md
+for scope, limitations, and validation against the R package.
 """
 
 from importlib.metadata import PackageNotFoundError, version

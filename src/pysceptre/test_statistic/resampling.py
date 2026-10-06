@@ -33,7 +33,7 @@ class PairResult:
     z_orig: float
     fold_change: float
     se_fold_change: float
-    stage: int
+    stage: int | float  # NaN when nothing was tested
     sn_params: (
         tuple[float, float, float] | None
     )  # (xi, omega, alpha), None if SN was never fit/used
@@ -59,7 +59,8 @@ def run_low_level_test_full(
     return_resampling_dist: bool = False,
     null_statistics_fn: Callable[[int, int], np.ndarray | None] | None = None,
 ) -> PairResult:
-    """trt_idxs: 0-based observed treated-cell indices.
+    """trt_idxs: 0-based observed treated-cell indices. With none, or with a
+        statistic that is not finite, the p-value is NaN rather than a test.
 
     synthetic_idxs: the B1+B2+B3 draws, consumed in three consecutive slices
         [0:B1], [B1:B1+B2], [B1+B2:B1+B2+B3]. Normally a `StagedDraws`, which
@@ -91,8 +92,14 @@ def run_low_level_test_full(
                 return got
         return compute_null_statistics_from_draws(stacked, draws.slice(lo, hi))
 
+    if len(trt_idxs) == 0:
+        # Nothing treated, nothing to test; sceptre's pairwise QC never lets such a pair in.
+        return PairResult(np.nan, np.nan, np.nan, np.nan, np.nan, None)
     fc, se = estimate_log_fold_change(y, mu, trt_idxs)
     z_orig = compute_observed_full_statistic(a, w, D, trt_idxs)
+    if not np.isfinite(z_orig):
+        # A degenerate statistic exceeds no null value, which would read as p = 1/(B+1).
+        return PairResult(np.nan, z_orig, fc, se, np.nan, None)
 
     sn_params: tuple[float, float, float] | None = None
     stage = 1

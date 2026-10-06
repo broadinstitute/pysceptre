@@ -32,7 +32,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
-from threadpoolctl import threadpool_limits
+from threadpoolctl import ThreadpoolController
 
 _EPS = 1e-8
 _MAXIT = 25
@@ -288,6 +288,19 @@ def _fit_batch(
     )
 
 
+_CONTROLLER: ThreadpoolController | None = None
+
+
+def one_blas_thread():
+    """`threadpool_limits(limits=1, user_api="blas")`, without rescanning the loaded
+    libraries on every call: the scan cost more than a one-pair fit. The limit
+    is process-wide, so concurrent fits should run inside one outer limit."""
+    global _CONTROLLER
+    if _CONTROLLER is None:
+        _CONTROLLER = ThreadpoolController()
+    return _CONTROLLER.limit(limits=1, user_api="blas")
+
+
 def fit_poisson_glm_batch(
     X: np.ndarray,
     Y: np.ndarray,
@@ -302,7 +315,7 @@ def fit_poisson_glm_batch(
     repeatedly against the same design matrix; it is rebuilt per call
     otherwise.
     """
-    with threadpool_limits(limits=1, user_api="blas"):
+    with one_blas_thread():
         return _fit_batch(X, Y, "poisson", eps=eps, maxit=maxit, X_outer_flat=X_outer_flat)
 
 
@@ -320,5 +333,5 @@ def fit_binomial_glm_batch(
     repeatedly against the same design matrix; it is rebuilt per call
     otherwise.
     """
-    with threadpool_limits(limits=1, user_api="blas"):
+    with one_blas_thread():
         return _fit_batch(X, Y, "binomial", eps=eps, maxit=maxit, X_outer_flat=X_outer_flat)
