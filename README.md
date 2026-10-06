@@ -845,15 +845,15 @@ Every layer below compares against a real, installed `sceptre` R package
 
    **On R's own permutation draws** the same three permutation runs agree in
    stage for every pair, and in p-value to 3.4e-8 relative or better for
-   every pair above 1e-10, 89 to 96% of them bit for bit, and they make
-   exactly R's discovery calls. Below about 1e-19 the two can differ by orders
+   every pair above 1e-10 (in discovery, 89 to 96% of them bit for bit), and
+   they make exactly R's discovery and calibration calls. Below about 1e-19 the two can differ by orders
    of magnitude: R's skew-normal tail loses precision to cancellation there,
    far past any threshold.
 
-   The test statistic agrees with R to 1.3e-10 relative for 99% of pairs in
-   every run and to 6.2e-9 for all but one. That one, against the NT cells,
-   differs by 1e-3: a gene with no overdispersion on its cells, whose
-   dispersion estimate R and pysceptre resolve differently; see
+   The test statistic agrees with R to 2.4e-10 relative for 99% of pairs in
+   every analysis and to 9.9e-9 for all but one. That one, in NT-cells
+   discovery, differs by 1e-3: a gene with no overdispersion on its cells,
+   whose dispersion estimate R and pysceptre resolve differently; see
    [Design decisions](https://broadinstitute.github.io/pysceptre/design/#a-dispersion-estimate-can-stop-on-a-rounding-accident).
 
 ## License and attribution

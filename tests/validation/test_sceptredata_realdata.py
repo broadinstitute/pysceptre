@@ -28,17 +28,9 @@ Asserted, for each of the six runs:
 - pysceptre's own draws (seed 0): rank agreement, BH calls, calibration
   uniformity and power, against floors well below what was measured
 
-Measured when these were written (Apple silicon macOS, Accelerate): every count and
-`pass_qc` equal; log2 fold change within 2.3e-12; `z_orig` within 1e-8 bar one
-pair (CTD-2044J15.2 / CAV1, both NT-cells runs, 1.0e-3); on R's draws no
-unexplained stage-2 difference and pysceptre within 3.5e-8 of the reference;
-own-draw Spearman rho 0.983 to 0.996, R-only discovery calls at most 3.2% of
-R's, pysceptre-only at most 0.34% of R's negatives, calibration KS within
-0.0074 of R's and false discoveries within 11 of R's.
-
 Every pair of every analysis is tested; nothing is subset. All of it runs at
 `n_jobs=8`, which changes no result (the comparison script checks 1 against 8
-bit for bit); the 75 tests took 128 s and 175 s in two runs on the machine above.
+bit for bit).
 """
 
 from __future__ import annotations
@@ -154,7 +146,12 @@ def _on_rs_draws(cmp, run: str, analysis: str):
 
 
 def _dispersion_is_degenerate(d: dict, analysis: str, gene: str, target: str) -> bool:
-    """Whether pysceptre's dispersion estimate for this pair's fit failed or was clamped.
+    """Whether pysceptre's dispersion MLE stopped past the upper clamp for this pair.
+
+    That is the rounding accident docs/design.md describes ("A dispersion
+    estimate can stop on a rounding accident"): an MLE at infinity that
+    pysceptre's iteration stops on, where R's runs out and takes the method of
+    moments. Nothing else is exempted.
 
     Refits the gene the way the engine does: on every cell for the complement,
     on the NT pool for the NT-cells calibration check, and on the target's cells
@@ -177,8 +174,8 @@ def _dispersion_is_degenerate(d: dict, analysis: str, gene: str, target: str) ->
     fit = fit_poisson_glm_batch(X, y, X_outer_flat=x_outer_flat(X))
     mu = np.asarray(fit.fitted_values, dtype=float).ravel()
     theta, method = estimate_theta(y=y, mu=mu, dfr=X.shape[0] - X.shape[1])
-    lo, hi = THETA_BOUNDS
-    return method != 1 or not lo <= theta <= hi
+    _, hi = THETA_BOUNDS
+    return method == 1 and theta > hi
 
 
 # --- deterministic -----------------------------------------------------------------------
