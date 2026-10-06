@@ -2,18 +2,18 @@
 
 A standalone Python port of the statistical engine behind
 [`sceptre`](https://timothy-barry.github.io/sceptre-book/)'s discovery
-analysis for single-cell CRISPR screens -- specifically the **complement
-control group + CRT (conditional randomization test) resampling** path used
-for high-MOI data.
+analysis for single-cell CRISPR screens, for **high- and low-MOI** data: the
+**complement** and **NT-cells** control groups, with **CRT** (conditional
+randomization test) or **permutation** resampling.
 
-It covers three of sceptre's analysis steps on that path -- the **discovery
-analysis**, the **calibration check** and the **power check** -- and is *not*
-a general
-reimplementation. Targeting one validated path is what lets it batch the
-linear-algebra work sceptre does per-gene/per-target in R/C++ loops into
-vectorized numpy calls, cutting real-dataset runtimes from hours to tens of
-minutes. See [Scope and limitations](#scope-and-limitations) for exactly what
-is and isn't covered.
+It covers three of sceptre's analysis steps -- the **discovery analysis**, the
+**calibration check** and the **power check** -- and is *not* a general
+reimplementation: gRNA assignment, cell-level QC and R's formula DSL stay in R.
+Targeting the statistical engine is what lets it batch the linear-algebra work
+sceptre does per-gene/per-target in R/C++ loops into vectorized numpy calls,
+cutting real-dataset runtimes from hours to tens of minutes. See
+[Scope and limitations](#scope-and-limitations) for exactly what is and isn't
+covered.
 
 ## Why this exists
 
@@ -88,6 +88,19 @@ result = run_discovery_analysis(
 #   pct_change_es, pct_change_es_ci_low, pct_change_es_ci_high, z_orig, stage
 ```
 
+A low-MOI screen takes one more input, each non-targeting gRNA's cells, and
+`moi="low"` selects sceptre's low-MOI defaults: the cells carrying a
+non-targeting gRNA as the control group, and permutation resampling.
+
+```python
+result = run_discovery_analysis(
+    response_matrix, gene_ids, covariate_matrix, grna_target_cells, pairs,
+    moi="low",
+    ntc_grna_cells=ntc_grna_cells,        # dict[NT gRNA id -> 0-based cell indices]
+    seed=0,
+)
+```
+
 [`examples/scanpy_interop.py`](https://github.com/broadinstitute/pysceptre/blob/main/examples/scanpy_interop.py) runs a whole screen
 inside an ordinary `scanpy` workflow -- QC and covariates out of `obs`, gRNA
 assignments out of the gRNA modality's `var`, discovery and calibration, then
@@ -116,6 +129,10 @@ run_discovery_analysis(
     pairs: pd.DataFrame,
     *,
     side: str = "both",
+    moi: str = "high",
+    control_group: str | None = None,
+    ntc_grna_cells: dict[str, np.ndarray] | None = None,
+    resampling_mechanism: str | None = None,
     resampling_approximation: str = "skew_normal",
     seed: int | None = None,
     target_chunk_size: int = 200,
@@ -131,11 +148,14 @@ run_discovery_analysis(
 | `grna_target_cells` | `dict[str, np.ndarray]` | Maps each gRNA target to the **0-based** indices (into `covariate_matrix`'s cell axis) of cells treated with that target. This is the "union" grna-integration-strategy convention: one entry per target, not per individual gRNA. |
 | `pairs` | `pd.DataFrame` with columns `response_id`, `grna_target` | The QC-passed (gene, target) pairs to test. `pysceptre` does not run `assign_grnas()`/`run_qc()` itself -- feed it pairs that have already passed QC upstream. |
 | `side` | `"left"` \| `"both"` \| `"right"` | Test sidedness, matching sceptre's own convention. Use `"left"` for expected-repression screens (e.g. CRISPRi enhancer knockdown), `"both"` for a two-sided test. |
-| `resampling_mechanism` | `"crt"` \| `"permutations"` | Matches sceptre's own option for high-MOI data. The CRT (default) draws each target's synthetic treated set from that target's own fitted probabilities; permutations draw one set of random subsets, sized by the largest target, and reuse it for every target. **The choice is a real trade, and yours to make** -- see [Reproducibility](#reproducibility-and-incremental-analysis), because permutations cannot offer the invariance the CRT does. R pairs permutations with `B3 = 24999` against the CRT's `0`, so sampling is cheaper -- and the per-target logistic fit is skipped entirely, since only the CRT draws from it -- but the escalation batch is five times larger. |
+| `moi` | `"high"` \| `"low"` | sceptre's `import_data(moi=)`. It sets the defaults of `control_group` and `resampling_mechanism` as R's `set_analysis_parameters` does -- the complement and the CRT in high MOI, the NT cells and permutations in low MOI -- and it is the only way to reach the NT cells. See [Low MOI](#low-moi). Default `"high"`. |
+| `control_group` | `None` \| `"complement"` \| `"nt_cells"` | Which cells a target's cells are compared with. `None` takes the MOI's default. `"complement"` is every other cell. `"nt_cells"`, low MOI only, is the cells carrying a non-targeting gRNA; the gene's GLM is then refit for every pair, on that target's cells and the NT cells, as R does. |
+| `ntc_grna_cells` | `dict[str, np.ndarray]` | Each individual non-targeting gRNA's **0-based** cells. Required with `control_group="nt_cells"` and refused otherwise. The NT cells are their union, in this dict's order, which decides which cells each resample picks: keep it fixed between runs. No cell may sit under two NT gRNAs or in a tested target as well: sceptre's low-MOI QC removes every cell with more than one gRNA, and the analysis relies on it. |
+| `resampling_mechanism` | `None` \| `"crt"` \| `"permutations"` | Matches sceptre's own option. `None` takes the MOI's default, `"crt"` in high MOI and `"permutations"` in low MOI. The CRT draws each target's synthetic treated set from that target's own fitted probabilities; permutations draw one set of random subsets, sized by the targets present, and reuse it for every target. **The choice is a real trade, and yours to make** -- see [Reproducibility](#reproducibility-and-incremental-analysis), because permutations cannot offer the invariance the CRT does. R pairs permutations with `B3 = 24999` against the CRT's `0`, so sampling is cheaper -- and the per-target logistic fit is skipped entirely, since only the CRT draws from it -- but the escalation batch is five times larger. |
 | `resampling_approximation` | `"skew_normal"` \| `"no_approximation"` | `"skew_normal"` (default, matching sceptre): pairs whose initial empirical p-value (`B1=499` draws) is `<= 0.02` get a skew-normal tail fit from a further `B2=4999` draws, giving p-values far smaller than `1/(B1+1)` could resolve. `"no_approximation"` fits no curve and instead draws a third, larger empirical batch, sized by R's own rule: `B3 = ceil(mult * n_pairs / multiple_testing_alpha)`, `mult = 10` two-sided and `5` one-sided. That grows linearly in the number of pairs and is much slower -- see [Scope and limitations](#scope-and-limitations). Any other value raises `ValueError`. |
 | `seed` | `int \| None` | Seeds the `numpy.random.Generator` used for all CRT draws in the run. Note this does **not** reproduce sceptre's own R/C++ RNG stream bit-for-bit (different algorithm and seeding scheme) -- see [Scope and limitations](#scope-and-limitations). |
 | `target_chunk_size` | `int` | How many gRNA targets to fit and CRT-draw at once. An **upper bound, not a mandate** -- it is reduced automatically to respect `chunk_memory_gb`, so no value here can exhaust memory. Default `200`. |
-| `n_jobs` | `int` | Workers for the per-pair tests, which are ~80% of the runtime. `1` (default) runs serially; a negative value uses every core. **Results do not depend on it** -- only the genes inside an already-drawn target chunk are distributed, so the resampling draws are made in the same order at any worker count, and output is bit-identical. Processes on Linux, threads elsewhere (`fork` after macOS's Accelerate BLAS can deadlock), so the ceiling is lower off Linux. Memory grows by about one gene's working arrays per worker, not by `chunk_memory_gb` per worker. |
+| `n_jobs` | `int` | Workers for the per-pair tests, which are ~80% of the runtime. `1` (default) runs serially; a negative value uses every core. **Results do not depend on it** -- only the genes inside an already-drawn target chunk are distributed, so the resampling draws are made in the same order at any worker count, and output is bit-identical. Processes on Linux, threads elsewhere (`fork` after macOS's Accelerate BLAS can deadlock), so the ceiling is lower off Linux; against the NT cells, where every pair is a GLM fit, threads are capped at four because more contend for the GIL. Memory grows by about one gene's working arrays per worker, not by `chunk_memory_gb` per worker. |
 | `chunk_memory_gb` | `float` | Budget for the arrays a *chunk* holds, which sizes how many genes or targets are processed together. **Not** a cap on the process's memory -- the input, retained state and allocator overhead sit outside it. **You should not normally need to change this.** The default is both the fastest and the leanest setting measured: a larger budget produces chunks past the point where batching still pays, costing memory for no throughput (4 GB gave 8.42 GB peak against 3.78 GB at 1 GB, for the same runtime). Default `1.0`. |
 
 **Returns** a `pd.DataFrame`, one row per input pair, with columns:
@@ -188,6 +208,7 @@ column -- see below for why there isn't one.
 | `n_nonzero_trt_thresh`, `n_nonzero_cntrl_thresh` | Pairwise QC thresholds, sceptre's defaults being `7`. Prefer your object's own values. |
 | `pass_qc_rate` | R's `p_hat`, the fraction of discovery pairs clearing QC, which sizes how many synthetic groups get built. Only matters when the group count is above its floor of 100 -- but there it is decisive. |
 | `negative_control_pairs` | Test exactly these pairs instead of constructing any, with `grna_target` entries being `&`-joined NTC gRNA ids. This is how you compare against an R result pair-by-pair. |
+| `moi`, `control_group`, `resampling_mechanism` | As for `run_discovery_analysis`, with the same defaults. With `control_group="nt_cells"` the whole check runs on the NT cells alone, as in R: a synthetic target is tested against the rest of them, so at least two NT gRNAs are needed. |
 
 **QC works differently here, deliberately.** A discovery result reports QC
 failures in-band (`pass_qc = False`, NaN p-value). A calibration check
@@ -225,7 +246,8 @@ power = run_power_check(
 | Argument | Notes |
 |---|---|
 | `positive_control_pairs` | The pairs to test. **Supply these**: which target perturbs which gene is a claim only the experiment can make. Omitted, sceptre's name-matching rule is used -- a target that is itself a gene id pairs with that gene -- which works when targets are named after genes and finds *nothing* when they are named after genomic intervals. On a real screen of the latter kind it matched 0 of 3,071 targets, so that case raises rather than quietly returning an empty result. |
-| `n_nonzero_trt_thresh`, `n_nonzero_cntrl_thresh` | Pairwise QC thresholds. |
+| `n_nonzero_trt_thresh`, `n_nonzero_cntrl_thresh` | Pairwise QC thresholds. Against the NT cells the control count is the gene's nonzero NT cells, as in R. |
+| `moi`, `control_group`, `ntc_grna_cells`, `resampling_mechanism` | As for `run_discovery_analysis`, with the same defaults. |
 
 **QC is reported, not filtered** -- the opposite of the calibration check.
 The result has one row per supplied pair, with `pass_qc`, `n_nonzero_trt` and
@@ -417,10 +439,12 @@ over elements. What the result means and what it has been checked against is in
 ### Lower-level building blocks
 
 `run_discovery_analysis` is a thin wrapper around
-`pysceptre.pipeline.discovery.run_discovery_ntcells_complement`, which
-exposes a couple of additional knobs not surfaced at the top level (fixed
+`pysceptre.pipeline.discovery.run_discovery_ntcells_complement` (the
+complement) and `run_discovery_nt_cells` (the NT cells), which expose a
+couple of additional knobs not surfaced at the top level (fixed
 `B1=499, B2=4999, B3=0`, `fit_parametric_curve: bool`, `side_code: int`
-instead of `side: str`). Most users won't need to go lower than
+instead of `side: str`, and shared permutation draws to use instead of
+drawing them). Most users won't need to go lower than
 `run_discovery_analysis`, but each pipeline stage is also independently
 importable and unit-tested, for anyone extending or debugging the pipeline:
 
@@ -429,13 +453,64 @@ importable and unit-tested, for anyone extending or debugging the pipeline:
 | `pysceptre.glm.irls` | Batched IRLS for Poisson (log link, gene fits) and binomial (logit link, gRNA-target fits) GLMs -- `fit_poisson_glm_batch`, `fit_binomial_glm_batch`. Ports R's `stats::glm.fit` algorithm and convergence criteria exactly. |
 | `pysceptre.glm.nb_theta` | Negative-binomial dispersion (`theta`) estimation given a fitted mean -- `estimate_theta`. Exact port of sceptre's `estimate_theta`. |
 | `pysceptre.precompute.pieces` | Per-gene precomputation pieces (the `D` matrix and friends) needed by the test statistic -- `compute_precomputation_pieces`. |
-| `pysceptre.crt.sampler` | The CRT resampling draw itself -- `crt_index_sampler_fast` (sparse, real-scale-feasible; numba-accelerated if available) and `crt_index_sampler_naive` (dense reference implementation, used only for cross-checking in tests). |
+| `pysceptre.crt.sampler` | The CRT resampling draw itself -- `crt_index_sampler`, which picks per target between `crt_index_sampler_fast` (sparse, real-scale-feasible, numba-accelerated if available, approximate) and `crt_index_sampler_exact` (sparse and exact, for targets above 0.2% of the cells they are tested on), and `crt_index_sampler_naive` (dense reference implementation, used only for cross-checking in tests). |
+| `pysceptre.crt.permutations` | Permutation draws shared by every target -- `permutation_draws` (the complement) and `nested_permutation_draws` (the NT cells; the law of R's `hybrid_fisher_iwor_sampler`). |
 | `pysceptre.test_statistic.score_stat` | The O(n_treated)-per-resample score-type test statistic -- `compute_observed_full_statistic`, `compute_null_full_statistics`. |
 | `pysceptre.test_statistic.empirical_p` | Empirical p-value from a null distribution -- `compute_empirical_p_value`. |
 | `pysceptre.test_statistic.skew_normal` | Skew-normal tail-fit escalation -- `fit_and_evaluate_skew_normal`. Exact port of `fit_skew_normal_funct`/`check_sn_tail`/`check_for_outliers`/`fit_and_evaluate_skew_normal`. |
 | `pysceptre.test_statistic.fold_change` | Fold-change estimation -- `estimate_log_fold_change`. |
 | `pysceptre.test_statistic.resampling` | Ties the above into the `B1 -> B2 -> B3` staged escalation for one pair -- `run_low_level_test_full`. |
-| `pysceptre.pipeline.discovery` | Orchestration: `fit_all_genes`, `fit_all_targets`, `run_discovery_ntcells_complement`. |
+| `pysceptre.pipeline.discovery` | Orchestration: `fit_all_genes`, `fit_all_targets`, `run_discovery_ntcells_complement`, `run_discovery_nt_cells`. |
+
+## Low MOI
+
+<!-- --8<-- [start:lowmoi] -->
+
+In a low-MOI screen each cell carries at most one gRNA, so the cells carrying a
+non-targeting (NT) gRNA are untreated and can be the control group on their
+own. sceptre calls that the NT-cells control group and makes it the low-MOI
+default, together with permutation resampling. `moi="low"` selects both, as
+R's `set_analysis_parameters` does, and either can be overridden:
+
+| `moi` | default `control_group` | default `resampling_mechanism` |
+|---|---|---|
+| `"high"` (default) | `"complement"` | `"crt"` |
+| `"low"` | `"nt_cells"` | `"permutations"` |
+
+`control_group="nt_cells"` is refused in high MOI, where R would quietly use
+the complement instead. Low MOI
+with `control_group="complement"` runs exactly the high-MOI engine.
+
+**What the NT cells need.** Pass `ntc_grna_cells`, each individual NT gRNA's
+cells. The analysis assumes what sceptre's low-MOI QC guarantees: every cell
+carries at most one gRNA, because `run_qc` removes cells with zero or two or
+more. pysceptre does not run that QC, so it refuses what it can see breaking
+the assumption -- a cell under two NT gRNAs, or a tested target sharing a cell
+with the NT cells -- and those cells have to be removed upstream. A cell in
+two targets is accepted: one guide can belong to two overlapping elements.
+
+**Each pair gets its own fit.** Against the NT cells a pair is tested on its
+target's cells together with the NT cells, so the gene's GLM is refit for every
+pair, as in R, rather than once per gene. The fits are independent and spread
+across workers with `n_jobs`. A covariate constant on one target's cells and on
+every NT cell makes that pair's GLM unfittable even when the full design is
+full rank; R stops there, and pysceptre refuses it before fitting anything,
+naming the target.
+
+**The calibration check runs on the NT cells alone**, as in R: a synthetic
+target is tested against the rest of the NT cells, so at least two NT gRNAs are
+needed. **The power check** counts a pair's control cells as the gene's
+nonzero NT cells.
+
+**The covariates are yours to build.** sceptre's default formula leaves out the
+gRNA-count covariates (`grna_n_nonzero`, `grna_n_umis`) in low MOI and keeps
+them in high MOI. There is no formula DSL here, so build `covariate_matrix` the
+same way to match an R run.
+
+The reasoning, and what it was checked against, is in
+[Design decisions](https://broadinstitute.github.io/pysceptre/design/#low-moi-and-the-nt-cells-control-group).
+
+<!-- --8<-- [end:lowmoi] -->
 
 ## Reproducibility and incremental analysis
 
@@ -460,6 +535,17 @@ that could be fixed. Permutation runs remain fully deterministic for a fixed
 pair list, and independent of chunk size and worker count; they are simply
 not invariant to changing the analysis. Use the CRT if you intend to extend
 an analysis and reuse earlier results.
+
+**Against the NT cells the same split holds.** Each pair is fit on its own
+target's cells and the NT cells, so under the CRT a pair's result depends on
+its gene, its target, the NT cells and the seed, and not on the rest of the
+analysis. Permutation draws there are sized by the number of NT cells and by
+the smallest and largest target, so adding a target outside that range changes
+every result.
+
+One exception, by construction: under `resampling_approximation="no_approximation"`
+the third batch is sized by the number of pairs, so changing the pair list
+re-draws every resample, on both mechanisms.
 
 Two limits on the CRT path, both worth knowing exactly:
 
@@ -488,8 +574,11 @@ adjustment over the union each time.
 
 <!-- --8<-- [start:scope] -->
 
-- **Complement control group only, high-MOI.** Non-complement control groups
-  and low-MOI are out of scope.
+- **High and low MOI, both control groups.** The complement control group in
+  either MOI and the NT-cells control group in low MOI, for all three analyses.
+  A low-MOI analysis needs each cell to carry at most one gRNA, which sceptre's
+  QC enforces and pysceptre can only partly check -- see
+  [Low MOI](https://github.com/broadinstitute/pysceptre/blob/main/README.md#low-moi).
 - **The CRT is the validated resampling mechanism; permutations are
   implemented but not validated against R.**
   `resampling_mechanism="permutations"` works and is exercised end to end, but
@@ -497,9 +586,10 @@ adjustment over the union each time.
   not value-for-value agreement with R, which the CRT path does check. Use it
   knowing that, and don't report a permutation result as R-validated.
 - **No `assign_grnas()` / `run_qc()`**, with one carve-out: the calibration
-  check applies the *pairwise* nonzero-count thresholds, because it builds its
-  own pairs and cannot select them otherwise. Cell-level and gRNA-level QC
-  are still out of scope. Feed `run_discovery_analysis` pairs
+  and power checks apply the *pairwise* nonzero-count thresholds, because they
+  build or receive their own pairs and cannot select them otherwise. Cell-level
+  and gRNA-level QC are still out of scope, including low MOI's removal of
+  cells with zero or two or more gRNAs. Feed `run_discovery_analysis` pairs
   that have already passed QC (e.g. from a real `sceptre_object`'s
   `@discovery_pairs_with_info`, filtered to `pass_qc == TRUE`). This package
   is the statistical engine only.
@@ -519,8 +609,9 @@ adjustment over the union each time.
   `skew_normal` path is parity with R, which only uses `B3=24999` for the
   `permutations` mechanism -- which this package does implement, and sizes the
   same way.
-  `run_discovery_ntcells_complement` and `run_low_level_test_full` accept all
-  three directly if you need to override them.
+  `run_discovery_ntcells_complement`, `run_discovery_nt_cells` and
+  `run_low_level_test_full` accept all three directly if you need to override
+  them.
 - **`no_approximation` is expensive, and can be coarser at small scale.** Its
   `B3` grows linearly in pair count: a 33,066-pair one-sided run needs
   1,653,300 draws *per target* (5.2 GB), so the chunk collapses to a
@@ -632,8 +723,8 @@ setting either way.
 
 ## Validation
 
-Two independent validation layers, both against a real, installed `sceptre`
-R package (pinned upstream commit), not just internal self-consistency:
+Every layer below compares against a real, installed `sceptre` R package
+(pinned upstream commit), not just internal self-consistency:
 
 1. **Synthetic ground truth** (`tests/validation/`): small hand-built
    matrices run through both sceptre's internal (`:::`) R functions
@@ -716,6 +807,54 @@ R package (pinned upstream commit), not just internal self-consistency:
    implementations, and both agree on exactly which 20. A median effect of
    -35.2% is the check working: positive controls target a gene's own TSS,
    so they should repress it.
+
+5. **Low MOI, value for value** (`tests/validation/test_low_moi_vs_r.py`,
+   against sceptre 0.10.3 on its own simulated `lowmoi_example_data`, 100
+   genes by 1,000 cells). Permutation p-values are compared on R's own
+   draws, replayed by `tests/validation/r_samplers.py`, a test-only replica
+   of R's two permutation samplers that is itself checked draw for draw
+   against R. Every per-pair fit on a target's cells and the NT cells, every
+   statistic, fold change and stage, and every p-value matches R, for
+   discovery, the power check and the calibration check, under both control
+   groups. CRT draws are not replicated, so there the comparison is of
+   everything deterministic, and the p-values distributionally.
+
+6. **sceptredata's two real screens**, both control groups and both
+   mechanisms: Papalexi et al. 2021 (low MOI, 299 genes, 20,729 cells, 26
+   targets and 9 non-targeting gRNAs) and Gasperini et al. 2019 (high MOI, 526
+   genes, 45,919 cells), each analysed by sceptre's documented pipeline in R
+   and by pysceptre on the exported object, with pysceptre's own draws:
+
+   | screen | control group, mechanism | fold change, max difference | p-value Spearman | BH 0.1, both / pysceptre only / R only |
+   |---|---|---|---|---|
+   | Papalexi | NT cells, permutations | 1.8e-12 | 0.990 | 449 / 13 / 4 |
+   | Papalexi | NT cells, CRT | 1.8e-12 | 0.989 | 451 / 5 / 11 |
+   | Papalexi | complement, permutations | 2.3e-12 | 0.991 | 631 / 14 / 21 |
+   | Papalexi | complement, CRT | 2.3e-12 | 0.991 | 629 / 15 / 13 |
+   | Gasperini | complement, CRT | 1.8e-12 | 0.996 | 11 / 2 / 0 |
+   | Gasperini | complement, permutations | 1.8e-12 | 0.996 | 12 / 0 / 0 |
+
+   The fold change is the log2 fold change, compared against R's; the power
+   check's nonzero counts and QC calls match R exactly in all six. The
+   calibration checks, fed R's own pairs, land within 0.008 of R's KS
+   statistic against uniformity in all six, with false discoveries of 0
+   against R's 0 for the NT cells, 343 and 356 against R's 346 and 345 for
+   the complement on Papalexi, and 1 against 0 on Gasperini. The Papalexi
+   complement figure is sceptre's own miscalibration, reproduced rather than
+   introduced, and it is the case for the NT cells being low MOI's default.
+
+   **On R's own permutation draws** the same three permutation runs agree in
+   stage for every pair, and in p-value to 3.4e-8 relative or better for
+   every pair above 1e-10, 89 to 96% of them bit for bit, and they make
+   exactly R's discovery calls. Below about 1e-19 the two can differ by orders
+   of magnitude: R's skew-normal tail loses precision to cancellation there,
+   far past any threshold.
+
+   The test statistic agrees with R to 1.3e-10 relative for 99% of pairs in
+   every run and to 6.2e-9 for all but one. That one, against the NT cells,
+   differs by 1e-3: a gene with no overdispersion on its cells, whose
+   dispersion estimate R and pysceptre resolve differently; see
+   [Design decisions](https://broadinstitute.github.io/pysceptre/design/#a-dispersion-estimate-can-stop-on-a-rounding-accident).
 
 ## License and attribution
 

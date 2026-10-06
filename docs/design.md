@@ -99,14 +99,77 @@ CI does, so any measurement of it has to name the BLAS it was taken on.
 
 ## The CRT sampler draws with replacement
 
-R places treated cells by a without-replacement Fisher-Yates shuffle. The
-port draws **with** replacement and deduplicates with `np.unique`. This is an
-approximation, and an intentional one: the number of treated cells for a
-target is far smaller than the number of resamples, so collisions are rare.
+R decides how many of the `B` resamples include cell `j` with a binomial draw,
+`M_j ~ Binomial(B, p_j)`, then places the cell into `M_j` distinct resamples
+by a without-replacement Fisher-Yates shuffle. `crt_index_sampler_fast` keeps
+the binomial count but places the cell **with** replacement, and does not
+deduplicate: a cell that lands on the same resample twice is listed, and
+counted, twice in it. Deduplicating the `(cell, resample)` pairs with
+`np.unique` was the dominant cost of the sampler at real scale, so it was
+dropped.
+
+This is an approximation, and it is only accurate where inclusion
+probabilities are tiny. The expected number of repeats in a resample is about
+`sum(p_j ** 2) / 2` against `sum(p_j)` cells listed, so the repeated fraction
+is about half the typical inclusion probability, and `p_j` averages a target's
+share of the cells it is tested on. `scripts/measure_nt_cells_crt_sampler.py`
+measured the repeated share at the dimensions of four screens:
+
+| screen and control group | target share of the cells | listings repeated |
+|---|---|---|
+| day0, complement | 0.07% | 0.035% |
+| Gasperini (sceptredata), complement | 2.7% | 1.6% |
+| Papalexi (sceptredata), complement | 3.8% | 2.3% |
+| Papalexi (sceptredata), NT cells | 25% | 14.0% |
+
+A repeated cell inflates the null statistics' variance, so the test turns
+conservative, and at the larger shares it shows: on a synthetic low-MOI screen
+with no effects the fast sampler put 5.6% of null p-values below 0.1 where
+10% belong (see [The CRT against the NT cells](#the-crt-against-the-nt-cells)).
+
+**So the sampler is chosen per target, from counts.** `crt_index_sampler`
+takes `crt_index_sampler_exact` when a target is more than 0.2% of the cells it
+is tested on (`EXACT_SAMPLER_ABOVE_SHARE`), where repeats would pass 0.1%, and
+the fast sampler below that. The exact sampler costs about five times as much
+per target, which is why it is not used everywhere. The rule reads the treated
+count and the number of cells, never the fitted probabilities: those are not
+bit-identical across chunk widths, and a target near the boundary could
+otherwise change sampler with `target_chunk_size`.
+
+day0 sits entirely below the boundary -- its largest target is 692 of
+567,690 cells, and its calibration check's synthetic targets, 15
+non-targeting gRNAs of a median 32 cells each, reach at most 0.12% -- so its
+results are bit-identical to earlier releases. A screen's CRT p-values move
+for every target above 0.2% of its cells, which on sceptredata is every target
+of both screens.
 
 The alternative -- a dense `(n_cells, B)` matrix, the straightforward
 translation -- is what made the first port unusably slow at real scale. The
-sparse draw is the reason the CRT path finishes at all.
+sparse draw is the reason the CRT path finishes at all, and the exact sampler
+keeps it sparse.
+
+## A rank check that does not square the condition number
+
+`run_discovery_analysis` refuses a rank-deficient `covariate_matrix` before
+any fitting, naming the redundant columns; without the check it fails deep
+inside the batched weighted least squares as a bare `LinAlgError`. The same
+test, `glm.design.redundant_columns`, runs again on each target's cells
+together with the NT cells under the NT-cells control group, where R stops on
+an NA coefficient.
+
+Rank comes from the singular values of `R` in a thin QR of the matrix, with the
+relative tolerance `numpy.linalg.matrix_rank` uses. The QR is what makes it both
+cheap and correct: `R` is `p x p`, so every rank question after it is tiny, and
+because `Q` has orthonormal columns the rank of any column subset of `R` equals
+that of the same subset of the matrix. Redundant columns are named left to
+right, so the first of a collinear set is kept, which is R's convention.
+
+**Not the Gram matrix.** `X.T @ X` looks like the natural `p x p` route and is
+the thing the fit depends on -- `Zt_wZ` is it reweighted, and positive weights
+cannot restore rank -- but its eigenvalues are the *squares* of the singular
+values, so it squares the condition number. A design whose columns span
+fourteen orders of magnitude, raw UMI counts beside a small covariate say, is
+full rank and the Gram route rejected it.
 
 ## Resampling budgets, and why `B3` is zero
 
@@ -117,6 +180,14 @@ gives `(4999, 0)`; `no_approximation` gives
 
 `B3 = 0` on the default `skew_normal` path is **parity with R**, not a stub.
 R only uses `B3 = 24999` for permutations.
+
+Under `no_approximation` the count that sizes `B3` is the tested pairs of the
+call. R sizes the calibration check from the requested `n_calibration_pairs`,
+where pysceptre uses the pairs actually built, which differ only when fewer
+pass QC than were asked for. R sizes the power check from the larger of the
+discovery and positive-control counts, because both live on one
+`sceptre_object`; `run_power_check` sees only its positive controls, so its
+`B3`, and with it the smallest p-value it can report, is smaller.
 
 A related trap: `stage == 3` is still reachable on the default path. It is
 entered whenever the skew-normal fit is *rejected*, regardless of `B3`, and
@@ -217,6 +288,199 @@ of each group's 331 genes. Pair-by-pair comparison against R therefore has
 to feed R's own `grna_target` column back through
 `calibration.negative_control_pairs_from_names`; the constructor itself is
 validated distributionally, which is what a calibration check measures.
+
+## Low MOI and the NT-cells control group
+
+In a low-MOI screen each cell carries at most one gRNA, so the cells carrying
+a non-targeting (NT) gRNA are untreated and can serve as the control group on
+their own. sceptre calls that the NT-cells control group. In its statistical
+engine MOI sets the defaults of the control group and the resampling mechanism,
+and allows the NT cells at all. `moi` does the same here, the way R's
+`import_data(moi=)` does, and it is the only way in.
+
+| `moi` | default `control_group` | default `resampling_mechanism` | `"nt_cells"` allowed |
+|---|---|---|---|
+| `"high"` | `"complement"` | `"crt"` | no, refused; R quietly uses the complement |
+| `"low"` | `"nt_cells"` | `"permutations"` | yes |
+
+Low MOI with `control_group="complement"` runs the high-MOI engine unchanged,
+and `test_low_moi_complement_is_the_high_moi_engine` asserts it bit for bit.
+R's own code has two more low-MOI branches, both in the calibration check: it
+skips `unique()` on a synthetic target's cells, and it counts a synthetic
+target's nonzero cells as a sum over its NT gRNAs rather than over their union.
+Neither can change anything once each cell carries at most one gRNA.
+
+Two things R's low MOI does are not here, because they are cell-level QC and
+`assign_grnas()`, both out of scope: assigning each cell its single
+strongest gRNA, and removing cells with zero or two or more gRNAs. The
+NT-cells analysis **relies** on that removal, and R's engine never checks it,
+since its QC guarantees it. pysceptre takes post-QC inputs and cannot, so it
+checks what it can see and refuses rather than guessing: a cell listed under
+two NT gRNAs, and a tested target sharing a cell with the NT cells. A cell in
+two targets is **not** refused. With a guide in two overlapping elements one
+gRNA legitimately puts a cell in both, and that changes nothing here, since
+each pair is tested on its own target's cells.
+
+### One fit per pair
+
+Against the complement a gene's GLM is fit once, on every cell, and reused for
+all its targets. Against the NT cells it cannot be: R's
+`discovery_ntcells_perm_test` and `discovery_ntcells_crt` test each pair on
+`c(trt_idxs, all_nt_idxs)`, its target's cells followed by the NT cells, and
+fit the gene's Poisson GLM and dispersion on exactly those cells. Every pair
+has its own design rows, so nothing is shared across a gene's targets.
+
+`run_discovery_nt_cells` keeps the complement path's structure -- targets in
+memory-budgeted chunks, prepared ahead of the chunk being tested, genes
+distributed across workers within a chunk -- and changes what a pair costs.
+Each pair is fit **on its own**, never batched with the other genes of its
+target, for the reason `_GENE_BATCH_WIDTH = 1` gives on the complement path:
+a batched solve makes a fit depend on what else shared its BLAS call. So a
+pair's result depends on its gene, its target, the NT cells and the seed, and
+on nothing else in the run, except under `no_approximation`, whose third batch
+is sized by the pair count.
+
+The workers are chosen for that cost. A pair's fit is many small numpy calls
+that hold the GIL, so threads contend where processes would not: on
+sceptredata's Papalexi screen against the NT cells (6,205 pairs, Apple M4 Max,
+threads) a run took 22.3 s at `n_jobs=1`, 14.7 s at 2, 14.1 s at 4 and 20.5 s
+at 8. Off Linux the gene pool is therefore capped at four threads
+(`_NT_THREAD_CAP`); on Linux it always forks, whatever the chunk count,
+because a chunk's per-pair fits dwarf the cost of a fork. Results do not
+depend on either choice.
+
+The combined cells are R's order exactly: the target's cells ascending, then
+the NT cells in pool order, each NT gRNA's cells in turn. Order moves fitted
+values only in their last bits, but a resample is a set of positions, so a
+different order is a different Monte Carlo draw; matching R's order is what
+lets R's own draws be fed in and compared value for value.
+
+R stops when a coefficient cannot be estimated on a pair's cells, which a
+covariate constant on one target's cells and on every NT cell can cause even
+though the full design is full rank. pysceptre checks every tested target's
+combined design before fitting anything, and names the target. Adding rows
+cannot lower a matrix's rank, so a full-rank design over the NT cells alone
+clears every target at once, and the per-target check runs only when it is
+not.
+
+### Permutations against the NT cells
+
+A target with `n_trt` cells is tested against `N` NT cells, so its resamples
+are random `n_trt`-subsets of `N + n_trt` positions. R draws them once for
+every target, with `hybrid_fisher_iwor_sampler(N, m, M, B)`, `m` and `M`
+being the smallest and largest nonempty target: `B` rows of `M` positions
+each, such that for every `k` in `[m, M]` the first `k` entries of a row are a
+uniformly random `k`-subset of `{0, ..., N + k - 1}`. One array then serves
+every target, each reading the prefix as long as itself.
+
+R builds each row forwards: a Fisher-Yates shuffle for the first `m` entries,
+then an inductive step that grows the universe by one element at a time and
+takes the new element with probability `k / (N + k)`.
+`nested_permutation_draws` builds the same thing **backwards**, which needs
+nothing but a uniform ordering and a swap per step, vectorized across rows:
+start from a uniformly random ordering of `M` distinct elements of
+`{0, ..., N + M - 1}`, then for `k = M` down to `m + 1`, if element
+`N + k - 1` sits in the first `k` positions swap it to position `k - 1`,
+otherwise swap a uniformly chosen one of the first `k` there.
+
+The two constructions have the same joint law over the whole chain of
+prefixes, not merely the same marginals. Writing `S_k` for the set of the
+first `k` entries, both give each `S_k` the uniform law over `k`-subsets of
+`{0, ..., N + k - 1}`, and the transition between consecutive prefixes agrees:
+
+| `S_k` | forward, `P(S_{k-1}) P(S_k given S_{k-1})` | backward, `P(S_k) P(S_{k-1} given S_k)` |
+|---|---|---|
+| contains `N + k - 1` | `k / ((N + k) C(N + k - 1, k - 1))` | `1 / C(N + k, k)`, the same number |
+| does not | `1 / ((N + k) C(N + k - 1, k - 1))` | `(1 / C(N + k, k)) (1 / k)`, the same number |
+
+`test_nt_cells_sampler.py` checks the marginal law of each prefix, the
+inclusion rate `k / (N + k)` of the newest element, and the joint law of the
+chain against a forward implementation of R's algorithm.
+
+Like the complement's permutations, these draws are shared, so they cannot be
+invariant to a change of target set: a new target larger than `M` or smaller
+than `m` moves every result. `m` and `M` are taken over every target supplied,
+not only the tested ones, which is R's rule and keeps the pair list out of it.
+
+### The CRT against the NT cells
+
+Under the CRT each target's resamples come from a logistic fit on its own
+combined cells, as in R's `discovery_ntcells_crt`, and are drawn from a stream
+keyed by the target's name, so the CRT keeps its invariance to the rest of the
+run here too.
+
+The sampler is different, and has to be. `crt_index_sampler_fast` is accurate
+only while inclusion probabilities are tiny (see
+[The CRT sampler draws with replacement](#the-crt-sampler-draws-with-replacement)),
+and against the NT cells they are not: a target is 10 to 18% of its combined
+cells on sceptre's simulated example (20 targets of 21 to 41 cells against
+185 NT cells) and 23 to 28% in the screen measured below. At an inclusion probability of 0.25 the fast sampler repeats
+about one listing in nine (11.5% in a simulation of the sampler), and the
+extra variance makes the test conservative. On a synthetic screen with no
+effects and every cell carrying one gRNA -- 6,000 cells, 12 targets of 343 to
+444 cells, 1,157 NT cells, 480 pairs -- `scripts/measure_nt_cells_crt_sampler.py`
+measured:
+
+| test | null p-values below 0.1 | mean null p-value |
+|---|---|---|
+| permutations, exact by construction | 0.100 | 0.534 |
+| CRT, `crt_index_sampler_exact` | 0.096 | 0.533 |
+| CRT, `crt_index_sampler_fast` | **0.056** | **0.576** |
+
+`crt_index_sampler_exact` removes the approximation without giving up the
+sparse cost. Each cell's inclusions are a Bernoulli process along the
+resamples, so their positions are partial sums of geometric gaps: no cell can
+be listed twice, the law is R's binomial count plus without-replacement
+placement exactly, and the work is still proportional to the number of
+inclusions.
+
+Against the NT cells every target is far above the 0.2% boundary, so the rule
+in [The CRT sampler draws with replacement](#the-crt-sampler-draws-with-replacement)
+always picks the exact sampler there, and so does it for the calibration check,
+which runs on the NT cells alone.
+
+### The calibration check on the NT cells
+
+R's calibration check against the NT cells does not use the NT-cells test at
+all. It restricts the whole analysis to the NT cells (`subset_to_nt_cells`):
+the GLM is fit once per gene on the NT cells, and a synthetic target is tested
+against the rest of them. pysceptre does the same restriction up front and then
+runs the complement check unchanged, and
+`test_nt_cells_calibration_is_the_complement_check_on_the_nt_cells` asserts the
+two agree bit for bit. It therefore needs at least two NT gRNAs, as R does.
+
+Under permutations both control groups size the shared draws as R does for a
+calibration check: as wide as the `calibration_group_size` largest NT gRNAs
+together. Unlike the width of the largest synthetic target, that does not
+depend on which groups were sampled.
+
+### A dispersion estimate can stop on a rounding accident
+
+For a gene with no overdispersion on a pair's cells the dispersion MLE is at
+infinity, and Newton's iteration in `estimate_theta` walks there, theta
+growing about 1.5 times a step. It stops by floating-point accident: when the
+score's cancelling terms sum to exactly zero, which reads as converged, or
+when it runs out of iterations, which R and pysceptre both answer with a
+method-of-moments estimate. R's boost special functions and scipy's round
+differently, so the two can stop on different branches. Both keep the
+algorithm; neither is more correct.
+
+Measured on sceptredata's Papalexi screen against the NT cells: one pair of
+6,205, `CTD-2044J15.2` against `CAV1` (83 counts over 2,552 cells), where
+pysceptre's iteration stopped on an exact zero at theta = 676,341, clamped to
+1,000, and R's ran out at 50 iterations and took 10.99. The statistic moved
+by 1e-3 relative, because a gene that sparse barely depends on theta. Every
+other pair's statistic agrees with R to 4e-9 relative, and 99% of them to
+3e-11.
+
+### Pairwise QC against the NT cells
+
+The control count changes meaning. Against the complement it is the gene's
+nonzero cells minus the target's; against the NT cells it is the gene's
+nonzero NT cells, the same for every target of that gene, as in R's
+`compute_nt_nonzero_matrix_and_n_ok_pairs_v3`. A calibration pair's control
+count is the NT total minus its synthetic target's, since its universe is the
+NT cells.
 
 ## Analytical per-pair power
 

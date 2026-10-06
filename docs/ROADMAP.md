@@ -102,6 +102,58 @@ Not an issue: the test statistic itself. `lower_left - lower_right` is a
 variance and stays non-negative for the real `D`; an earlier NaN report came
 from a benchmark using a random `D` that violated the invariant.
 
+### T1.5 Exact CRT sampling everywhere -- OPEN
+
+Since 0.3.0 `crt_index_sampler` takes the exact sampler only above 0.2% of the
+cells, because it costs about five times the fast one per target (measured
+51.5 ms against 261.0 ms at day0's dimensions). The threshold could be retired
+by making the fast path exact instead: keep its placement, find the repeats in
+O(n) after the counting sort (a cell twice in one draw is adjacent there) and
+re-place only those. Every high-MOI CRT p-value would then move slightly, so
+it needs day0 re-validated against R before it ships. See docs/design.md, "The
+CRT sampler draws with replacement".
+
+### T1.6 Guide-level pairwise QC for singleton and bonferroni -- OPEN
+
+A pair passed at target resolution is expanded to every guide of the target
+with no guide-level QC. Since 0.3.0 a guide with no cells comes back NaN and
+is left out of the Bonferroni factor, but a guide with a few cells is still
+tested where R's QC would fail it. `pipeline/pairwise_qc.py` already counts at
+any resolution; wiring it into the expansion would give R's `pass_qc` per
+guide.
+
+### T1.7 `no_approximation` budgets for the power and calibration checks -- OPEN
+
+R sizes `B3` for the power check from the larger of the discovery and
+positive-control counts, and for the calibration check from the requested pair
+count; pysceptre uses the pairs each call tests. docs/design.md, "Resampling
+budgets", records the difference. An explicit pair count for the budget would
+close it.
+
+### T1.8 The gene-set row of the reproducibility table -- OPEN
+
+README's reproducibility table says a different set of genes reproduces
+shared pairs only to ~1e-16, blaming gene batching, which `_GENE_BATCH_WIDTH = 1`
+has since removed. It was bitwise on Accelerate when checked for 0.3.0;
+re-measure on OpenBLAS before changing the row.
+
+### T1.9 Forking the gene pool while a prefetch thread is busy -- OPEN
+
+On Linux the per-chunk gene pool can fork while a prefetch thread is inside a
+chunk's preparation (a binomial fit or the sampler). A child inherits any lock
+that thread held. Nothing has hung in CI, and the complement path has had the
+same shape since prefetching was added, but waiting for in-flight prepares
+before forking, or using threads whenever prefetch is active, would remove the
+risk at some cost in overlap.
+
+### T1.10 Shared permutation draws as int32 -- OPEN
+
+The shared draws are held as int64 for the whole run, `(B, M)` with `M` the
+largest target: 245 MB on Papalexi against the NT cells, at `B = 30,497`. Cell
+positions fit int32 whenever the universe is below 2**31 cells, which would
+halve it; scipy stores the CSR indices as int32 either way, so results cannot
+move.
+
 ## Tier 2 -- performance
 
 **Benchmarking is paused** while pysceptre keeps changing -- see

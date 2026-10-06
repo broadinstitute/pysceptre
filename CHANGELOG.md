@@ -4,8 +4,66 @@ Notable changes per release. Dates are the release date.
 
 ## Unreleased
 
+### Added
+
+- **Low MOI.** `moi="low"` on `run_discovery_analysis`, `run_power_check` and
+  `run_calibration_check` selects sceptre's low-MOI defaults: the cells
+  carrying a non-targeting gRNA as the control group, and permutation
+  resampling. `control_group` (`"complement"` or `"nt_cells"`) and
+  `resampling_mechanism` override either, as R's `set_analysis_parameters`
+  does; `None` means the MOI's default, so a high-MOI call keeps the
+  defaults it had.
+- **The NT-cells control group**, for all three analyses. Each pair is tested
+  on its target's cells together with the NT cells, so the gene's GLM is refit
+  for every pair, as in R's `discovery_ntcells_perm_test` and
+  `discovery_ntcells_crt`. The calibration check runs on the NT cells alone,
+  and the power check counts a pair's control cells as the gene's nonzero NT
+  cells. Discovery and power take the NT gRNAs as `ntc_grna_cells`.
+- **`resampling_mechanism` on the calibration and power checks**, which
+  previously always used the CRT. Under permutations the calibration check
+  sizes its shared draws by R's rule, the `calibration_group_size` largest NT
+  gRNAs together, and the power check by every target supplied.
+- **`nested_permutation_draws`**, the shared permutation draws for the NT
+  cells: the law of R's `hybrid_fisher_iwor_sampler`, built backwards from a
+  uniform ordering, with the equivalence proved in `docs/design.md` and tested
+  against a forward port of R.
+- **`crt_index_sampler_exact`**, the CRT sampler the NT cells need. The fast
+  sampler's with-replacement placement is accurate only while inclusion
+  probabilities are tiny; against the NT cells a target is a large share of
+  its combined cells, and it made the test conservative.
+- **Low-MOI checks R relies on its QC for.** A cell under two NT gRNAs, or a
+  tested target sharing a cell with the NT cells, is refused, as is a
+  covariate that cannot be estimated on a target's cells together with the NT
+  cells, which R stops on. A target whose cells the covariates separate from
+  the NT cells, such as a batch with no NT cells, is reported NaN with a
+  warning, since there is nothing left to test.
+- **`control_group="nt_cells"` is refused in high MOI.** R quietly replaces
+  any high-MOI control group with the complement; refusing means an explicit
+  setting is never ignored.
+- **Low-MOI exports.** The export carries `low_moi`, `control_group`,
+  `resampling_mechanism` and R's NT-cell order, and `load_export(...)
+  .analysis_kwargs()` configures a matching run.
+
 ### Changed
 
+- **The CRT sampler is chosen per target.** A target above 0.2% of the cells
+  it is tested on now draws from `crt_index_sampler_exact`, which has R's law
+  exactly; below that the fast sampler is kept. The fast sampler repeats about
+  half a target's share of its listings, which makes the test conservative:
+  1.6% repeats on sceptredata's Gasperini screen and 2.3% on Papalexi's against
+  the complement. **CRT p-values therefore move for every target above 0.2% of
+  the cells**, which includes every target of both sceptredata screens. day0's
+  targets, and its calibration check's synthetic ones, are all below it, so
+  day0's results are bit-identical to 0.2.0.
+- **`resampling_mechanism` defaults to `None`**, meaning the MOI's default:
+  `"crt"` in high MOI, as before, and `"permutations"` in low MOI.
+- **Faster per-pair fits.** BLAS threads are limited through one cached
+  `ThreadpoolController` instead of a library scan on every fit, and a
+  permutation stage's draw matrix is built from the shared array in one step.
+  Results are bit-identical; on sceptredata's Papalexi screen against the NT
+  cells, on an Apple M4 Max, a run went from 32.0 s to 24.9 s serially and from
+  49.9 s to 21.7 s at `n_jobs=8`, where the scans had made eight threads slower
+  than one.
 - **The permutation prefix scan is now chosen by cost, not taken always.**
   `PermutationPrefixSums` computes one gene's segment sums for every target
   at once, which is cheaper than a sparse matmul per target only when enough
@@ -17,6 +75,56 @@ Notable changes per release. Dates are the release date.
   about 2x. Reported as
   [issue #2](https://github.com/broadinstitute/pysceptre/issues/2), and
   `docs/design.md` has the measurements.
+
+### Fixed
+
+- **The export of an NT-cells `sceptre_object` wrote every NT gRNA's cells
+  wrong.** R stores them there as positions within its NT cells, and they were
+  written as cell indices; the bounds check could not notice. They are now
+  decoded and checked against the gRNA assignment.
+- **A spurious warning on small runs**: "reducing target_chunk_size from 200
+  to N" fired whenever a run had fewer targets than `target_chunk_size`, though
+  nothing was reduced.
+- **A pair with no treated cells was reported as a strong discovery.** A
+  target or guide left without cells, possible under `singleton` and
+  `bonferroni` after QC, gave a NaN statistic, which exceeds no null value and
+  read as p = 2 / (B + 1); `bonferroni` then counted it. Such pairs, and any
+  pair whose statistic is not finite, now come back NaN and are left out of the
+  Bonferroni factor.
+- **The skew-normal fit could abort a whole run** with a `math domain error`
+  on a degenerate null distribution, where sceptre's C++ produces NaN and falls
+  back to the empirical p-value. It now does the same.
+- The calibration check counted non-targeting gRNAs with no cells among the
+  possible groups; R drops them after QC, and so does pysceptre now.
+- The calibration check gave up when R's group-count rule asked for at least
+  every possible group, where R uses them all; it now does too.
+- Pairs naming a target missing from `grna_target_cells` were silently
+  dropped, and a gene missing from `gene_ids` failed mid-run with a bare
+  `KeyError`. Both are refused up front, naming them.
+- A categorical `grna_target` column made unused categories count as tested
+  targets.
+- Two analyses started at once in one process could corrupt each other through
+  shared worker state; they now run one after the other, under one BLAS-thread
+  limit for the whole call.
+
+### Validated
+
+- **Low MOI, value for value against sceptre 0.10.3**, on its simulated
+  example data: on R's own permutation draws, replayed by a test-only replica
+  of R's samplers that is checked draw for draw against R, every per-pair fit,
+  statistic, fold change, stage and p-value matches R, for discovery and the
+  power and calibration checks, under both control groups.
+- **Permutations are validated against R for the first time.** The same
+  replay on sceptredata's two real screens, Papalexi (low MOI) and Gasperini
+  (high MOI): every pair reaches R's stage, and every p-value above 1e-10
+  agrees to 3.4e-8 relative or better.
+- **Both MOIs on real data with pysceptre's own draws**, six runs across both
+  sceptredata screens, both control groups and both mechanisms: fold changes
+  within 2.3e-12 of R, p-value Spearman 0.989 to 0.996, power-check counts
+  exact, and calibration matching R's uniformity and false discoveries. The
+  table is in README's Validation section.
+- **day0 is unchanged.** Discovery and calibration on day0's real targets are
+  bit-identical to 0.2.0.
 
 ## 0.2.0
 

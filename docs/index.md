@@ -8,10 +8,10 @@ single-cell CRISPR screens.
 from pysceptre import run_discovery_analysis
 ```
 
-Three validated sceptre paths -- **discovery analysis**, the **calibration
-check** and the **power check** -- on the complement control group with CRT
-resampling, for high-MOI screens, each validated against the R package rather
-than against itself.
+Three sceptre analyses -- **discovery analysis**, the **calibration check**
+and the **power check** -- for high- and low-MOI screens: the complement and
+NT-cells control groups, with CRT or permutation resampling, each validated
+against the R package rather than against itself.
 
 Alongside them, **`compute_power`** estimates in closed form what a
 screen *could* have detected, per pair and without simulation. It answers a
@@ -35,7 +35,7 @@ assuming a path works.
 |---|---|
 | [Installation](installation.md) | `uv` and `pip`, the `fast` and `io` extras, tested Python versions |
 | [User guide](guide.md) | a run end to end, and how to read the result frame |
-| [Tutorials](tutorials.md) | a worked example end to end, then per-gRNA tests, interaction designs, and power beside a result |
+| [Tutorials](tutorials.md) | a worked example end to end, then per-gRNA tests, interaction designs, power beside a result, and a low-MOI screen |
 | [API reference](api.md) | generated from the source |
 | [Scope and limitations](scope.md) | the paths that are not implemented |
 | [Design decisions](design.md) | why the port differs from R where it does |

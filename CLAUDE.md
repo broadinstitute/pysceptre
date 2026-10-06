@@ -4,25 +4,25 @@ Standalone Python port of the statistical engine behind
 [`sceptre`](https://github.com/Katsevich-Lab/sceptre)'s discovery analysis for
 single-cell CRISPR screens.
 
-**Scope: three validated sceptre paths plus two things that are not
-sceptre's (an estimator and a check), not a general sceptre
-reimplementation.** The three are discovery
-analysis, the calibration check and the power check, all on the complement
-control group + CRT (conditional randomization test) resampling, high-MOI
-path. Non-complement control groups, low-MOI, `assign_grnas()`, `run_qc()`
-and R's formula DSL are deliberately out of scope -- see "Scope and
-limitations" in `README.md` before adding any of them.
+**Scope: sceptre's three analyses plus two things that are not sceptre's
+(an estimator and a check), not a general sceptre reimplementation.** The
+three are discovery analysis, the calibration check and the power check, for
+high- and low-MOI screens: the complement and NT-cells control groups, with CRT
+(conditional randomization test) or permutation resampling. `assign_grnas()`,
+cell-level `run_qc()` and R's formula DSL are deliberately out of scope -- see
+"Scope and limitations" in `README.md` before adding any of them.
 
 **Two things that statement used to get wrong, and a reader should not have to
 discover by grepping.**
 
-`resampling_mechanism="permutations"` **exists** (`crt/permutations.py`, and
-the option is on `run_discovery_analysis`). It is not on the same footing as
-the CRT: `tests/validation/test_permutations.py` makes no value-for-value
-comparison against R at all, only internal consistency, R's `B3` sizing rule,
-and end-to-end usability. So permutations are *implemented and exercised*,
-while the CRT path is *validated*. Treat that gap as the reason not to quote a
-permutation result against R, not as a licence to widen it.
+`resampling_mechanism="permutations"` **exists**, on all three entry points,
+and since 0.3.0 it is validated differently from the CRT rather than less.
+`tests/validation/test_permutations.py` is internal consistency only, but
+`test_low_moi_vs_r.py` replays R's own permutation draws
+(`tests/validation/r_samplers.py`) and gets R's p-values back value for value,
+for both control groups. pysceptre's own permutation draws are numpy's, so a
+permutation result agrees with R in distribution, not draw for draw -- the same
+footing as the CRT.
 
 `analytical_power/` is a **fourth** thing and it does not come from sceptre.
 It is a port of PerturbPlan's closed-form power estimate for a screen that
@@ -62,12 +62,15 @@ src-layout -- the importable package lives under `src/`, so it is only on
 `sys.path` once installed (editable is fine).
 
 - `src/pysceptre/`
-  - `glm/`              -- batched IRLS (`irls.py`) and NB dispersion (`nb_theta.py`).
+  - `glm/`              -- batched IRLS (`irls.py`), NB dispersion (`nb_theta.py`)
+                           and the design-matrix rank check (`design.py`).
   - `precompute/`       -- per-gene precomputation pieces reused across draws.
-  - `crt/`              -- the CRT resampling draw (`sampler.py`).
+  - `crt/`              -- the CRT samplers (`sampler.py`) and the permutation
+                           draws every target shares (`permutations.py`).
   - `test_statistic/`   -- score statistic, empirical p, skew-normal escalation,
                            fold change, and the per-pair `B1 -> B2 -> B3` staging.
-  - `pipeline/`         -- `discovery.py` (orchestration), `api.py` (the public
+  - `pipeline/`         -- `discovery.py` (orchestration, one path per
+                           control group), `api.py` (the public
                            entry points) and `grouping.py` (the gRNA
                            integration strategies, which are pair bookkeeping
                            only: nothing statistical differs between them).
@@ -79,9 +82,10 @@ src-layout -- the importable package lives under `src/`, so it is only on
                            no count matrix.
 - `tests/validation/`   -- the whole suite, in one place. **Most** files
                            compare against R ground truth rather than only
-                           internal consistency, but not all: the permutation
-                           tests are internal-consistency only, and the
-                           analytical power tests compare against
+                           internal consistency, but not all:
+                           `test_permutations.py` is internal-consistency
+                           only (`test_low_moi_vs_r.py` is where permutations
+                           meet R), and the analytical power tests compare against
                            PerturbPlan's R, not sceptre's, and the
                            specificity tests against the notebook they were
                            ported from. Slow on a fresh
@@ -233,11 +237,54 @@ Python 3.10+ (`requires-python`). Verified passing on 3.10, 3.11, 3.12, 3.13.
   `argsort` grouping. The jitted path is a counting sort -- the grouping step
   was the dominant cost of the module at real scale.
 
-- **The CRT sampler's with-replacement draw + `np.unique` dedupe is an
-  intentional approximation** of R's without-replacement Fisher-Yates
-  placement, justified in the `crt/sampler.py` docstring (M_j << B, so
-  collisions are rare). It is not a bug; don't "fix" it into a dense
-  `(n_cells, B)` matrix, which is what made the first port unusably slow.
+- **`crt_index_sampler_fast` places cells with replacement and does not
+  deduplicate**, an intentional approximation of R's without-replacement
+  Fisher-Yates placement: a cell landing twice on one resample is counted
+  twice, and about half a target's share of the cells repeats. Don't "fix" it
+  into a dense `(n_cells, B)` matrix, which is what made the first port
+  unusably slow.
+
+- **The CRT sampler is chosen per target, by `crt_index_sampler`**: exact
+  (`crt_index_sampler_exact`, geometric gaps, R's law) when the target is more
+  than 0.2% of the cells it is tested on, fast below. Below the line day0 is
+  bit-identical to 0.2.0; above it the fast sampler measurably biases the test
+  conservative (5.6% of null p-values below 0.1 against 10.0%,
+  `scripts/measure_nt_cells_crt_sampler.py`; docs/design.md, "The CRT sampler
+  draws with replacement"). The rule reads counts, never fitted probabilities,
+  so chunking cannot flip it. Retiring the threshold by making the fast path
+  exact (repair duplicates after placement) is a ROADMAP item that needs day0
+  re-validated.
+
+- **The NT-cells path refits the gene's GLM for every pair.** That is R's
+  method (`discovery_ntcells_perm_test`, `discovery_ntcells_crt`): each pair
+  is fit on `c(trt_idxs, all_nt_idxs)`, so nothing is shared across a gene's
+  targets. It is not a missed batching opportunity, and pairs are fit one at a
+  time for the same reason as `_GENE_BATCH_WIDTH = 1`.
+
+- **Cell order on the NT-cells path is R's, on purpose.** The combined cells
+  are the target's cells ascending, then the NT pool in `ntc_grna_cells` dict
+  order (R's `all_nt_idxs` when the dict is in R's gRNA order). Order moves no
+  fitted value, but a resample is a list of positions, and matching R's order
+  is what lets R's own draws be injected and compared value for value. Don't
+  sort the pool.
+
+- **`nested_permutation_draws` is R's `hybrid_fisher_iwor_sampler` built
+  backwards**: a uniform ordering, then peel one position per step. Same joint
+  law over the whole chain of prefixes, proved in docs/design.md and tested
+  against a forward port of R in `test_nt_cells_sampler.py`. It looks nothing
+  like the C++; that is not a reason to "port it properly".
+
+- **The low-MOI QC invariant is checked, partially, on purpose.** R's engine
+  never checks that each cell carries at most one gRNA, because its QC
+  guarantees it. pysceptre refuses a cell under two NT gRNAs and a tested
+  target sharing a cell with the NT cells. A cell in two *targets* is accepted:
+  one guide in two overlapping elements does that legitimately.
+
+- **`tests/validation/r_samplers.py` is a test-only exact replica of R's two
+  permutation samplers** (boost `mt19937(4)`, `u = raw / 2**32`), checked
+  against R's own draws in `lowmoi_ground_truth.json.gz`. It is what makes
+  permutation p-values comparable to R value for value. It stays out of
+  `src/`: the package does not reproduce R's RNG, by design.
 
 - **RNG is not bit-for-bit reproducible against R.** sceptre seeds
   `boost::mt19937`; this uses `numpy.random.Generator`. Validation matches
@@ -264,7 +311,7 @@ Python 3.10+ (`requires-python`). Verified passing on 3.10, 3.11, 3.12, 3.13.
   JSON records which `sceptre` version produced the fixture -- if that matters
   for a change you're making, regenerate it and note the version in the commit.
 
-- **There are two ground-truth fixtures now, and both have the same trap.**
+- **There are more ground-truth fixtures now, and all have the same trap.**
   `tests/validation/perturbplan_ground_truth.json` caches PerturbPlan's own
   output for the analytical power port, regenerated by
   `scripts/dump_perturbplan_ground_truth.R` under the same
@@ -274,10 +321,20 @@ Python 3.10+ (`requires-python`). Verified passing on 3.10, 3.11, 3.12, 3.13.
   that SHA is not the one the published comparison used, and why it makes no
   difference.
 
+  `tests/validation/lowmoi_ground_truth.json.gz` is the low-MOI one, from
+  `scripts/dump_lowmoi_ground_truth.R`, same rule, and it records the sceptre
+  version and install SHA. It is built from **sceptre's own** simulated
+  `lowmoi_example_data`. The sceptredata package ships *real* data under the
+  same name; the dumper reads with `package = "sceptre"` for that reason, and
+  must keep doing so.
+
 - **Real screen data is never committed, so anything that needs it takes a
   path from the environment and fails immediately when it is missing.**
   `tests/validation/test_day0_regression.py` reads `PYSCEPTRE_DAY0_EXPORT` and
-  skips when it is unset. Don't reintroduce absolute paths, and don't give a
+  skips when it is unset; `test_sceptredata_realdata.py` reads
+  `PYSCEPTRE_SCEPTREDATA_DIR`, the output of
+  `scripts/run_sceptredata_examples.R` (sceptredata's Papalexi and Gasperini
+  subsets, real data under MIT). Don't reintroduce absolute paths, and don't give a
   dataset-specific default: a wrong-but-plausible default is worse than a
   missing one when the output is a benchmark or a validation number.
 

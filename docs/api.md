@@ -101,7 +101,15 @@ debugging the pipeline.
 
 ::: pysceptre.precompute.pieces.compute_precomputation_pieces
 
+::: pysceptre.crt.sampler.crt_index_sampler
+
 ::: pysceptre.crt.sampler.crt_index_sampler_fast
+
+::: pysceptre.crt.sampler.crt_index_sampler_exact
+
+::: pysceptre.crt.permutations.permutation_draws
+
+::: pysceptre.crt.permutations.nested_permutation_draws
 
 ### The test statistic
 
@@ -120,6 +128,12 @@ debugging the pipeline.
 ### Orchestration
 
 ::: pysceptre.pipeline.discovery.run_discovery_ntcells_complement
+
+::: pysceptre.pipeline.discovery.run_discovery_nt_cells
+
+::: pysceptre.pipeline.api.resolve_analysis_settings
+
+::: pysceptre.pipeline.api.nt_cell_pool
 
 ::: pysceptre.pipeline.discovery.parallel_backend
 

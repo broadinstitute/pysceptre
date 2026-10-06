@@ -22,6 +22,12 @@ drawn. See [Design decisions](design.md#pairwise-qc-appears-in-two-different-sha
 Signatures and parameters for all three are in the
 [API reference](api.md).
 
+## Low MOI
+
+--8<-- "README.md:lowmoi"
+
+A worked example is in [Tutorials](tutorials.md#a-low-moi-screen).
+
 ## Choosing what counts as one treated unit
 
 `run_discovery_analysis` takes `grna_integration_strategy`, matching sceptre's
