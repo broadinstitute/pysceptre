@@ -34,25 +34,31 @@ class SkewNormalFit:
 
 
 def fit_skew_normal_funct(y: np.ndarray) -> SkewNormalFit:
+    """Moment-matched skew-normal parameters. Arithmetic is IEEE double, as in
+    the C++: a square root of a negative or a division by zero gives NaN or
+    inf rather than raising, and the caller then rejects the fit."""
     y = np.asarray(y, dtype=float)
     n = y.size
-    m_y = y.mean()
-    sd_y = math.sqrt((y**2).mean() - m_y**2)
+    with np.errstate(all="ignore"):
+        m_y = y.mean()
+        sd_y = np.sqrt((y**2).mean() - m_y**2)
 
-    gamma1 = np.sum((y - m_y) ** 3) / (n * sd_y**3)
-    if gamma1 > _MAX_GAMMA_1:
-        gamma1 = 0.9 * _MAX_GAMMA_1
+        gamma1 = np.sum((y - m_y) ** 3) / (n * sd_y**3)
+        if gamma1 > _MAX_GAMMA_1:
+            gamma1 = 0.9 * _MAX_GAMMA_1
 
-    b = math.sqrt(2.0 / math.pi)
-    r = math.copysign(1.0, gamma1) * (2 * abs(gamma1) / (4 - math.pi)) ** (1.0 / 3.0)
-    delta = r / (b * math.sqrt(1 + r * r))
-    alpha = delta / math.sqrt(1 - delta * delta)
-    mu_z = b * delta
-    sd_z = math.sqrt(1 - mu_z * mu_z)
-    omega = sd_y / sd_z
-    xi = m_y - omega * mu_z
+        b = np.sqrt(np.float64(2.0) / math.pi)
+        r = np.copysign(1.0, gamma1) * (2 * np.abs(gamma1) / (4 - math.pi)) ** (1.0 / 3.0)
+        delta = r / (b * np.sqrt(1 + r * r))
+        alpha = delta / np.sqrt(1 - delta * delta)
+        mu_z = b * delta
+        sd_z = np.sqrt(1 - mu_z * mu_z)
+        omega = sd_y / sd_z
+        xi = m_y - omega * mu_z
 
-    return SkewNormalFit(xi=xi, omega=omega, alpha=alpha, mean=float(m_y), sd=float(sd_y))
+    return SkewNormalFit(
+        xi=float(xi), omega=float(omega), alpha=float(alpha), mean=float(m_y), sd=float(sd_y)
+    )
 
 
 def check_sn_tail(
@@ -76,9 +82,10 @@ def check_for_outliers(null_statistics_sorted_ascending: np.ndarray, mu: float, 
     min_z = null_statistics_sorted_ascending[0]
     max_z = null_statistics_sorted_ascending[-1]
     B = null_statistics_sorted_ascending.size
-    R_max = max_z / (mu + sd * math.sqrt(2 * math.log(B)))
-    R_min = min_z / (mu - sd * math.sqrt(2 * math.log(B)))
-    return R_max <= _OUTLIER_RATIO_THRESH and R_min <= _OUTLIER_RATIO_THRESH
+    with np.errstate(all="ignore"):
+        R_max = max_z / (mu + sd * np.sqrt(2 * np.log(np.float64(B))))
+        R_min = min_z / (mu - sd * np.sqrt(2 * np.log(np.float64(B))))
+    return bool(R_max <= _OUTLIER_RATIO_THRESH and R_min <= _OUTLIER_RATIO_THRESH)
 
 
 @dataclass

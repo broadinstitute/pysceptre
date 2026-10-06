@@ -42,3 +42,17 @@ def test_fit_and_evaluate_skew_normal_matches_r_on_real_signal_pair_resampling_d
     np.testing.assert_allclose(result.alpha, alpha_r, rtol=1e-6)
     assert result.used
     np.testing.assert_allclose(result.p, sp["p_value"], rtol=1e-3)
+
+
+def test_a_degenerate_null_falls_back_instead_of_raising():
+    """sceptre's C++ takes the square root of a negative variance or skewness term
+    as NaN and rejects the fit; the port used to raise a math domain error and
+    abort the run."""
+    from pysceptre.test_statistic.skew_normal import fit_and_evaluate_skew_normal
+
+    rng = np.random.default_rng(0)
+    flat = 1238858.24 + rng.normal(0, 1e-9, 4999)
+    skewed = -(rng.exponential(1, 4999) ** 3)
+    for nulls in (flat, skewed):
+        with np.errstate(all="ignore"):
+            assert not fit_and_evaluate_skew_normal(5.0, nulls, 0).used
