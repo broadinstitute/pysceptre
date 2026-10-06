@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pysceptre"
-version = "0.2.0"
+version = "0.3.0"
 description = "Standalone Python port of sceptre's discovery-analysis statistical engine, for high- and low-MOI CRISPR screens"
 readme = "README.md"
 requires-python = ">=3.10"
