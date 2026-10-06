@@ -1,4 +1,6 @@
+import gzip
 import json
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -126,4 +128,31 @@ def singleton_ground_truth():
             ["Rscript", str(SINGLETON_DUMP_SCRIPT), str(SINGLETON_GROUND_TRUTH_PATH)], check=True
         )
     with open(SINGLETON_GROUND_TRUTH_PATH) as f:
+        return json.load(f)
+
+
+LOWMOI_GROUND_TRUTH_PATH = VALIDATION_DIR / "lowmoi_ground_truth.json.gz"
+LOWMOI_DUMP_SCRIPT = VALIDATION_DIR.parent.parent / "scripts" / "dump_lowmoi_ground_truth.R"
+
+
+@pytest.fixture(scope="session")
+def lowmoi_ground_truth():
+    """sceptre's own low-MOI numbers, from its simulated example data.
+
+    Committed gzipped, to stay under the repository's large-file limit.
+    Regenerated only if missing, like `ground_truth`; delete it if you change
+    `scripts/dump_lowmoi_ground_truth.R`. It records the sceptre version and
+    install SHA that produced it.
+    """
+    if not LOWMOI_GROUND_TRUTH_PATH.exists():
+        if not _r_sceptre_available():
+            pytest.skip("R/sceptre not available and no cached lowmoi_ground_truth.json.gz")
+        plain = LOWMOI_GROUND_TRUTH_PATH.with_suffix("")
+        subprocess.run(["Rscript", str(LOWMOI_DUMP_SCRIPT), str(plain)], check=True)
+        # mtime=0, so regenerating the same JSON gives the same bytes.
+        with open(plain, "rb") as fin, open(LOWMOI_GROUND_TRUTH_PATH, "wb") as raw:
+            with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as fout:
+                shutil.copyfileobj(fin, fout)
+        plain.unlink()
+    with gzip.open(LOWMOI_GROUND_TRUTH_PATH, "rt") as f:
         return json.load(f)
