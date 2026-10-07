@@ -4,13 +4,15 @@ Standalone Python port of the statistical engine behind
 [`sceptre`](https://github.com/Katsevich-Lab/sceptre)'s discovery analysis for
 single-cell CRISPR screens.
 
-**Scope: sceptre's three analyses plus two things that are not sceptre's
-(an estimator and a check), not a general sceptre reimplementation.** The
-three are discovery analysis, the calibration check and the power check, for
-high- and low-MOI screens: the complement and NT-cells control groups, with CRT
-(conditional randomization test) or permutation resampling. `assign_grnas()`,
-cell-level `run_qc()` and R's formula DSL are deliberately out of scope -- see
-"Scope and limitations" in `README.md` before adding any of them.
+**Scope: sceptre's three analyses and its mixture gRNA assignment, plus three
+things that are not sceptre's (an estimator, a check and fishash's gRNA
+assignment), not a general sceptre reimplementation.** The three analyses are
+discovery analysis, the calibration check and the power check, for high- and
+low-MOI screens: the complement and NT-cells control groups, with CRT
+(conditional randomization test) or permutation resampling. sceptre's other
+`assign_grnas()` methods (thresholding, maximum), cell-level `run_qc()` and R's
+formula DSL are deliberately out of scope -- see "Scope and limitations" in
+`README.md` before adding any of them.
 
 **Two things that statement used to get wrong, and a reader should not have to
 discover by grepping.**
@@ -39,6 +41,22 @@ taken from tests across chromosomes. It is ported from WattEG-paper's
 notebook on three screens; nothing outside it validates the method. The
 notebook's fingerprint check is deliberately left out. `docs/design.md`,
 "Specificity check", has the rest.
+
+`assignment/` is a **sixth**, and half of it is sceptre's. `assign_grnas_mixture`
+ports sceptre 0.10.3's `assign_grnas(method = "mixture")` and is validated
+against it value for value (`test_mixture_vs_r.py`). `assign_grnas_fishash`
+ports the R package fishash 0.99.5 (MIT; `THIRD_PARTY_LICENSES`), a one-sided
+Fisher test per (gRNA, cell), and its ground truth is fishash's own R
+(`test_fishash_vs_r.py`). Its p-values come from `assignment/hypergeom.py`, a
+port of R's `phyper` and the nmath functions under it (GPL-2-or-later): scipy's
+`hypergeom` rejects the non-integer margins the refit passes produce, which R
+rounds half to even. Both take raw integer counts only and refuse anything
+else. The mixture's Poisson fits pass `mu_floor` = machine epsilon to
+`glm/irls.py` (R's `glm.fit` floor); the discovery engine keeps the default
+1e-10 -- don't unify them, `docs/design.md`, "One Poisson GLM per gRNA", says
+why. The evaluation that motivated this (fishash against the mixture, Gaussian
+mixtures and the lab's CMO procedure, on the fishash preprint's simulations)
+lives in `scripts/fishash_eval/`; its results belong to the manuscript.
 
 **One carve-out from "no `run_qc()`".** The calibration and power checks
 *construct or receive* their own pairs, so both must decide which are testable
@@ -80,6 +98,10 @@ src-layout -- the importable package lives under `src/`, so it is only on
   - `specificity/`      -- the specificity check: links above a background
                            measured across chromosomes. Tables in, tables out;
                            no count matrix.
+  - `assignment/`       -- gRNA-to-cell assignment: sceptre's mixture method
+                           (`mixture.py`, `design.py`) and, not from sceptre,
+                           fishash (`fishash.py`, with R's `phyper` in
+                           `hypergeom.py`). gRNAs x cells, sparse throughout.
 - `tests/validation/`   -- the whole suite, in one place. **Most** files
                            compare against R ground truth rather than only
                            internal consistency, but not all:
@@ -168,8 +190,8 @@ Python 3.10+ (`requires-python`). Verified passing on 3.10, 3.11, 3.12, 3.13.
 
   `cividis` ships with matplotlib (`cmap="cividis"`), so no extra
   dependency. Don't use `viridis` for gradients here, and never `jet`/
-  `rainbow`. Nothing in the repo plots yet -- this applies to whatever
-  does first.
+  `rainbow`. Nothing under `src/` plots; the scripts that do keep a local
+  `OKABE_ITO` dict (`scripts/plot_calibration_check.py` is the model).
 
 - **Docstrings describe the function. Comments stay short. Rationale lives
   in the docs.** A docstring says what something does, what it takes and
@@ -310,6 +332,17 @@ Python 3.10+ (`requires-python`). Verified passing on 3.10, 3.11, 3.12, 3.13.
   silently validating against the stale fixture. Neither the dumper nor the
   JSON records which `sceptre` version produced the fixture -- if that matters
   for a change you're making, regenerate it and note the version in the commit.
+
+- **The assignment fixtures guard themselves against going stale.**
+  `tests/validation/fishash_ground_truth.json.gz` and
+  `mixture_ground_truth.json.gz` (from `scripts/dump_fishash_ground_truth.R`
+  and `scripts/dump_mixture_ground_truth.R`) follow the only-if-missing rule
+  too, but each records the md5 of the dumper that made it, and a test fails
+  when the dumper on disk differs: change a dumper, delete its `.gz`, rerun
+  the tests. Both record package versions and install SHAs and contain no
+  timestamps, so regenerating gives the same bytes. Both dumpers pick the first
+  seed in a fixed list that keeps every compared value away from a decision
+  boundary, so any flipped call in those tests is a defect.
 
 - **There are more ground-truth fixtures now, and all have the same trap.**
   `tests/validation/perturbplan_ground_truth.json` caches PerturbPlan's own

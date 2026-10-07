@@ -169,6 +169,7 @@ def _fit_batch(
     eps: float = _EPS,
     maxit: int = _MAXIT,
     X_outer_flat: np.ndarray | None = None,
+    mu_floor: float = _MU_FLOOR,
 ) -> GlmFitBatchResult:
     n, p = X.shape
     Y, was_1d = _as_2d(Y)
@@ -245,7 +246,7 @@ def _fit_batch(
         eta_new_a = beta_a @ X.T  # (k_a, p) @ (p, n) -> (k_a, n)
 
         mu_new_a = (
-            np.clip(np.exp(eta_new_a), _MU_FLOOR, None)
+            np.clip(np.exp(eta_new_a), mu_floor, None)
             if family == "poisson"
             else np.clip(1.0 / (1.0 + np.exp(-eta_new_a)), _MU_FLOOR, 1 - _MU_FLOOR)
         )
@@ -308,15 +309,22 @@ def fit_poisson_glm_batch(
     eps: float = _EPS,
     maxit: int = _MAXIT,
     X_outer_flat: np.ndarray | None = None,
+    mu_floor: float = _MU_FLOOR,
 ) -> GlmFitBatchResult:
-    """X: (n, p) shared design matrix. Y: (n, k) or (n,) response column(s).
+    """X: (n, p) shared design matrix. Y: (k, n) or (n,) response(s), one per row.
 
     `X_outer_flat`: optional, from `x_outer_flat(X)`. Pass it when fitting
     repeatedly against the same design matrix; it is rebuilt per call
     otherwise.
+
+    `mu_floor`: lower bound on a fitted mean. R's `glm.fit` bounds it at the
+    machine epsilon; the default here is 1e-10. See docs/design.md, "One
+    Poisson GLM per gRNA".
     """
     with one_blas_thread():
-        return _fit_batch(X, Y, "poisson", eps=eps, maxit=maxit, X_outer_flat=X_outer_flat)
+        return _fit_batch(
+            X, Y, "poisson", eps=eps, maxit=maxit, X_outer_flat=X_outer_flat, mu_floor=mu_floor
+        )
 
 
 def fit_binomial_glm_batch(
@@ -327,7 +335,7 @@ def fit_binomial_glm_batch(
     maxit: int = _MAXIT,
     X_outer_flat: np.ndarray | None = None,
 ) -> GlmFitBatchResult:
-    """X: (n, p) shared design matrix. Y: (n, k) or (n,) 0/1 indicator column(s).
+    """X: (n, p) shared design matrix. Y: (k, n) or (n,) 0/1 indicator(s), one per row.
 
     `X_outer_flat`: optional, from `x_outer_flat(X)`. Pass it when fitting
     repeatedly against the same design matrix; it is rebuilt per call

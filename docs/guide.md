@@ -71,6 +71,17 @@ positions for both. It has no R counterpart; read
 [Design decisions](design.md#specificity-check) for what it has been checked
 against.
 
+## Assigning gRNAs to cells
+
+The analyses take each target's cells as given. `assign_grnas_mixture` computes
+them from raw gRNA UMI counts with sceptre's mixture method, validated against
+sceptre's own; `assign_grnas_fishash` does it with fishash's one-sided Fisher
+test, which is not sceptre's and is validated against fishash's R.
+`pysceptre.assignment.cells_by_target` turns either result into the
+`grna_target_cells` and `ntc_grna_cells` the analyses take. Read
+[Design decisions](design.md#grna-assignment) for what each method normalizes
+for.
+
 ## If a design matrix is refused
 
 `covariate_matrix` is checked before any fitting and a rank-deficient design

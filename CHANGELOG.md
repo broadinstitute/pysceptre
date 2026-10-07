@@ -2,6 +2,36 @@
 
 Notable changes per release. Dates are the release date.
 
+## Unreleased
+
+### Added
+
+- **`assign_grnas_mixture`**, sceptre's mixture gRNA assignment
+  (`assign_grnas(method = "mixture")`) from raw gRNA UMI counts: a Poisson
+  GLM per gRNA, then sceptre's two-component EM from its five fixed starts,
+  with the backup rule for gRNAs with fewer than ten cells or an EM that does
+  not converge. `mixture_design_matrix` builds sceptre's default design and
+  `design_from_covariates` builds it from a covariate frame exported from R.
+  Validated against sceptre 0.10.3 value for value, internals included.
+- **`assign_grnas_fishash`**, not from sceptre: a port of fishash 0.99.5
+  (jackkamm/fishash, commit `5eabd3c`; MIT -- see `THIRD_PARTY_LICENSES`), a
+  one-sided Fisher test per (gRNA, cell) with Guo and Sarkar's block FDR and
+  fishash's refit against Simpson's paradox. Its p-values come from a port of
+  R's `phyper` (`assignment/hypergeom.py`, from R's nmath, GPL-2-or-later),
+  with a numba kernel and a numpy fallback. Validated against fishash's own
+  output pass by pass.
+- **`pysceptre.assignment.cells_by_grna` and `cells_by_target`**, which turn an
+  assignment into the `grna_target_cells` and `ntc_grna_cells` the analyses
+  take.
+
+### Changed
+
+- **`fit_poisson_glm_batch` takes `mu_floor`**, the lower bound on a fitted
+  mean. The default stays 1e-10; the mixture assignment passes R's
+  machine-epsilon floor.
+- **The covariate validator moved to `glm/design.py`** as
+  `validate_design_matrix`, unchanged; `pipeline/api.py` imports it.
+
 ## 0.3.0
 
 ### Added

@@ -311,8 +311,8 @@ target's nonzero cells as a sum over its NT gRNAs rather than over their union.
 Neither can change anything once each cell carries at most one gRNA.
 
 Two things R's low MOI does are not here, because they are cell-level QC and
-`assign_grnas()`, both out of scope: assigning each cell its single
-strongest gRNA, and removing cells with zero or two or more gRNAs. The
+`assign_grnas()`'s maximum method, both out of scope: assigning each cell its
+single strongest gRNA, and removing cells with zero or two or more gRNAs. The
 NT-cells analysis **relies** on that removal, and R's engine never checks it,
 since its QC guarantees it. pysceptre takes post-QC inputs and cannot, so it
 checks what it can see and refuses rather than guessing: a cell listed under
@@ -1193,3 +1193,181 @@ row counts as passing and the correction factor is the group size. Supplying
 it -- `pipeline/pairwise_qc.py` computes it at guide resolution -- recovers
 R's behaviour for a target whose guides individually fail, which is the case
 the default cannot see.
+
+## gRNA assignment
+
+`pysceptre.assignment` holds two ways of deciding which cells carry which
+gRNA. `assign_grnas_mixture` is sceptre's own mixture method, ported from
+sceptre 0.10.3. `assign_grnas_fishash` is not sceptre's: it ports fishash
+(jackkamm/fishash 0.99.5, commit 5eabd3c; MIT; Kamm, Yeung and Forrest,
+bioRxiv 10.64898/2026.01.22.701179), a one-sided Fisher test per (gRNA, cell).
+Both take raw integer UMI counts, gRNAs as rows and cells as columns, and both
+are validated against their R originals value for value on synthetic data.
+The notices for both, and for the part of R's mathematical library fishash
+needs, are in `THIRD_PARTY_LICENSES`.
+
+fishash 0.99.5 is ported rather than 0.3.0, the version in the preprint's
+Table 1. The algorithm is the same except for commit ff4de6b, which changed
+which guides and cells the noise fit skips from "fully masked" to "no unmasked
+count"; the two differ only where 0.3.0 would divide 0 by 0. The other changes
+after 0.3.0 touch output structure only (`drop0` on the calls, how the
+assignment strings are built) or the simulator's defaults, which the
+preprint's `simulate_guidebender2` calls override.
+
+### What fishash normalizes, and what it does not
+
+**The counts are never transformed.** There is no log, no CLR, no size factor.
+Each nonzero count is tested on its 2x2 table -- this gRNA or another, this
+cell or another -- and the test conditions on the table's margins: under the
+null the expected count is the cell's total times the gRNA's share of the
+counts in other cells. That accounts for each cell's depth and each gRNA's
+abundance at once, and leaves the cut to an FDR procedure (Guo and Sarkar's
+block procedure by default) rather than to a per-gRNA threshold.
+
+**With `refit > 0` the reference is the noise, not the total.** Each later
+pass masks the previous pass's calls and refits the masked entries from the
+rest (below), so the other cells' margins describe the gRNA's ambient level.
+That is fishash's correction for Simpson's paradox.
+
+**The cell side includes the cell's own signal.** A cell's total counts every
+gRNA it carries, so each gRNA's share of the cell falls as the number of gRNAs
+per cell rises. Nothing in the method offsets that.
+
+**Only integer counts are accepted.** R's `fishash()` accepts any numbers and
+rounds inside `phyper`; the port raises instead, which also keeps a normalized
+matrix out of a count test.
+
+### fishash on the nonzero entries
+
+The mask, the noise estimate, the calls and the p-values all live on the same
+entries: the nonzero counts. A call needs a p-value, which only a nonzero
+count has, and the mask is the previous calls. So every pass works on 1-D
+arrays aligned with the counts' column-major entries, which is also the order
+R's `TsparseMatrix` gives them, and nothing is densified.
+
+Sums follow R's order where it decides a last bit: margins by `bincount`
+(column-major, as Matrix accumulates), totals left to right rather than by
+numpy's pairwise sum. Block p-values are BH-adjusted over every cell, empty
+ones included, and a cell with no entries counts as `log p = 0`, as
+`sparseMatrixStats::colMins` reads an implicit zero.
+
+When nothing passes, the cut is `log(0) = -Inf`, as in R. When the noise
+estimate outside a cell sums below one count, R's `phyper` returns NaN and the
+run cannot continue (R stops with "missing value where TRUE/FALSE needed"); the
+port raises a ValueError naming the cause.
+
+### The hypergeometric tail is R's phyper
+
+scipy's `hypergeom` cannot stand in. It refuses non-integer arguments, and the
+refit passes produce non-integer margins that R's `phyper` rounds; and its log
+upper tail loops over elements in Python. `hypergeom.py` therefore ports
+`phyper` and what it calls -- `pdhyper`, `dhyper`, `dbinom_raw`, `stirlerr`,
+`bd0` -- from R's `src/nmath` (R 4.5 branch). Three details decide agreement:
+
+- `m`, `n` and `k` are rounded separately, half to even (`nearbyint`), and `q`
+  is floored after adding 1e-7. The preprint's equation (7) rounds the noise
+  margins; the R code relies on `phyper` doing it.
+- `pdhyper` accumulates in `long double`, which is plain `double` on arm64
+  macOS, where the fixtures are made, and 80-bit on x86-64 Linux.
+- Apple's compiler contracts multiply-adds in R's build, so bitwise agreement
+  is not a goal; agreement is to 1e-12 relative to max(1, |log p|).
+
+The numba kernel and the numpy fallback perform the same operations per
+element and agree bit for bit on the fixture's grid.
+
+### Masked counts are imputed by a rank-one Poisson fit
+
+`impute_masked_counts` fits the unmasked counts as `guide_freqs[g] *
+cell_sizes[c]` by alternating closed-form updates (at most ten, stopping when
+both factors move less than 1e-4 on the log scale) and replaces the masked
+entries by the fit. fishash's loop recomputes the mask from scratch for the
+first three passes and keeps every earlier mask afterwards, which stops
+borderline calls from alternating; the deep run of the fixture reaches five
+passes so both rules are exercised.
+
+### sceptre's mixture assignment
+
+Per gRNA with at least ten cells of count one or more: a Poisson GLM of its
+counts on the cell covariates, then a two-component EM from five fixed starts,
+assigning the cells whose posterior for the second component reaches 0.8.
+Fewer cells, or an EM that never converges, falls back to `count >= 5`.
+
+Two of sceptre's behaviours are ported as they are, not corrected:
+
+- **`g_pert` is updated as a log ratio and added to the mean on the count
+  scale**: `g_mus_pert1 = g_mus_pert0 + g_pert`.
+- **The EM keeps the smaller component as the perturbed one.** When more than
+  half the cells look perturbed it swaps the components, so the fixture's row
+  with 70% of cells perturbed assigns no cell at all.
+
+The five starting values are the draws of sceptre 0.10.3's
+`get_random_starting_guesses` (`set.seed(4)`), stored as constants: the
+package does not reproduce R's random number generator.
+
+### The EM groups the zero-count cells
+
+A cell with a count of zero contributes to the EM only through its fitted
+mean, and its posterior does not depend on that mean, so all such cells share
+one posterior. They are handled as a group -- their number, the sum of their
+fitted means and the smallest of them -- which makes each EM step cost the
+gRNA's nonzero cells instead of every cell. The algebra is sceptre's; the
+summation order differs, which moves the log-likelihood in the last bits. A
+zero-count cell whose fitted mean exceeds 200 keeps its own term, because
+there sceptre's 1e-100 floor on a cell's likelihood can bind. A test-only,
+dense, sequential replica of `run_reduced_em_algo_cpp`
+(`tests/validation/r_mixture.py`) sits between the two.
+
+### One Poisson GLM per gRNA
+
+The mixture reuses `glm/irls.py`, one gRNA per call, so a fit never depends on
+which other gRNAs share its batch. One setting differs from the discovery
+engine: the floor on a fitted mean. `glm.fit` bounds it at the machine
+epsilon, the discovery engine at 1e-10, and for a gRNA whose cells are
+separated by a covariate the two floors give different fits. The fixture's
+`glm_extreme` row is such a gRNA: R's fitted means reach 2.2e-16, `glm.fit`
+stops unconverged, the EM fails and the backup rule assigns the 15 cells. With
+the 1e-10 floor the port's EM converged instead and assigned nothing, so the
+mixture passes `mu_floor` = machine epsilon to `fit_poisson_glm_batch`, whose
+default stays 1e-10.
+
+### The default assignment design
+
+`mixture_design_matrix` builds the design sceptre's `assign_grnas` uses by
+default: an intercept, then `log(x)` -- or `log(x + 1)` when any cell has zero
+-- of `response_n_nonzero`, `response_n_umis`, `grna_n_nonzero` and
+`grna_n_umis`, then any extra covariates (15 or more distinct values: left
+out; categorical: treatment dummies). `n_nonzero` counts entries above 0.5, as
+`compute_cell_covariates` does. sceptre's `import_data` computes two further
+gRNA columns, the top gRNA and its share of the cell, and deletes both before
+any formula sees them, so neither enters. `response_p_mito` is always left out.
+`design_from_covariates` applies the same rule to a covariate frame exported
+from R.
+
+### Validated against R, and what that covers
+
+The fixtures (`scripts/dump_fishash_ground_truth.R`,
+`scripts/dump_mixture_ground_truth.R`) record R's internals pass by pass, and
+the tests feed R's own intermediate values back in so an error in one step
+cannot hide behind another:
+
+- fishash: log p-values to 1e-12 relative, the cut, every pass's B or
+  n_signif and calls, the per-cell types and strings, the imputation's factors
+  to 1e-10, on simulated and hand-built cases (empty guides and cells, a guide
+  in every cell, rows whose unmasked counts vanish, ties, no signal, a supplied
+  background, half-integer margins, stored zeros, degenerate shapes); and both
+  places where R errors.
+- the mixture: the design to 1e-15, the GLM to the existing 1e-6, the EM fed
+  R's fitted means to 1e-9 for posteriors and 1e-12 for log-likelihoods, and
+  the end-to-end assignments exactly.
+
+Each fixture keeps every compared quantity away from a decision boundary (log
+p at least 1e-6 from the cut; posteriors at least 1e-3 from 0.8), so any
+disagreement in a call is a defect rather than a last-bit difference.
+
+### What the assignment ports do not establish
+
+Agreement with R says the ports compute what fishash and sceptre compute, not
+that either assigns gRNAs well. Both are evaluated on simulated screens by the
+runners in `scripts/fishash_eval/`; the results belong with the manuscript,
+not here. Neither port reads anything but a count matrix: the `.h5mu` exports
+this repository builds hold 0/1 assignments, not gRNA UMI counts.

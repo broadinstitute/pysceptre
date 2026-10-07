@@ -1,7 +1,7 @@
 # API reference
 
-Generated from the source. Four functions make up the public API, and all
-four are importable from the top level (`from pysceptre import
+Generated from the source. Seven functions make up the public API, and all
+seven are importable from the top level (`from pysceptre import
 run_discovery_analysis`) as well as from their defining module.
 
 !!! note "Reading these signatures"
@@ -82,6 +82,36 @@ elements and genes on other chromosomes. Not from sceptre; see
 ::: pysceptre.specificity.lookup.gene_lookup
 
 ::: pysceptre.specificity.lookup.detour_check
+
+## gRNA assignment
+
+Which cells carry which gRNA, from raw gRNA UMI counts. `assign_grnas_mixture`
+is sceptre's mixture method; `assign_grnas_fishash` is not sceptre's (a port of
+fishash). See [Design decisions](design.md#grna-assignment).
+
+::: pysceptre.assignment.mixture.assign_grnas_mixture
+
+::: pysceptre.assignment.mixture.MixtureResult
+
+::: pysceptre.assignment.fishash.assign_grnas_fishash
+
+::: pysceptre.assignment.fishash.FishashResult
+
+### Its pieces
+
+::: pysceptre.assignment.design.mixture_design_matrix
+
+::: pysceptre.assignment.design.design_from_covariates
+
+::: pysceptre.assignment.design.cell_count_covariates
+
+::: pysceptre.assignment.fishash.impute_masked_counts
+
+::: pysceptre.assignment.hypergeom.log_phyper
+
+::: pysceptre.assignment.cells.cells_by_grna
+
+::: pysceptre.assignment.cells.cells_by_target
 
 ## Lower-level building blocks
 

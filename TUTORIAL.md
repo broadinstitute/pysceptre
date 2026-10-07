@@ -59,7 +59,7 @@ grna_target_cells = {
 
 # --- pairs: DataFrame['response_id', 'grna_target'] ---
 # The QC-passed pairs to test. In a real analysis this comes from an
-# upstream assign_grnas()/run_qc() step -- here, every gene x every target.
+# upstream run_qc() step -- here, every gene x every target.
 pairs = pd.DataFrame([
     {"response_id": g, "grna_target": t}
     for g in gene_ids for t in grna_target_cells

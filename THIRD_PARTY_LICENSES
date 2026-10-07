@@ -5,7 +5,78 @@ pysceptre as a whole is distributed under GPL-3.0-only (see LICENSE). The
 components below arrived under their own terms, which are reproduced here
 because those licences require the notice to travel with the code. MIT is
 compatible with GPL-3.0-only in this direction: MIT-licensed code may be
-incorporated into a GPL-3 work, and the combined work is GPL-3.
+incorporated into a GPL-3 work, and the combined work is GPL-3. Code under
+GPL-2-or-later may likewise be used under GPL-3.
+
+
+crispat
+-------
+
+`tests/validation/test_assignment_baselines.py` carries a test-only replica of
+crispat's `gauss.fit_em` (eight lines), the reference for the evaluation's
+per-guide Gaussian mixture. Nothing under `src/` uses it.
+
+  Upstream:  https://github.com/velten-group/crispat (fork
+             https://github.com/jackkamm/crispat, commit
+             bd2efa7039cbc307b5f7a62a1ffd7a063d1894a3)
+  Version:   0.9.10
+  Licence:   MIT
+
+  Copyright (c) 2024 Jana M. Braunger
+
+  Permission is hereby granted, free of charge, to any person obtaining a
+  copy of this software and associated documentation files (the "Software"),
+  to deal in the Software without restriction, including without limitation
+  the rights to use, copy, modify, merge, publish, distribute, sublicense,
+  and/or sell copies of the Software, and to permit persons to whom the
+  Software is furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in
+  all copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+  DEALINGS IN THE SOFTWARE.
+
+
+fishash
+-------
+
+`src/pysceptre/assignment/fishash.py` is a port of fishash's `fishash`, its
+internal `fishash_internal`, and `impute_masked_counts`.
+
+  Upstream:  https://github.com/jackkamm/fishash
+  Version:   0.99.5, commit 5eabd3c5d93b08a8f54ad9803a17f235975a0c61
+  Authors:   Jack Kamm (package author); copyright holder "fishash authors"
+  Citation:  Kamm, Yeung and Forrest, "Fishash: A contingency table approach
+             to Perturb-seq guide assignment", bioRxiv,
+             doi:10.64898/2026.01.22.701179
+  Licence:   MIT
+
+  YEAR: 2025
+  COPYRIGHT HOLDER: fishash authors
+
+  Permission is hereby granted, free of charge, to any person obtaining a
+  copy of this software and associated documentation files (the "Software"),
+  to deal in the Software without restriction, including without limitation
+  the rights to use, copy, modify, merge, publish, distribute, sublicense,
+  and/or sell copies of the Software, and to permit persons to whom the
+  Software is furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in
+  all copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+  DEALINGS IN THE SOFTWARE.
 
 
 perturbplan
@@ -43,12 +114,33 @@ PerturbPlan: `compute_power_posthoc`, `compute_distribution_teststat`,
   DEALINGS IN THE SOFTWARE.
 
 
+R (nmath)
+---------
+
+`src/pysceptre/assignment/hypergeom.py` ports `phyper`, `pdhyper`, `dhyper`,
+`dbinom_raw`, `stirlerr` and `bd0` from R's mathematical library, as of the
+R 4.5 branch, and uses them under GPL-3.
+
+  Upstream:  https://github.com/wch/r-source (branch R-4-5-branch), src/nmath
+  Authors:   Catherine Loader (dhyper, dbinom_raw, stirlerr, bd0); Morten
+             Welinder (the phyper algorithm, PR#6772; log1p and pow1p in
+             dbinom, PR#18642)
+  Copyright: The R Core Team (1999 to 2025); Ross Ihaka (1998); Morten
+             Welinder (2004); The R Foundation (2004, 2008)
+  Licence:   GPL-2-or-later ("either version 2 of the License, or (at your
+             option) any later version"); a copy is available at
+             https://www.R-project.org/Licenses/
+
+
 sceptre
 -------
 
 The statistical engine pysceptre ports is sceptre's, which is GPL-3 -- the
 same licence as this package, and the reason pysceptre is GPL-3.0-only rather
-than anything more permissive.
+than anything more permissive. `src/pysceptre/assignment/mixture.py` and
+`design.py` port its gRNA mixture assignment (`obtain_em_assignments`,
+`run_reduced_em_algo_cpp`, `compute_cell_covariates` and
+`auto_construct_formula_object`, version 0.10.3).
 
   Upstream:  https://github.com/Katsevich-Lab/sceptre
   Authors:   Timothy Barry, Eugene Katsevich
