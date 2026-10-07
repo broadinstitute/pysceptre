@@ -156,3 +156,87 @@ def lowmoi_ground_truth():
         plain.unlink()
     with gzip.open(LOWMOI_GROUND_TRUTH_PATH, "rt") as f:
         return json.load(f)
+
+
+def _r_has(package: str, timeout: int = 60) -> bool:
+    try:
+        result = subprocess.run(
+            ["Rscript", "-e", f"library({package})"],
+            capture_output=True,
+            timeout=timeout,
+        )
+        return result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+def _dump_gzipped(dump_script: Path, gz_path: Path) -> None:
+    plain = gz_path.with_suffix("")
+    subprocess.run(["Rscript", str(dump_script), str(plain)], check=True)
+    # mtime=0, so regenerating the same JSON gives the same bytes.
+    with open(plain, "rb") as fin, open(gz_path, "wb") as raw:
+        with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as fout:
+            shutil.copyfileobj(fin, fout)
+    plain.unlink()
+
+
+FISHASH_GROUND_TRUTH_PATH = VALIDATION_DIR / "fishash_ground_truth.json.gz"
+FISHASH_DUMP_SCRIPT = VALIDATION_DIR.parent.parent / "scripts" / "dump_fishash_ground_truth.R"
+
+
+@pytest.fixture(scope="session")
+def fishash_ground_truth():
+    """fishash's own numbers for the port in `pysceptre.assignment`, on synthetic data.
+
+    Committed gzipped and regenerated only if missing, like `lowmoi_ground_truth`; delete it if
+    you change `scripts/dump_fishash_ground_truth.R` (a test compares the md5 it records).
+    """
+    if not FISHASH_GROUND_TRUTH_PATH.exists():
+        if not _r_has("fishash"):
+            pytest.skip("R/fishash not available and no cached fishash_ground_truth.json.gz")
+        _dump_gzipped(FISHASH_DUMP_SCRIPT, FISHASH_GROUND_TRUTH_PATH)
+    with gzip.open(FISHASH_GROUND_TRUTH_PATH, "rt") as f:
+        return json.load(f)
+
+
+@pytest.fixture(params=["numba", "numpy"])
+def assignment_kernel(request, monkeypatch):
+    """Run a test once on the numba kernels and once on the numpy fallback.
+
+    On the numpy pass the jitted entry points are replaced by functions that raise, so a test
+    that passes there really ran the fallback.
+    """
+    from pysceptre.assignment import hypergeom, mixture
+
+    if request.param == "numba":
+        if not (hypergeom._HAVE_NUMBA and mixture._HAVE_NUMBA):
+            pytest.skip("numba is not installed")
+        return request.param
+
+    def _forbidden(*args, **kwargs):
+        raise AssertionError("a numba kernel ran on the numpy path")
+
+    monkeypatch.setattr(hypergeom, "_HAVE_NUMBA", False)
+    monkeypatch.setattr(hypergeom, "_log_phyper_loop", _forbidden)
+    monkeypatch.setattr(mixture, "_HAVE_NUMBA", False)
+    monkeypatch.setattr(mixture, "_reduced_em_jit", _forbidden)
+    return request.param
+
+
+MIXTURE_GROUND_TRUTH_PATH = VALIDATION_DIR / "mixture_ground_truth.json.gz"
+MIXTURE_DUMP_SCRIPT = VALIDATION_DIR.parent.parent / "scripts" / "dump_mixture_ground_truth.R"
+
+
+@pytest.fixture(scope="session")
+def mixture_ground_truth():
+    """sceptre 0.10.3's mixture assignment on synthetic gRNA rows, internals included.
+
+    Committed gzipped and regenerated only if missing; delete it if you change
+    `scripts/dump_mixture_ground_truth.R` (a test compares the md5 it records).
+    """
+    if not MIXTURE_GROUND_TRUTH_PATH.exists():
+        if not _r_sceptre_available():
+            pytest.skip("R/sceptre not available and no cached mixture_ground_truth.json.gz")
+        _dump_gzipped(MIXTURE_DUMP_SCRIPT, MIXTURE_GROUND_TRUTH_PATH)
+    with gzip.open(MIXTURE_GROUND_TRUTH_PATH, "rt") as f:
+        return json.load(f)
