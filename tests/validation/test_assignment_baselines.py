@@ -297,6 +297,79 @@ def test_oracle_cut_calls_each_guides_true_count():
     assert called[0] == 0 and calls.thresholds[0] == values[0].max()
 
 
+def test_guides_without_counts_are_dropped_and_put_back_empty():
+    """Dropping the no-count guides changes no per-guide call; they come back with none."""
+    rng = np.random.default_rng(13)
+    counts = rng.poisson(0.4, size=(9, 50)).astype(np.float64)
+    counts[[0, 4, 8]] = 0.0
+    coo = sparse.coo_matrix(counts)
+    c = sparse.csr_matrix(
+        (np.append(coo.data, 0.0), (np.append(coo.row, 4), np.append(coo.col, 3))),
+        shape=counts.shape,
+    )
+    assert c[4].nnz == 1  # a stored zero is not a count
+    keep = eval_lib.guides_with_counts(c)
+    assert keep.dtype == np.int64
+    assert np.array_equal(keep, np.flatnonzero(counts.sum(axis=1) > 0))
+
+    sub = eval_lib.call_q95(eval_lib.norm_raw(c[keep]), q=0.9)
+    full = eval_lib.expand_guides(sub, keep, counts.shape[0])
+    whole = eval_lib.call_q95(eval_lib.norm_raw(c), q=0.9)
+    dropped = np.setdiff1d(np.arange(counts.shape[0]), keep)
+    assert full.assigned.shape == counts.shape
+    assert np.array_equal(full.assigned.toarray(), whole.assigned.toarray())
+    assert full.assigned[dropped].nnz == 0
+    assert np.array_equal(full.thresholds[keep], sub.thresholds)
+    assert np.isnan(full.thresholds[dropped]).all()
+    assert full.fitted[keep].all() and not full.fitted[dropped].any()
+    assert full.converged is None
+
+    fitted = eval_lib.Calls(
+        assigned=sub.assigned,
+        thresholds=sub.thresholds,
+        fitted=np.ones(keep.size, dtype=bool),
+        converged=np.ones(keep.size, dtype=bool),
+    )
+    back = eval_lib.expand_guides(fitted, keep, counts.shape[0])
+    assert back.converged[keep].all() and not back.converged[dropped].any()
+
+    for bad in (keep[:-1], keep[::-1], keep + counts.shape[0]):
+        with pytest.raises(ValueError):
+            eval_lib.expand_guides(sub, bad, counts.shape[0])
+
+
+def test_call_max_is_each_cells_argmax_and_ignores_per_cell_scaling():
+    """The top guide per cell, first on ties, none for an empty cell; per-cell scaling is moot."""
+    rng = np.random.default_rng(14)
+    counts = rng.poisson(0.8, size=(7, 60)).astype(np.float64)
+    counts[:, 5] = 0.0  # an empty cell
+    counts[[2, 4], 9] = 6.0  # a tie for the top: guide 2 wins
+    counts[[0, 1, 3, 5, 6], 9] = 1.0
+    c = sparse.csr_matrix(counts)
+    got = eval_lib.call_max(eval_lib.norm_raw(c))
+    occupied = counts.sum(axis=0) > 0
+    expected = np.zeros_like(counts, dtype=bool)
+    top = np.argmax(counts, axis=0)
+    expected[top[occupied], np.flatnonzero(occupied)] = True
+    assert np.array_equal(got.assigned.toarray(), expected)
+    assert got.assigned[:, 5].nnz == 0 and got.assigned[2, 9] and not got.assigned[4, 9]
+    assert np.isnan(got.thresholds).all() and got.fitted.all()
+
+    lab_top = eval_lib.cmo_clr_q95(c)["top_idx"]
+    assert np.array_equal(lab_top[occupied], top[occupied])
+    sizes = rng.uniform(0.5, 3.0, size=counts.shape[1])
+    for values in (
+        eval_lib.norm_clr_cell(c),
+        eval_lib.norm_depth(c),
+        eval_lib.norm_noise_size(c, sizes),
+    ):
+        same = eval_lib.call_max(values).assigned
+        assert (same != got.assigned).nnz == 0
+
+    with pytest.raises(ValueError):
+        eval_lib.call_max(sparse.csr_matrix(-np.ones((2, 3))))
+
+
 def dense_confusion(est: np.ndarray, true: np.ndarray, counts: np.ndarray) -> dict:
     """R's get_confusion on dense matrices, both subsets."""
 
@@ -563,3 +636,50 @@ def test_crispat_fit_em_with_nonzero_raises(crispat_gauss):
     adata = crispat_adata(gmm_counts())
     with pytest.raises(ValueError, match="Expected 2D array, got 1D array"):
         crispat_gauss.fit_em("feature_1", adata, nonzero=True)
+
+
+# ---------------------------------------------------------------------------------------------
+# The lab's per-tag Gaussian mixture (McGinnis CMO notebook), verbatim
+# ---------------------------------------------------------------------------------------------
+
+
+def lab_find_cmo_thresholds(clr, np):
+    """The lab's `find_cmo_thresholds`, verbatim but for its explanatory comment."""
+    positive_posterior_cutoff = 0.9999
+
+    from sklearn.mixture import GaussianMixture
+
+    def _gmm_fit_column(values):
+        _gmm = GaussianMixture(n_components=2, random_state=0, n_init=3)
+        _gmm.fit(values.reshape(-1, 1))
+        _high = int(np.argmax(_gmm.means_.flatten()))
+        _probs_high = _gmm.predict_proba(values.reshape(-1, 1))[:, _high]
+        _is_positive = _probs_high > positive_posterior_cutoff
+        _grid = np.linspace(values.min(), values.max(), 2000)
+        _grid_probs_high = _gmm.predict_proba(_grid.reshape(-1, 1))[:, _high]
+        _crossed = np.flatnonzero(_grid_probs_high >= positive_posterior_cutoff)
+        _boundary = _grid[_crossed[0]] if len(_crossed) else values.max()
+        return _is_positive, _boundary
+
+    _gmm_results = [_gmm_fit_column(clr[:, _col]) for _col in range(clr.shape[1])]
+    positive = np.column_stack([_r[0] for _r in _gmm_results])
+    thresholds = np.array([_r[1] for _r in _gmm_results])
+    n_pos = positive.sum(axis=1)
+    return n_pos, positive, thresholds
+
+
+def test_call_gmm_lab_is_the_lab_code():
+    pytest.importorskip("sklearn")
+    from threadpoolctl import threadpool_limits
+
+    rng = np.random.default_rng(11)
+    counts = rng.poisson(0.4, size=(12, 600)).astype(np.float64)
+    counts[np.arange(12), rng.integers(0, 600, 12)] += 30
+    counts[3] = 0.0
+    clr = eval_lib.cmo_clr_q95(sparse.csr_matrix(counts))["clr"]
+    dense = clr.T.toarray(order="C")
+    with threadpool_limits(limits=1, user_api="openmp"):
+        _, positive, thresholds = lab_find_cmo_thresholds(dense, np)
+    got = eval_lib.call_gmm_lab(clr)
+    np.testing.assert_array_equal(got.assigned.T.toarray(), positive)
+    np.testing.assert_array_equal(got.thresholds, thresholds)

@@ -28,10 +28,14 @@ __all__ = [
     "Calls",
     "Dataset",
     "call_gmm",
+    "call_gmm_lab",
+    "call_max",
     "call_q95",
     "call_q_oracle",
     "cmo_clr_q95",
     "confusion",
+    "expand_guides",
+    "guides_with_counts",
     "load_assigned",
     "load_dataset",
     "mean_infections",
@@ -76,8 +80,8 @@ class Calls:
         assigned: `(n_guides, n_cells)` CSR bool, True where the guide is called in the cell.
         thresholds: `(n_guides,)` float64 per-guide cut, a value being called when strictly
             above it; NaN for `call_gmm`, which has no cut on the value scale.
-        fitted: `(n_guides,)` bool; False where `call_gmm` skipped a guide (and called nothing).
-            All True for the quantile callers.
+        fitted: `(n_guides,)` bool; False where `call_gmm` skipped a guide (and called nothing),
+            or where `expand_guides` put back a guide the caller never saw. Otherwise True.
         converged: `call_gmm` only, `(n_guides,)` bool: scikit-learn's `converged_` for each
             fitted guide, False where none was fitted. None for the quantile callers.
     """
@@ -678,6 +682,167 @@ def call_gmm(values, *, nonzero: bool = True, random_state: int = 0) -> Calls:
     return Calls(
         assigned=assigned,
         thresholds=np.full(n_guides, np.nan),
+        fitted=fitted,
+        converged=converged,
+    )
+
+
+def call_gmm_lab(
+    values, *, cutoff: float = 0.9999, n_init: int = 3, random_state: int = 0
+) -> Calls:
+    """The lab's per-tag Gaussian mixture caller. Orientation: guides x cells.
+
+    The lab's `find_cmo_thresholds` (McGinnis CMO notebook), guide by guide: scikit-learn's
+    `GaussianMixture(n_components=2, random_state=0, n_init=3)` (full covariance, the default)
+    is fitted to the guide's values over all cells, zeros included, as a `(n_cells, 1)` float64
+    column in cell order; a cell is called when its posterior for the component with the higher
+    mean is > `cutoff` (the lab's 0.9999). The threshold reported per guide is the lab's display
+    value, the first of 2,000 grid points between the guide's minimum and maximum whose posterior
+    reaches the cutoff (its maximum if none does); calls never use it. Fits run with one OpenMP
+    thread, so the result does not depend on the core count.
+
+    Args:
+        values: `(n_guides, n_cells)` normalized values (the lab feeds its per-cell CLR).
+        cutoff: Posterior a cell needs to be called.
+        n_init: Passed to `GaussianMixture`.
+        random_state: Passed to `GaussianMixture`.
+
+    Returns:
+        `Calls` with `(n_guides, n_cells)` CSR bool `assigned`, the display thresholds, and
+        per-guide `fitted` (always True) and `converged`.
+    """
+    import warnings
+
+    from sklearn.mixture import GaussianMixture
+    from threadpoolctl import threadpool_limits
+
+    v = _canonical_csr(values, "values")
+    n_guides, n_cells = v.shape
+    thresholds = np.empty(n_guides)
+    converged = np.zeros(n_guides, dtype=bool)
+    hit_guides: list[np.ndarray] = []
+    hit_cells: list[np.ndarray] = []
+    with threadpool_limits(limits=1, user_api="openmp"), warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        for g in range(n_guides):
+            col = v[g].toarray(order="C").reshape(-1)
+            gmm = GaussianMixture(n_components=2, random_state=random_state, n_init=n_init)
+            gmm.fit(col.reshape(-1, 1))
+            high = int(np.argmax(gmm.means_.flatten()))
+            probs_high = gmm.predict_proba(col.reshape(-1, 1))[:, high]
+            called = np.flatnonzero(probs_high > cutoff)
+            grid = np.linspace(col.min(), col.max(), 2000)
+            grid_probs = gmm.predict_proba(grid.reshape(-1, 1))[:, high]
+            crossed = np.flatnonzero(grid_probs >= cutoff)
+            thresholds[g] = grid[crossed[0]] if len(crossed) else col.max()
+            converged[g] = bool(gmm.converged_)
+            hit_guides.append(np.full(called.size, g, dtype=np.int64))
+            hit_cells.append(called.astype(np.int64))
+    assigned = _bool_csr(np.concatenate(hit_guides), np.concatenate(hit_cells), v.shape)
+    return Calls(
+        assigned=assigned,
+        thresholds=thresholds,
+        fitted=np.ones(n_guides, dtype=bool),
+        converged=converged,
+    )
+
+
+def call_max(values) -> Calls:
+    """Call each cell's top guide. Orientation: guides x cells.
+
+    In every cell with a nonzero value, the guide with the largest value is called, the first
+    in guide order on a tie (numpy's `argmax`, the lab's `top_idx`); a cell with no nonzero
+    value gets no call. A normalization that divides each cell by one number (`clr_cell`,
+    `depth`, `noise_size`) leaves every cell's top guide unchanged, so those give the calls of
+    `raw`; a per-guide one (`clr_guide`) can change it.
+
+    Args:
+        values: `(n_guides, n_cells)` non-negative normalized values, zero where the count is.
+
+    Returns:
+        `Calls` with `(n_guides, n_cells)` CSR bool `assigned`, at most one call per cell, NaN
+        thresholds (there is no per-guide cut) and `fitted` all True.
+
+    Raises:
+        ValueError: `values` has a negative entry.
+    """
+    v = _canonical_csr(values, "values")
+    if np.any(v.data < 0):
+        raise ValueError("values has negative entries; the top guide is taken over values >= 0")
+    c = v.tocsc()
+    c.sort_indices()
+    n_guides, n_cells = c.shape
+    per_cell = np.diff(c.indptr)
+    col = np.repeat(np.arange(n_cells), per_cell)
+    cell_max = np.zeros(n_cells)
+    occupied = np.flatnonzero(per_cell > 0)
+    if occupied.size:
+        cell_max[occupied] = np.maximum.reduceat(c.data, c.indptr[occupied])
+    at_max = np.flatnonzero(c.data == cell_max[col])
+    cells, first = np.unique(col[at_max], return_index=True)
+    guides = c.indices[at_max[first]]
+    return Calls(
+        assigned=_bool_csr(guides, cells, v.shape),
+        thresholds=np.full(n_guides, np.nan),
+        fitted=np.ones(n_guides, dtype=bool),
+    )
+
+
+# ---------------------------------------------------------------------------------------------
+# Guides with no counts
+
+
+def guides_with_counts(counts) -> np.ndarray:
+    """The guides with at least one nonzero count. Orientation: guides x cells.
+
+    A guide with no count in any cell is removed before calling, as an analysis of a real
+    screen would remove it: nothing can be called for it, and a per-guide fit to an all-zero
+    row is degenerate (the lab's Gaussian mixture calls every cell of one).
+
+    Args:
+        counts: `(n_guides, n_cells)` non-negative counts.
+
+    Returns:
+        `(n_kept,)` int64 row indices, ascending.
+    """
+    c = _counts_csr(counts)
+    return np.flatnonzero(np.diff(c.indptr) > 0).astype(np.int64)
+
+
+def expand_guides(calls: Calls, keep, n_guides: int) -> Calls:
+    """Put calls made on some of the guides back on all `n_guides` rows.
+
+    Args:
+        calls: A caller's result on the `(len(keep), n_cells)` matrix of the kept guides.
+        keep: `(n_kept,)` row indices of the kept guides in the full matrix, strictly ascending.
+        n_guides: Rows of the full matrix.
+
+    Returns:
+        `Calls` on `(n_guides, n_cells)`. A guide not in `keep` has no call, a NaN threshold,
+        `fitted` False and, when `calls.converged` is set, `converged` False.
+
+    Raises:
+        ValueError: `keep` does not have one index per row of `calls`, is not strictly
+            ascending, or falls outside `[0, n_guides)`.
+    """
+    keep = np.asarray(keep, dtype=np.int64)
+    a = calls.assigned.tocoo()
+    if keep.ndim != 1 or keep.size != a.shape[0]:
+        raise ValueError(f"keep has {keep.size} indices but the calls have {a.shape[0]} rows")
+    if keep.size and (np.any(np.diff(keep) <= 0) or keep[0] < 0 or keep[-1] >= n_guides):
+        raise ValueError("keep must be strictly ascending row indices in [0, n_guides)")
+    shape = (int(n_guides), a.shape[1])
+    thresholds = np.full(shape[0], np.nan)
+    thresholds[keep] = calls.thresholds
+    fitted = np.zeros(shape[0], dtype=bool)
+    fitted[keep] = calls.fitted
+    converged = None
+    if calls.converged is not None:
+        converged = np.zeros(shape[0], dtype=bool)
+        converged[keep] = calls.converged
+    return Calls(
+        assigned=_bool_csr(keep[a.row], a.col, shape),
+        thresholds=thresholds,
         fitted=fitted,
         converged=converged,
     )

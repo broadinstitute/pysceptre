@@ -49,8 +49,8 @@ RUNS = {
     "py_mixture_prob0.8": ("sceptre mixture (Python)", OKABE_ITO["vermillion"], "-"),
     "r_sceptre_mixture": ("sceptre mixture (R)", OKABE_ITO["vermillion"], "--"),
     "crispat_gauss": ("crispat Gaussian mixture", OKABE_ITO["bluish_green"], "-"),
-    "py_gmm_raw": ("per-guide GMM", OKABE_ITO["reddish_purple"], "-"),
-    "py_cmo_clr_q95": ("CMO CLR + 95th percentile", OKABE_ITO["orange"], "-"),
+    "py_grid__clr_cell__gmm_lab": ("lab CLR + Gaussian mixture", OKABE_ITO["reddish_purple"], "-"),
+    "py_grid__clr_cell__q99": ("lab CLR + 99th percentile", OKABE_ITO["orange"], "-"),
 }
 
 
