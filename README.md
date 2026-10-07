@@ -725,12 +725,16 @@ adjustment over the union each time.
   A low-MOI analysis needs each cell to carry at most one gRNA, which sceptre's
   QC enforces and pysceptre can only partly check -- see
   [Low MOI](https://github.com/broadinstitute/pysceptre/blob/main/README.md#low-moi).
-- **The CRT is the validated resampling mechanism; permutations are
-  implemented but not validated against R.**
-  `resampling_mechanism="permutations"` works and is exercised end to end, but
-  its tests check internal consistency, R's `B3` sizing rule and usability --
-  not value-for-value agreement with R, which the CRT path does check. Use it
-  knowing that, and don't report a permutation result as R-validated.
+- **Both resampling mechanisms are validated against R, in different ways.**
+  Permutation p-values are checked value for value on R's own draws, which a
+  test-only replica of R's two permutation samplers replays, under both
+  control groups. R's CRT draws are not replicated, so the CRT is checked
+  exactly on everything deterministic and on its p-values in distribution.
+  Run normally, pysceptre draws with numpy rather than R's generator, so a
+  result from either mechanism agrees with R in distribution, not draw for
+  draw -- see
+  [Validation](https://github.com/broadinstitute/pysceptre/blob/main/README.md#validation),
+  items 5 and 6.
 - **`assign_grnas()`: all three of sceptre's methods. No `run_qc()`**, with
   one carve-out: the calibration and power checks apply the *pairwise*
   nonzero-count thresholds, because they build or receive their own pairs and
