@@ -73,14 +73,24 @@ against.
 
 ## Assigning gRNAs to cells
 
-The analyses take each target's cells as given. `assign_grnas_mixture` computes
-them from raw gRNA UMI counts with sceptre's mixture method, validated against
-sceptre's own; `assign_grnas_fishash` does it with fishash's one-sided Fisher
-test, which is not sceptre's and is validated against fishash's R.
-`pysceptre.assignment.cells_by_target` turns either result into the
-`grna_target_cells` and `ntc_grna_cells` the analyses take. Read
-[Design decisions](design.md#grna-assignment) for what each method normalizes
-for.
+The analyses take each target's cells as given. `assign_grnas` computes them
+from raw gRNA UMI counts, like sceptre's function of the same name, with one of
+four methods: sceptre's mixture, thresholding and maximum methods, each
+validated against sceptre's own, or fishash's one-sided Fisher test, which is
+not sceptre's and is validated against fishash's R. Left at its default it
+takes sceptre's choice, the maximum method in low MOI and the mixture in high
+MOI. Each method is also a function of its own: `assign_grnas_mixture`,
+`assign_grnas_thresholding`, `assign_grnas_maximum` and `assign_grnas_fishash`.
+`pysceptre.assignment.cells_by_target` turns any result into the
+`grna_target_cells` and `ntc_grna_cells` the analyses take.
+
+In low MOI, sceptre's QC then removes cells, and that removal is left to you:
+a maximum assignment returns the cells it flags, and after any other method
+`pysceptre.assignment.cells_w_zero_or_twoplus_grnas` lists the cells assigned
+no gRNA or two or more. Read [Design decisions](design.md#grna-assignment) for
+what each method normalizes for, and
+[Thresholding and maximum](design.md#thresholding-and-maximum) for those two
+methods' edge cases.
 
 ## If a design matrix is refused
 

@@ -7,9 +7,9 @@ analysis for single-cell CRISPR screens, for **high- and low-MOI** data: the
 randomization test) or **permutation** resampling.
 
 It covers three of sceptre's analysis steps -- the **discovery analysis**, the
-**calibration check** and the **power check** -- plus sceptre's **mixture gRNA
-assignment**, and is *not* a general reimplementation: the other assignment
-methods, cell-level QC and R's formula DSL stay in R.
+**calibration check** and the **power check** -- plus sceptre's **gRNA
+assignment** (its mixture, thresholding and maximum methods), and is *not* a
+general reimplementation: cell-level QC and R's formula DSL stay in R.
 Targeting the statistical engine is what lets it batch the linear-algebra work
 sceptre does per-gene/per-target in R/C++ loops into vectorized numpy calls,
 cutting real-dataset runtimes from hours to tens of minutes. See
@@ -147,7 +147,7 @@ run_discovery_analysis(
 | `gene_ids` | `list[str]` | Row labels for `response_matrix`, in the same order as its rows. Matched against `pairs['response_id']`. |
 | `covariate_matrix` | `(n_cells, p)` `ndarray` | Already formula-expanded numeric design matrix (intercept column, `log(umis)`, batch dummies, etc. -- whatever R's `model.matrix()` would have produced). `pysceptre` does not parse an R-style formula DSL; build this matrix yourself, or extract it directly from an existing `sceptre_object`'s `@covariate_matrix` slot. |
 | `grna_target_cells` | `dict[str, np.ndarray]` | Maps each gRNA target to the **0-based** indices (into `covariate_matrix`'s cell axis) of cells treated with that target. This is the "union" grna-integration-strategy convention: one entry per target, not per individual gRNA. |
-| `pairs` | `pd.DataFrame` with columns `response_id`, `grna_target` | The QC-passed (gene, target) pairs to test. `pysceptre` does not run `run_qc()` -- feed it pairs that have already passed QC upstream. Cell sets can come from `assign_grnas_mixture` or `assign_grnas_fishash` through `pysceptre.assignment.cells_by_target`, or from R. |
+| `pairs` | `pd.DataFrame` with columns `response_id`, `grna_target` | The QC-passed (gene, target) pairs to test. `pysceptre` does not run `run_qc()` -- feed it pairs that have already passed QC upstream. Cell sets can come from `assign_grnas`, with any of its methods, through `pysceptre.assignment.cells_by_target`, or from R. |
 | `side` | `"left"` \| `"both"` \| `"right"` | Test sidedness, matching sceptre's own convention. Use `"left"` for expected-repression screens (e.g. CRISPRi enhancer knockdown), `"both"` for a two-sided test. |
 | `moi` | `"high"` \| `"low"` | sceptre's `import_data(moi=)`. It sets the defaults of `control_group` and `resampling_mechanism` as R's `set_analysis_parameters` does -- the complement and the CRT in high MOI, the NT cells and permutations in low MOI -- and it is the only way to reach the NT cells. See [Low MOI](#low-moi). Default `"high"`. |
 | `control_group` | `None` \| `"complement"` \| `"nt_cells"` | Which cells a target's cells are compared with. `None` takes the MOI's default. `"complement"` is every other cell. `"nt_cells"`, low MOI only, is the cells carrying a non-targeting gRNA; the gene's GLM is then refit for every pair, on that target's cells and the NT cells, as R does. |
@@ -437,6 +437,31 @@ well-expressed genes are called more often, and its intervals are a bootstrap
 over elements. What the result means and what it has been checked against is in
 [Design decisions](https://broadinstitute.github.io/pysceptre/design/#specificity-check).
 
+### `pysceptre.assign_grnas`
+
+One entry point for every assignment method, like sceptre's `assign_grnas()`.
+Left at `method="default"` it takes sceptre's default for the screen's MOI,
+the maximum method in low MOI and the mixture in high MOI, so it needs `moi`.
+`method` can also name any of `pysceptre.assignment.ASSIGNMENT_METHODS`:
+`"mixture"`, `"thresholding"`, `"maximum"` and, not from sceptre, `"fishash"`.
+Each method's options pass through under its own function's keyword names.
+
+```python
+from pysceptre import assign_grnas
+
+res = assign_grnas(grna_counts, grna_ids, moi="low")                       # sceptre's default: "maximum"
+res = assign_grnas(grna_counts, grna_ids, moi="high", covariate_matrix=X)  # sceptre's default: "mixture"; X as below
+res = assign_grnas(grna_counts, grna_ids, method="thresholding", threshold=3)
+```
+
+| Argument | Notes |
+|---|---|
+| `method` | `"default"` (the default) or one of `ASSIGNMENT_METHODS`. |
+| `moi` | `"low"` or `"high"`. Required by `"default"`. `"maximum"` is refused for a high-MOI screen, as in sceptre. |
+| `covariate_matrix` | The mixture's design; `mixture_design_matrix` builds sceptre's default (below). Required by `"mixture"` and refused by every other method. |
+| `**hyperparameters` | The chosen function's keyword options, such as `threshold` for `"thresholding"`. One it does not take raises `TypeError`. |
+| returns | That method's result: a `MixtureResult`, `ThresholdingResult`, `MaximumResult` or `FishashResult`. |
+
 ### `pysceptre.assign_grnas_mixture`
 
 sceptre's mixture gRNA assignment, `assign_grnas(method = "mixture")`, from
@@ -467,6 +492,53 @@ grna_target_cells, ntc_grna_cells = cells_by_target(
 | `grna_matrix` | Integer UMI counts, gRNAs as rows. Non-integer values are refused. |
 | returns | A `MixtureResult`: `assigned` (CSR, gRNAs x cells), the posteriors, and a `fits` table recording each gRNA's path. |
 
+### `pysceptre.assign_grnas_thresholding`
+
+sceptre's thresholding assignment, `assign_grnas(method = "thresholding")`: a
+gRNA is assigned to every cell in which its UMI count is at least `threshold`,
+so a cell can be assigned none, one or several. Validated against sceptre
+0.10.3's own output, value for value.
+
+```python
+from pysceptre import assign_grnas_thresholding
+
+res = assign_grnas_thresholding(grna_counts, grna_ids)   # threshold=5
+res.assigned          # (n_grnas, n_cells) boolean CSR
+```
+
+| Argument | Notes |
+|---|---|
+| `threshold` | The count a gRNA needs in a cell, reached rather than exceeded (`>=`). At least 1, as sceptre requires. Default 5. |
+| returns | A `ThresholdingResult`: `assigned`, the `threshold` applied and the `grna_ids`. |
+
+### `pysceptre.assign_grnas_maximum`
+
+sceptre's maximum assignment, `assign_grnas(method = "maximum")`, which sceptre
+allows in low MOI only: every cell is assigned the gRNA with the most UMIs in
+it, the first in row order on a tie. A cell is flagged when that gRNA holds at
+most `umi_fraction_threshold` of the cell's gRNA UMIs, or when the cell has
+fewer than `min_grna_n_umis_threshold` gRNA UMIs; sceptre's low-MOI QC removes
+the flagged cells. Validated against sceptre 0.10.3's own output, value for
+value.
+
+```python
+from pysceptre import assign_grnas_maximum
+
+res = assign_grnas_maximum(grna_counts, grna_ids)   # umi_fraction_threshold=0.8, min_grna_n_umis_threshold=5
+res.assigned                        # (n_grnas, n_cells) boolean CSR, one gRNA per cell
+res.cells_w_zero_or_twoplus_grnas   # the flagged cells, 0-based and ascending
+```
+
+| Argument | Notes |
+|---|---|
+| `umi_fraction_threshold` | In (0, 1), as sceptre requires. Default 0.8. |
+| `min_grna_n_umis_threshold` | At least 0, as sceptre requires. Default 5. |
+| returns | A `MaximumResult`: `assigned`, `cells_w_zero_or_twoplus_grnas`, and per cell the top gRNA's row (`max_grna`), its share of the cell's gRNA UMIs (`max_grna_frac_umis`) and the cell's gRNA UMIs (`grna_n_umis`). |
+
+A cell with no gRNA UMIs is still assigned one, the first gRNA, with a NaN
+share, because sceptre does the same; the UMI rule is what flags it, at any
+`min_grna_n_umis_threshold` above 0.
+
 ### `pysceptre.assign_grnas_fishash`
 
 Not sceptre's: a port of
@@ -495,10 +567,17 @@ res.demux_type        # per cell: "singlet", "doublet" or "unknown"
 | `refit` | Maximum number of passes after the first (default 10), stopping early once the calls stop changing. `0` runs the plain Fisher test. |
 | `padj_method` | `"GS"` (default), `"BH"` or `"BY"`. |
 
+**In low MOI, sceptre's QC then removes cells, and pysceptre leaves that to
+you.** After a mixture, thresholding or fishash assignment the cells to remove
+are those assigned no gRNA or two or more, which
+`pysceptre.assignment.cells_w_zero_or_twoplus_grnas(res.assigned)` lists. A
+maximum assignment returns its own list, by the rules above, as
+`res.cells_w_zero_or_twoplus_grnas`.
+
 Read
 [Design decisions](https://broadinstitute.github.io/pysceptre/design/#grna-assignment)
-for what each method normalizes for, and what the validation against R does
-and does not establish.
+for what each method normalizes for, the edge cases of the thresholding and
+maximum ports, and what the validation against R does and does not establish.
 
 ### Lower-level building blocks
 
@@ -550,8 +629,11 @@ cells. The analysis assumes what sceptre's low-MOI QC guarantees: every cell
 carries at most one gRNA, because `run_qc` removes cells with zero or two or
 more. pysceptre does not run that QC, so it refuses what it can see breaking
 the assumption -- a cell under two NT gRNAs, or a tested target sharing a cell
-with the NT cells -- and those cells have to be removed upstream. A cell in
-two targets is accepted: one guide can belong to two overlapping elements.
+with the NT cells -- and those cells have to be removed upstream. If pysceptre
+made the assignment, `pysceptre.assignment.cells_w_zero_or_twoplus_grnas`, or a
+maximum assignment's field of that name, lists the cells sceptre's QC would
+remove. A cell in two targets is accepted: one guide can belong to two
+overlapping elements.
 
 **Each pair gets its own fit.** Against the NT cells a pair is tested on its
 target's cells together with the NT cells, so the gene's GLM is refit for every
@@ -649,18 +731,20 @@ adjustment over the union each time.
   its tests check internal consistency, R's `B3` sizing rule and usability --
   not value-for-value agreement with R, which the CRT path does check. Use it
   knowing that, and don't report a permutation result as R-validated.
-- **`assign_grnas()`: the mixture method only. No `run_qc()`**, with one
-  carve-out: the calibration and power checks apply the *pairwise*
+- **`assign_grnas()`: all three of sceptre's methods. No `run_qc()`**, with
+  one carve-out: the calibration and power checks apply the *pairwise*
   nonzero-count thresholds, because they build or receive their own pairs and
-  cannot select them otherwise. sceptre's thresholding and maximum assignment
-  methods are not ported, and cell-level and gRNA-level QC are still out of
+  cannot select them otherwise. The mixture, thresholding and maximum
+  assignment methods are ported; cell-level and gRNA-level QC are still out of
   scope, including low MOI's removal of cells with zero or two or more gRNAs.
+  pysceptre reports which cells those are (`cells_w_zero_or_twoplus_grnas`,
+  and a maximum assignment's field of that name) but never removes them.
   Feed `run_discovery_analysis` pairs that have already passed QC (e.g. from a
   real `sceptre_object`'s `@discovery_pairs_with_info`, filtered to
   `pass_qc == TRUE`).
 - **`assign_grnas_fishash` is not sceptre's.** It ports fishash 0.99.5, the
   version after the preprint's 0.3.0; the two differ only where 0.3.0 would
-  divide 0 by 0. Both assignment ports take raw integer counts, and the
+  divide 0 by 0. All four assignment methods take raw integer counts, and the
   `.h5mu` exports this repository builds carry 0/1 assignments rather than gRNA
   UMI counts, so they cannot feed them.
 - **No formula DSL.** `covariate_matrix` must already be a plain numeric

@@ -20,9 +20,35 @@ Notable changes per release. Dates are the release date.
   R's `phyper` (`assignment/hypergeom.py`, from R's nmath, GPL-2-or-later),
   with a numba kernel and a numpy fallback. Validated against fishash's own
   output pass by pass.
+- **`assign_grnas_thresholding`**, sceptre's thresholding assignment
+  (`assign_grnas(method = "thresholding")`): a gRNA is assigned to every cell
+  where its UMI count reaches `threshold` (default 5; `>=`, as in sceptre's
+  C++). Validated against sceptre 0.10.3's public `assign_grnas` value for
+  value.
+- **`assign_grnas_maximum`**, sceptre's maximum assignment
+  (`assign_grnas(method = "maximum")`, low MOI only): each cell is assigned its
+  gRNA with the most UMIs, the first on a tie, and the cells sceptre's low-MOI
+  QC removes come back as `cells_w_zero_or_twoplus_grnas`: those whose top
+  gRNA holds at most `umi_fraction_threshold` (default 0.8) of their gRNA UMIs,
+  or with fewer than `min_grna_n_umis_threshold` (default 5) gRNA UMIs. A cell
+  with no gRNA UMIs is assigned the first gRNA, as in sceptre, and the UMI rule
+  flags it at any threshold above 0. Validated against sceptre 0.10.3's public
+  `assign_grnas` value for value.
+- **`assign_grnas`**, one entry point like sceptre's: `method="default"` is
+  sceptre's rule, `"maximum"` for `moi="low"` and `"mixture"` for
+  `moi="high"`, and `method` can name any of `ASSIGNMENT_METHODS`
+  (`"mixture"`, `"thresholding"`, `"maximum"`, `"fishash"`), each method's
+  options passed through by keyword. It and the two ports above are importable
+  from the top level, as the mixture and fishash ports are.
 - **`pysceptre.assignment.cells_by_grna` and `cells_by_target`**, which turn an
   assignment into the `grna_target_cells` and `ntc_grna_cells` the analyses
   take.
+- **`pysceptre.assignment.cells_w_zero_or_twoplus_grnas`**, sceptre's low-MOI
+  rule after a thresholding or mixture assignment
+  (`process_initial_assignment_list`): the cells assigned no gRNA, or two or
+  more. It departs from sceptre in one case: when no cell is assigned
+  anything, sceptre flags no cell as having zero gRNAs, and this flags every
+  cell.
 
 ### Changed
 

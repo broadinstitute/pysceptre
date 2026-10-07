@@ -310,16 +310,19 @@ skips `unique()` on a synthetic target's cells, and it counts a synthetic
 target's nonzero cells as a sum over its NT gRNAs rather than over their union.
 Neither can change anything once each cell carries at most one gRNA.
 
-Two things R's low MOI does are not here, because they are cell-level QC and
-`assign_grnas()`'s maximum method, both out of scope: assigning each cell its
-single strongest gRNA, and removing cells with zero or two or more gRNAs. The
-NT-cells analysis **relies** on that removal, and R's engine never checks it,
-since its QC guarantees it. pysceptre takes post-QC inputs and cannot, so it
-checks what it can see and refuses rather than guessing: a cell listed under
-two NT gRNAs, and a tested target sharing a cell with the NT cells. A cell in
-two targets is **not** refused. With a guide in two overlapping elements one
-gRNA legitimately puts a cell in both, and that changes nothing here, since
-each pair is tested on its own target's cells.
+R's low MOI does two things before the analysis: by default it assigns each
+cell its single strongest gRNA, `assign_grnas()`'s maximum method, and its QC
+removes cells with zero or two or more gRNAs. The first is ported. The second
+is cell-level QC and out of scope: `assign_grnas_maximum` and
+`cells_w_zero_or_twoplus_grnas` report the cells sceptre would remove (see
+[Thresholding and maximum](#thresholding-and-maximum)), but pysceptre never
+removes them. The NT-cells analysis **relies** on that removal, and R's engine
+never checks it, since its QC guarantees it. pysceptre takes post-QC inputs
+and cannot, so it checks what it can see and refuses rather than guessing: a
+cell listed under two NT gRNAs, and a tested target sharing a cell with the NT
+cells. A cell in two targets is **not** refused. With a guide in two
+overlapping elements one gRNA legitimately puts a cell in both, and that
+changes nothing here, since each pair is tested on its own target's cells.
 
 ### One fit per pair
 
@@ -1196,15 +1199,17 @@ the default cannot see.
 
 ## gRNA assignment
 
-`pysceptre.assignment` holds two ways of deciding which cells carry which
-gRNA. `assign_grnas_mixture` is sceptre's own mixture method, ported from
-sceptre 0.10.3. `assign_grnas_fishash` is not sceptre's: it ports fishash
-(jackkamm/fishash 0.99.5, commit 5eabd3c; MIT; Kamm, Yeung and Forrest,
-bioRxiv 10.64898/2026.01.22.701179), a one-sided Fisher test per (gRNA, cell).
-Both take raw integer UMI counts, gRNAs as rows and cells as columns, and both
-are validated against their R originals value for value on synthetic data.
-The notices for both, and for the part of R's mathematical library fishash
-needs, are in `THIRD_PARTY_LICENSES`.
+`pysceptre.assignment` holds four ways of deciding which cells carry which
+gRNA, all behind one entry point, `assign_grnas`, like sceptre's.
+`assign_grnas_mixture`, `assign_grnas_thresholding` and `assign_grnas_maximum`
+are sceptre's own three methods, ported from sceptre 0.10.3.
+`assign_grnas_fishash` is not sceptre's: it ports fishash (jackkamm/fishash
+0.99.5, commit 5eabd3c; MIT; Kamm, Yeung and Forrest, bioRxiv
+10.64898/2026.01.22.701179), a one-sided Fisher test per (gRNA, cell). All
+four take raw integer UMI counts, gRNAs as rows and cells as columns, and all
+four are validated against their R originals value for value on synthetic
+data. The notices for sceptre and fishash, and for the part of R's
+mathematical library fishash needs, are in `THIRD_PARTY_LICENSES`.
 
 fishash 0.99.5 is ported rather than 0.3.0, the version in the preprint's
 Table 1. The algorithm is the same except for commit ff4de6b, which changed
@@ -1343,9 +1348,66 @@ any formula sees them, so neither enters. `response_p_mito` is always left out.
 `design_from_covariates` applies the same rule to a covariate frame exported
 from R.
 
+### Thresholding and maximum
+
+`assign_grnas_thresholding` and `assign_grnas_maximum` port sceptre's two
+simpler methods. Neither fits anything, so agreeing with sceptre comes down to
+which side of each cut a value falls on, where a tie goes, and what happens to
+a cell with no gRNA UMIs. The rules below come from sceptre 0.10.3's R source
+and, where the decision is made in its C++ (`threshold_count_matrix`,
+`compute_cell_covariates_cpp`), from probing that code.
+
+**Thresholding is `>=`.** A gRNA is assigned to every cell in which its UMI
+count is at least `threshold` (default 5), as sceptre's
+`threshold_count_matrix` does. A `threshold` below 1 is refused, as sceptre
+refuses it. A cell can be assigned no gRNA, or several.
+
+**Maximum gives every cell exactly one gRNA**: the one with the most UMIs in
+it, the first in row order on a tie. The top gRNA and its share of the cell's
+gRNA UMIs are the two columns sceptre's `import_data` computes with
+`compute_cell_covariates`, `grna_feature_w_max_expression` and
+`grna_frac_umis_max_feature`, the ones the default assignment design leaves
+out (above).
+
+**A cell with no gRNA UMIs is assigned the first gRNA**, and its share is 0/0,
+NaN. R names the gRNA as `rownames(matrix_in)[out$max_feature + 1L]`, and
+`max_feature` is 0 for such a cell. The port keeps both, for parity with
+sceptre: what removes the cell is the UMI rule below, not its assignment.
+
+**Two rules flag a cell, and their union is `cells_w_zero_or_twoplus_grnas`**,
+the cells sceptre's low-MOI QC removes:
+
+- the top gRNA holds at most `umi_fraction_threshold` (default 0.8) of the
+  cell's gRNA UMIs: `max_grna_frac_umis <= umi_fraction_threshold`;
+- the cell has fewer than `min_grna_n_umis_threshold` (default 5) gRNA UMIs:
+  `grna_n_umis < min_grna_n_umis_threshold`.
+
+R selects the first set with `which()`, which drops the NaN, so the share rule
+never flags an empty cell; the UMI rule does, since 0 is below any positive
+threshold. At `min_grna_n_umis_threshold = 0`, which sceptre allows, neither
+rule flags it, and the empty cell keeps the first gRNA, in sceptre as here. The
+port returns the flagged cells and does not remove them.
+
+**What is refused, and the default.** sceptre refuses the maximum method for a
+high-MOI screen, a `umi_fraction_threshold` outside (0, 1) and a negative
+`min_grna_n_umis_threshold`, and so does the port. `assign_grnas_maximum`
+takes no `moi`, so the MOI check is in `assign_grnas`, which refuses
+`method="maximum"` with `moi="high"`. `method="default"` is sceptre's default,
+the maximum method for `moi="low"` and the mixture for `moi="high"`, so it
+needs `moi`.
+
+**After a thresholding or mixture assignment** sceptre's low-MOI rule is the
+one in `process_initial_assignment_list`: flag the cells assigned no gRNA, or
+two or more. `cells_w_zero_or_twoplus_grnas` ports it, and it applies
+unchanged to a fishash assignment. It departs from sceptre in one case, on
+purpose. When no cell is assigned anything, sceptre computes the zero-gRNA
+cells as `seq(1, n_cells)[-sort(unique(unlist(list)))]`, the index is empty,
+and negative indexing by an empty vector selects nothing, so no cell is
+flagged. The port flags every cell, since none carries a gRNA.
+
 ### Validated against R, and what that covers
 
-The fixtures (`scripts/dump_fishash_ground_truth.R`,
+The fishash and mixture fixtures (`scripts/dump_fishash_ground_truth.R`,
 `scripts/dump_mixture_ground_truth.R`) record R's internals pass by pass, and
 the tests feed R's own intermediate values back in so an error in one step
 cannot hide behind another:
@@ -1360,14 +1422,21 @@ cannot hide behind another:
   R's fitted means to 1e-9 for posteriors and 1e-12 for log-likelihoods, and
   the end-to-end assignments exactly.
 
-Each fixture keeps every compared quantity away from a decision boundary (log
+Both fixtures keep every compared quantity away from a decision boundary (log
 p at least 1e-6 from the cut; posteriors at least 1e-3 from 0.8), so any
 disagreement in a call is a defect rather than a last-bit difference.
+
+The thresholding and maximum methods are checked against sceptre 0.10.3's
+public `assign_grnas` instead: `scripts/dump_assignment_rules_ground_truth.R`
+runs it on synthetic counts with ties, empty cells and values on each cut, and
+`test_assignment_rules_vs_r.py` compares the ports with its output, recorded in
+`tests/validation/assignment_rules_ground_truth.json.gz`, value for value.
 
 ### What the assignment ports do not establish
 
 Agreement with R says the ports compute what fishash and sceptre compute, not
-that either assigns gRNAs well. Both are evaluated on simulated screens by the
-runners in `scripts/fishash_eval/`; the results belong with the manuscript,
-not here. Neither port reads anything but a count matrix: the `.h5mu` exports
-this repository builds hold 0/1 assignments, not gRNA UMI counts.
+that any of them assigns gRNAs well. fishash and the mixture are evaluated on
+simulated screens by the runners in `scripts/fishash_eval/`; the results
+belong with the manuscript, not here. No port reads anything but a count
+matrix: the `.h5mu` exports this repository builds hold 0/1 assignments, not
+gRNA UMI counts.

@@ -137,10 +137,16 @@ sceptre
 
 The statistical engine pysceptre ports is sceptre's, which is GPL-3 -- the
 same licence as this package, and the reason pysceptre is GPL-3.0-only rather
-than anything more permissive. `src/pysceptre/assignment/mixture.py` and
-`design.py` port its gRNA mixture assignment (`obtain_em_assignments`,
-`run_reduced_em_algo_cpp`, `compute_cell_covariates` and
-`auto_construct_formula_object`, version 0.10.3).
+than anything more permissive. Its gRNA assignment is ported from version
+0.10.3: `src/pysceptre/assignment/mixture.py` and `design.py` port the
+mixture method (`obtain_em_assignments`, `run_reduced_em_algo_cpp`,
+`compute_cell_covariates` and `auto_construct_formula_object`);
+`thresholding.py` and `maximum.py` the thresholding and maximum methods
+(`threshold_count_matrix`, and each cell's top gRNA and its share of the
+cell's gRNA UMIs as `compute_cell_covariates` computes them); `api.py` the
+`assign_grnas` entry point and its default method; and
+`cells_w_zero_or_twoplus_grnas` in `cells.py` the low-MOI rule of
+`process_initial_assignment_list`.
 
   Upstream:  https://github.com/Katsevich-Lab/sceptre
   Authors:   Timothy Barry, Eugene Katsevich

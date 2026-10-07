@@ -439,4 +439,4 @@ call on whether they are wanted.
 | `singleton` gRNA integration | `grna_integration_strategy` | Currently union-only. |
 | `permutations` mechanism | permutation resampling | Would make `B3=24999` meaningful. |
 | Covariate-matrix builder | `model.matrix()` equivalent | Explicitly out of scope today. |
-| gRNA assignment | `assign_grnas` | **STARTED.** The mixture method and, not from sceptre, fishash are ported and validated against their R; the thresholding and maximum methods are not. An evaluation against Gaussian mixtures and the lab's CMO procedure runs from `scripts/fishash_eval/`. |
+| gRNA assignment | `assign_grnas` | **DONE.** sceptre's three methods (mixture, thresholding, maximum) and, not from sceptre, fishash are ported and validated against their R, behind one `assign_grnas` entry point with sceptre's default. An evaluation against Gaussian mixtures and the lab's CMO procedure runs from `scripts/fishash_eval/`. |

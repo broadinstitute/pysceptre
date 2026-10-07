@@ -199,6 +199,29 @@ def fishash_ground_truth():
         return json.load(f)
 
 
+ASSIGNMENT_RULES_GROUND_TRUTH_PATH = VALIDATION_DIR / "assignment_rules_ground_truth.json.gz"
+ASSIGNMENT_RULES_DUMP_SCRIPT = (
+    VALIDATION_DIR.parent.parent / "scripts" / "dump_assignment_rules_ground_truth.R"
+)
+
+
+@pytest.fixture(scope="session")
+def assignment_rules_ground_truth():
+    """sceptre 0.10.3's thresholding and maximum assignment on synthetic gRNA counts.
+
+    Committed gzipped and regenerated only if missing; delete it if you change
+    `scripts/dump_assignment_rules_ground_truth.R` (a test compares the md5 it records).
+    """
+    if not ASSIGNMENT_RULES_GROUND_TRUTH_PATH.exists():
+        if not _r_sceptre_available():
+            pytest.skip(
+                "R/sceptre not available and no cached assignment_rules_ground_truth.json.gz"
+            )
+        _dump_gzipped(ASSIGNMENT_RULES_DUMP_SCRIPT, ASSIGNMENT_RULES_GROUND_TRUTH_PATH)
+    with gzip.open(ASSIGNMENT_RULES_GROUND_TRUTH_PATH, "rt") as f:
+        return json.load(f)
+
+
 @pytest.fixture(params=["numba", "numpy"])
 def assignment_kernel(request, monkeypatch):
     """Run a test once on the numba kernels and once on the numpy fallback.

@@ -10,7 +10,7 @@ from scipy import sparse
 
 from ._common import check_ids
 
-__all__ = ["cells_by_grna", "cells_by_target"]
+__all__ = ["cells_by_grna", "cells_by_target", "cells_w_zero_or_twoplus_grnas"]
 
 _NON_TARGETING = "non-targeting"
 
@@ -70,3 +70,19 @@ def cells_by_target(
             targeting.setdefault(target, []).append(cells)
     grna_target_cells = {t: np.unique(np.concatenate(parts)) for t, parts in targeting.items()}
     return grna_target_cells, ntc
+
+
+def cells_w_zero_or_twoplus_grnas(assigned: sparse.spmatrix | np.ndarray) -> np.ndarray:
+    """The cells sceptre's low-MOI QC removes after a thresholding, mixture or fishash assignment.
+
+    `assign_grnas_maximum` returns its own set, which follows other rules.
+
+    Args:
+        assigned: `(n_grnas, n_cells)` boolean matrix, scipy.sparse or dense.
+
+    Returns:
+        Ascending 0-based int64 indices of the cells assigned no gRNA, or two or more.
+    """
+    a = sparse.csc_matrix(assigned, dtype=bool)
+    a.eliminate_zeros()
+    return np.flatnonzero(np.diff(a.indptr) != 1).astype(np.int64)

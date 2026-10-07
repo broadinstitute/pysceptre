@@ -23,9 +23,10 @@ more than background, measured on tests between elements and genes on other
 chromosomes. It is not sceptre's either, and nothing external validates it:
 its reference is the analysis it was ported from.
 
-**`assign_grnas_mixture`** and **`assign_grnas_fishash`** assign gRNAs to
-cells from raw counts: the first is sceptre's mixture method, validated against
-sceptre; the second ports fishash, validated against fishash's R.
+**`assign_grnas`** assigns gRNAs to cells from raw counts, like sceptre's
+function of the same name: with sceptre's mixture, thresholding or maximum
+method, each validated against sceptre, or with fishash, which is not sceptre's
+and is validated against fishash's R.
 
 What is deliberately *not* implemented, and which paths are exercised rather
 than validated, is in [Scope and limitations](scope.md); read it before

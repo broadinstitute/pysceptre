@@ -1,7 +1,7 @@
 # API reference
 
-Generated from the source. Seven functions make up the public API, and all
-seven are importable from the top level (`from pysceptre import
+Generated from the source. Ten functions make up the public API, and all
+ten are importable from the top level (`from pysceptre import
 run_discovery_analysis`) as well as from their defining module.
 
 !!! note "Reading these signatures"
@@ -85,13 +85,26 @@ elements and genes on other chromosomes. Not from sceptre; see
 
 ## gRNA assignment
 
-Which cells carry which gRNA, from raw gRNA UMI counts. `assign_grnas_mixture`
-is sceptre's mixture method; `assign_grnas_fishash` is not sceptre's (a port of
-fishash). See [Design decisions](design.md#grna-assignment).
+Which cells carry which gRNA, from raw gRNA UMI counts. `assign_grnas` is the
+one entry point, like sceptre's, and runs any of the four methods in
+`pysceptre.assignment.ASSIGNMENT_METHODS`. `assign_grnas_mixture`,
+`assign_grnas_thresholding` and `assign_grnas_maximum` are sceptre's three
+methods; `assign_grnas_fishash` is not sceptre's (a port of fishash). See
+[Design decisions](design.md#grna-assignment).
+
+::: pysceptre.assignment.api.assign_grnas
 
 ::: pysceptre.assignment.mixture.assign_grnas_mixture
 
 ::: pysceptre.assignment.mixture.MixtureResult
+
+::: pysceptre.assignment.thresholding.assign_grnas_thresholding
+
+::: pysceptre.assignment.thresholding.ThresholdingResult
+
+::: pysceptre.assignment.maximum.assign_grnas_maximum
+
+::: pysceptre.assignment.maximum.MaximumResult
 
 ::: pysceptre.assignment.fishash.assign_grnas_fishash
 
@@ -112,6 +125,8 @@ fishash). See [Design decisions](design.md#grna-assignment).
 ::: pysceptre.assignment.cells.cells_by_grna
 
 ::: pysceptre.assignment.cells.cells_by_target
+
+::: pysceptre.assignment.cells.cells_w_zero_or_twoplus_grnas
 
 ## Lower-level building blocks
 

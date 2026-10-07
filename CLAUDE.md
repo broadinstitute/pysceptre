@@ -4,15 +4,15 @@ Standalone Python port of the statistical engine behind
 [`sceptre`](https://github.com/Katsevich-Lab/sceptre)'s discovery analysis for
 single-cell CRISPR screens.
 
-**Scope: sceptre's three analyses and its mixture gRNA assignment, plus three
+**Scope: sceptre's three analyses and its gRNA assignment, plus three
 things that are not sceptre's (an estimator, a check and fishash's gRNA
 assignment), not a general sceptre reimplementation.** The three analyses are
 discovery analysis, the calibration check and the power check, for high- and
 low-MOI screens: the complement and NT-cells control groups, with CRT
-(conditional randomization test) or permutation resampling. sceptre's other
-`assign_grnas()` methods (thresholding, maximum), cell-level `run_qc()` and R's
-formula DSL are deliberately out of scope -- see "Scope and limitations" in
-`README.md` before adding any of them.
+(conditional randomization test) or permutation resampling. The assignment is
+all three of sceptre's `assign_grnas()` methods (mixture, thresholding,
+maximum). Cell-level `run_qc()` and R's formula DSL are deliberately out of
+scope -- see "Scope and limitations" in `README.md` before adding either.
 
 **Two things that statement used to get wrong, and a reader should not have to
 discover by grepping.**
@@ -42,19 +42,29 @@ notebook on three screens; nothing outside it validates the method. The
 notebook's fingerprint check is deliberately left out. `docs/design.md`,
 "Specificity check", has the rest.
 
-`assignment/` is a **sixth**, and half of it is sceptre's. `assign_grnas_mixture`
-ports sceptre 0.10.3's `assign_grnas(method = "mixture")` and is validated
-against it value for value (`test_mixture_vs_r.py`). `assign_grnas_fishash`
-ports the R package fishash 0.99.5 (MIT; `THIRD_PARTY_LICENSES`), a one-sided
-Fisher test per (gRNA, cell), and its ground truth is fishash's own R
-(`test_fishash_vs_r.py`). Its p-values come from `assignment/hypergeom.py`, a
-port of R's `phyper` and the nmath functions under it (GPL-2-or-later): scipy's
-`hypergeom` rejects the non-integer margins the refit passes produce, which R
-rounds half to even. Both take raw integer counts only and refuse anything
-else. The mixture's Poisson fits pass `mu_floor` = machine epsilon to
-`glm/irls.py` (R's `glm.fit` floor); the discovery engine keeps the default
-1e-10 -- don't unify them, `docs/design.md`, "One Poisson GLM per gRNA", says
-why. The evaluation that motivated this (fishash against the mixture, Gaussian
+`assignment/` is a **sixth**, and most of it is sceptre's.
+`assign_grnas_mixture`, `assign_grnas_thresholding` and `assign_grnas_maximum`
+port sceptre 0.10.3's three `assign_grnas()` methods, `assign_grnas` its one
+entry point and default (maximum in low MOI, mixture in high), and
+`cells_w_zero_or_twoplus_grnas` its low-MOI rule after a thresholding or
+mixture assignment. The mixture is validated against sceptre value for value,
+internals included (`test_mixture_vs_r.py`); thresholding and maximum against
+its public `assign_grnas` (`test_assignment_rules_vs_r.py`, fixture from
+`scripts/dump_assignment_rules_ground_truth.R`). Two behaviours look like bugs
+and are not: a maximum assignment gives a cell with no gRNA UMIs the first
+gRNA, as sceptre does, and `cells_w_zero_or_twoplus_grnas` departs from sceptre
+in one case on purpose; `docs/design.md`, "Thresholding and maximum", has both.
+`assign_grnas_fishash` ports the R package fishash 0.99.5 (MIT;
+`THIRD_PARTY_LICENSES`), a one-sided Fisher test per (gRNA, cell), and its
+ground truth is fishash's own R (`test_fishash_vs_r.py`). Its p-values come
+from `assignment/hypergeom.py`, a port of R's `phyper` and the nmath functions
+under it (GPL-2-or-later): scipy's `hypergeom` rejects the non-integer margins
+the refit passes produce, which R rounds half to even. All four methods take
+raw integer counts only and refuse anything else. The mixture's Poisson fits
+pass `mu_floor` = machine epsilon to `glm/irls.py` (R's `glm.fit` floor); the
+discovery engine keeps the default 1e-10 -- don't unify them,
+`docs/design.md`, "One Poisson GLM per gRNA", says why. The evaluation that
+motivated this (fishash against the mixture, Gaussian
 mixtures and the lab's CMO procedure, on the fishash preprint's simulations)
 lives in `scripts/fishash_eval/`; its results belong to the manuscript.
 
@@ -98,10 +108,13 @@ src-layout -- the importable package lives under `src/`, so it is only on
   - `specificity/`      -- the specificity check: links above a background
                            measured across chromosomes. Tables in, tables out;
                            no count matrix.
-  - `assignment/`       -- gRNA-to-cell assignment: sceptre's mixture method
-                           (`mixture.py`, `design.py`) and, not from sceptre,
-                           fishash (`fishash.py`, with R's `phyper` in
-                           `hypergeom.py`). gRNAs x cells, sparse throughout.
+  - `assignment/`       -- gRNA-to-cell assignment: sceptre's three methods
+                           (the mixture in `mixture.py` and `design.py`,
+                           `thresholding.py`, `maximum.py`) and, not from
+                           sceptre, fishash (`fishash.py`, with R's `phyper`
+                           in `hypergeom.py`), all behind `assign_grnas` in
+                           `api.py`; `cells.py` turns an assignment into cell
+                           sets. gRNAs x cells, sparse throughout.
 - `tests/validation/`   -- the whole suite, in one place. **Most** files
                            compare against R ground truth rather than only
                            internal consistency, but not all:
@@ -334,15 +347,20 @@ Python 3.10+ (`requires-python`). Verified passing on 3.10, 3.11, 3.12, 3.13.
   for a change you're making, regenerate it and note the version in the commit.
 
 - **The assignment fixtures guard themselves against going stale.**
-  `tests/validation/fishash_ground_truth.json.gz` and
-  `mixture_ground_truth.json.gz` (from `scripts/dump_fishash_ground_truth.R`
-  and `scripts/dump_mixture_ground_truth.R`) follow the only-if-missing rule
-  too, but each records the md5 of the dumper that made it, and a test fails
-  when the dumper on disk differs: change a dumper, delete its `.gz`, rerun
-  the tests. Both record package versions and install SHAs and contain no
-  timestamps, so regenerating gives the same bytes. Both dumpers pick the first
-  seed in a fixed list that keeps every compared value away from a decision
-  boundary, so any flipped call in those tests is a defect.
+  `tests/validation/fishash_ground_truth.json.gz`,
+  `mixture_ground_truth.json.gz` and `assignment_rules_ground_truth.json.gz`
+  (from `scripts/dump_fishash_ground_truth.R`,
+  `scripts/dump_mixture_ground_truth.R` and
+  `scripts/dump_assignment_rules_ground_truth.R`) follow the only-if-missing
+  rule too, but each records the md5 of the dumper that made it, and a test
+  fails when the dumper on disk differs: change a dumper, delete its `.gz`,
+  rerun the tests. All three record package versions and install SHAs and
+  contain no timestamps, so regenerating gives the same bytes. The fishash and
+  mixture dumpers pick the first seed in a fixed list that keeps every compared
+  value away from a decision boundary, so any flipped call in those tests is a
+  defect. The thresholding and maximum dumper does the opposite on purpose: its
+  values sit exactly on the cuts, which is safe because every comparison there
+  is exact arithmetic on integers.
 
 - **There are more ground-truth fixtures now, and all have the same trap.**
   `tests/validation/perturbplan_ground_truth.json` caches PerturbPlan's own
