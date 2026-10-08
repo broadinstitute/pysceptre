@@ -393,6 +393,30 @@ export_sceptre_object <- function(so, out_dir, all_genes = TRUE, all_cells = TRU
   if (is.null(indiv_nt) || length(indiv_nt) == 0) {
     cat("    no individual NTC gRNAs; the calibration check is not runnable from this export\n")
   }
+
+  # Raw gRNA UMI counts, every gRNA, in this file's cell space. The units above are 0/1; the dose
+  # test weights each cell by its count, so the counts travel too. Read one odm row at a time for
+  # an ondisc-backed object, like the response matrix.
+  cat("Exporting gRNA UMI counts...\n")
+  grna_matrix <- sceptre:::get_grna_matrix(so)
+  grna_ids <- rownames(grna_matrix)
+  if (inherits(grna_matrix, "Matrix")) {
+    gm <- as(grna_matrix[, cells_kept, drop = FALSE], "TsparseMatrix")
+    if (any(gm@x != round(gm@x))) stop("the gRNA matrix holds non-integer values", call. = FALSE)
+    grna_triplets <- data.frame(grna_index = gm@i, cell_index = gm@j, value = as.integer(gm@x))
+  } else {
+    grna_triplets <- do.call(rbind, lapply(seq_along(grna_ids), function(k) {
+      counts <- grna_matrix[k, ][cells_kept]
+      nz <- which(counts != 0)
+      data.frame(grna_index = rep.int(as.integer(k - 1L), length(nz)),
+                 cell_index = as.integer(nz - 1L), value = as.integer(counts[nz]))
+    }))
+  }
+  write_parquet(grna_triplets, file.path(out_dir, "grna_counts.parquet"))
+  write_parquet(data.frame(grna_index = seq_along(grna_ids) - 1L, grna_id = grna_ids),
+                file.path(out_dir, "grna_count_ids.parquet"))
+  cat("   ", length(grna_ids), "gRNAs,", format(nrow(grna_triplets), big.mark = ","),
+      "nonzero counts\n")
   # The nt_cells pool in R's order, 0-based in this file's cell space. It equals the NT units'
   # cells concatenated in unit order (nt_grna_cells_in_use checked the partition that implies).
   if (!is.null(all_nt_idxs)) {

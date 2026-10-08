@@ -457,3 +457,38 @@ def test_an_old_nt_cells_intermediate_is_refused(tmp_path):
     directory = _write_intermediate(export, tmp_path / "export")
     with pytest.raises(ValueError, match="Re-export"):
         load_export(directory)
+
+
+def _with_counts(export: SceptreExport) -> SceptreExport:
+    from dataclasses import replace
+
+    from scipy import sparse
+
+    counts = np.zeros((3, N_CELLS), dtype=np.int64)
+    counts[0, [0, 2, 9]] = [5, 120, 1]
+    counts[1, [3, 4]] = [2, 40]
+    counts[2, [2, 12]] = [7, 3]
+    return replace(
+        export,
+        grna_counts=sparse.csr_matrix(counts),
+        grna_count_ids=["guide_A1", "guide_A2", "ntc_1"],
+    )
+
+
+def test_grna_counts_survive_the_round_trip(tmp_path):
+    exp = _with_counts(_export())
+    got = load_export(write_h5mu(exp, tmp_path / "dataset.h5mu"))
+    assert got.grna_count_ids == exp.grna_count_ids
+    np.testing.assert_array_equal(got.grna_counts.toarray(), exp.grna_counts.toarray())
+    assert "3 gRNAs" in got.describe()
+
+
+def test_grna_counts_are_subset_to_the_qc_passing_cells(tmp_path):
+    exp = _with_counts(_masked_export())
+    sub = load_export(write_h5mu(exp, tmp_path / "dataset.h5mu"))
+    keep = [c for c in range(N_CELLS) if c != 2]
+    np.testing.assert_array_equal(sub.grna_counts.toarray(), exp.grna_counts.toarray()[:, keep])
+
+
+def test_an_export_without_grna_counts_still_loads(written):
+    assert written.grna_counts is None and written.grna_count_ids is None

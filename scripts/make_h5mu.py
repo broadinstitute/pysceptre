@@ -39,6 +39,8 @@ INTERMEDIATE_FILES = (
     "discovery_result.parquet",
     "positive_control_pairs.parquet",
     "power_result.parquet",
+    "grna_counts.parquet",
+    "grna_count_ids.parquet",
 )
 
 

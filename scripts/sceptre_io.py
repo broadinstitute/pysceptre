@@ -120,6 +120,12 @@ class SceptreExport:
     # in R's order (the NT units' cells concatenated in `ntc_grna_cells` order),
     # never sorted. None for a complement object.
     all_nt_idxs: np.ndarray | None = None
+    # Raw gRNA UMI counts, (n_grnas, n_cells) CSR in this export's cell space, rows named by
+    # `grna_count_ids`. The assignment units above are 0/1; the dose test weights each cell by
+    # its count (`pysceptre.dose_weights`), so the counts travel too. None when the export
+    # predates them.
+    grna_counts: sparse.csr_matrix | None = None
+    grna_count_ids: list[str] | None = None
 
     @property
     def side(self) -> str:
@@ -200,6 +206,8 @@ class SceptreExport:
             f"nt_pool={'absent' if self.all_nt_idxs is None else self.all_nt_idxs.size}, "
             f"targeting_grnas="
             f"{len(self.targeting_grna_cells) if self.targeting_grna_cells else 0}, "
+            f"grna_counts="
+            f"{'absent' if self.grna_counts is None else f'{self.grna_counts.shape[0]} gRNAs'}, "
             f"sceptre {m['sceptre_version']}"
         )
 
@@ -377,6 +385,7 @@ def subset_to_cells_in_use(export: SceptreExport) -> SceptreExport:
         ntc_grna_cells=remap(export.ntc_grna_cells),
         targeting_grna_cells=remap(export.targeting_grna_cells),
         all_nt_idxs=None if export.all_nt_idxs is None else remap_one(export.all_nt_idxs),
+        grna_counts=None if export.grna_counts is None else export.grna_counts[:, keep].tocsr(),
         in_use=np.ones(keep.size, dtype=bool),
         metadata=metadata,
     )
@@ -520,8 +529,18 @@ def load_h5mu(path: str | Path, backed: bool = False, all_cells: bool = False) -
     raw_pool = mdata.uns.get("all_nt_idxs")
     all_nt_idxs = None if raw_pool is None else np.asarray(raw_pool, dtype=np.int64)
 
+    # The optional third assay: raw gRNA UMI counts, (cells, gRNAs) CSC like `rna`.
+    grna_counts = grna_count_ids = None
+    if "grna_counts" in mdata.mod:
+        counts_x = mdata["grna_counts"].X
+        if hasattr(counts_x, "to_memory"):
+            counts_x = counts_x.to_memory()
+        grna_counts = sparse.csc_matrix(counts_x).T.tocsr()
+        grna_count_ids = mdata["grna_counts"].var["grna_id"].astype(str).tolist()
+
     _check_shapes(metadata, response_matrix, covariate_matrix, gene_ids, grna_target_cells)
     _check_nt_pool(metadata, ntc_grna_cells, all_nt_idxs)
+    _check_grna_counts(metadata, grna_counts, grna_count_ids)
     export = SceptreExport(
         response_matrix=response_matrix,
         gene_ids=gene_ids,
@@ -540,6 +559,8 @@ def load_h5mu(path: str | Path, backed: bool = False, all_cells: bool = False) -
         positive_control_pairs=positive_control_pairs,
         power_result=power_result,
         all_nt_idxs=all_nt_idxs,
+        grna_counts=grna_counts,
+        grna_count_ids=grna_count_ids,
     )
     return export if all_cells else subset_to_cells_in_use(export)
 
@@ -641,7 +662,7 @@ def as_counts(matrix):
 
 
 def write_h5mu(export: SceptreExport, path: str | Path, compression: str | None = None) -> Path:
-    """Write a SceptreExport as MuData: two assays over one set of cells.
+    """Write a SceptreExport as MuData: two assays over one set of cells, three with counts.
 
     The dataset genuinely has two measured modalities, so it is stored as two,
     rather than as one matrix with the other smuggled into `obsm`:
@@ -649,6 +670,8 @@ def write_h5mu(export: SceptreExport, path: str | Path, compression: str | None 
       `rna`   (cells, genes)  counts, CSC, `var` indexed by response_id.
       `grna`  (cells, units)  0/1 assignments, CSC, `var` carrying
                               `grna_target` and `unit_kind`.
+      `grna_counts` (cells, gRNAs)  raw UMI counts, CSC, `var` carrying
+                              `grna_id`; only when `export.grna_counts` is set.
 
     A unit is a `target` (the union of that target's gRNAs, and what an
     analysis uses), an `ntc_grna` (one individual non-targeting gRNA), or a
@@ -753,7 +776,20 @@ def write_h5mu(export: SceptreExport, path: str | Path, compression: str | None 
         obs=pd.DataFrame(index=obs_index),
     )
 
-    mdata = mudata.MuData({"rna": rna, "grna": grna})
+    modalities = {"rna": rna, "grna": grna}
+    if export.grna_counts is not None:
+        _check_grna_counts(export.metadata, export.grna_counts, export.grna_count_ids)
+        modalities["grna_counts"] = ad.AnnData(
+            X=as_counts(sparse.csr_matrix(export.grna_counts).T.tocsc()),  # (cells, gRNAs)
+            # Positional names with the ids in a column: MuData needs `var` names unique across
+            # assays, and the `grna` assay already uses these gRNA ids as unit names.
+            var=pd.DataFrame(
+                {"grna_id": np.asarray(export.grna_count_ids, dtype=object)},
+                index=pd.Index([f"grna_counts_{i}" for i in range(len(export.grna_count_ids))]),
+            ),
+            obs=pd.DataFrame(index=obs_index),
+        )
+    mdata = mudata.MuData(modalities)
     for j, name in enumerate(export.metadata["covariate_names"]):
         mdata.obs[name] = export.covariate_matrix[:, j]
     if export.in_use is not None and not np.asarray(export.in_use, dtype=bool).all():
@@ -860,8 +896,22 @@ def _load_intermediate(export_dir: Path) -> SceptreExport:
     pool = _optional("all_nt_idxs.parquet")
     all_nt_idxs = None if pool is None else pool["cell_index"].to_numpy(dtype=np.int64)
 
+    grna_counts = grna_count_ids = None
+    count_triplets = _optional("grna_counts.parquet")
+    if count_triplets is not None:
+        ids = pd.read_parquet(export_dir / "grna_count_ids.parquet").sort_values("grna_index")
+        grna_count_ids = ids["grna_id"].astype(str).tolist()
+        grna_counts = sparse.csr_matrix(
+            (
+                count_triplets["value"].to_numpy(),
+                (count_triplets["grna_index"].to_numpy(), count_triplets["cell_index"].to_numpy()),
+            ),
+            shape=(len(grna_count_ids), metadata["n_cells"]),
+        )
+
     _check_shapes(metadata, response_matrix, covariate_matrix, gene_ids, grna_target_cells)
     _check_nt_pool(metadata, ntc_grna_cells, all_nt_idxs)
+    _check_grna_counts(metadata, grna_counts, grna_count_ids)
     return SceptreExport(
         response_matrix=response_matrix,
         gene_ids=gene_ids,
@@ -880,7 +930,21 @@ def _load_intermediate(export_dir: Path) -> SceptreExport:
         positive_control_pairs=positive_control_pairs,
         power_result=power_result,
         all_nt_idxs=all_nt_idxs,
+        grna_counts=grna_counts,
+        grna_count_ids=grna_count_ids,
     )
+
+
+def _check_grna_counts(metadata: dict, grna_counts, grna_count_ids) -> None:
+    """The gRNA counts, when present, span the export's cells and have one id per row."""
+    if grna_counts is None:
+        return
+    if grna_count_ids is None or len(grna_count_ids) != grna_counts.shape[0]:
+        raise ValueError("grna_counts needs one grna_count_ids entry per row")
+    if grna_counts.shape[1] != metadata["n_cells"]:
+        raise ValueError(
+            f"grna_counts has {grna_counts.shape[1]} cells, the export {metadata['n_cells']}"
+        )
 
 
 def _analysis_settings(metadata: dict) -> dict:
