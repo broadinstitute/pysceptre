@@ -2,7 +2,7 @@
 
 Notable changes per release. Dates are the release date.
 
-## Unreleased
+## 0.5.0
 
 ### Added
 
