@@ -22,18 +22,19 @@ jobs:
   docs-build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
           # Creates and activates .venv, as in ci.yml. Not `--system`:
           # ubuntu-latest's /usr interpreter is externally managed and uv
           # refuses to install into it.
           python-version: "3.12"
+          activate-environment: true
       # griffe reads src/ statically, so the package is never imported and
       # the heavy extras (numba, io) are not installed here.
       - run: uv pip install -e ".[docs]"
       - run: uv run --no-sync mkdocs build --strict
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: site
 
@@ -50,4 +51,4 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

@@ -9,8 +9,8 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
       # Pinned to the same version as .pre-commit-config.yaml -- bump both together.
       - run: uvx ruff@0.16.8 check .
       - run: uvx ruff@0.16.8 format --check .
@@ -22,13 +22,15 @@ jobs:
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
-          # Also creates and activates .venv on this interpreter, so there is
+          # activate-environment creates and activates .venv on this
+          # interpreter (setup-uv stopped doing it unasked in v6), so there is
           # deliberately no `uv venv` step -- adding one fails with
           # "a virtual environment already exists at: .venv".
           python-version: ${{ matrix.python-version }}
+          activate-environment: true
       # tests/validation/ground_truth.json is committed, so the suite runs
       # without R/sceptre installed -- conftest only shells out to Rscript
       # when that cached fixture is missing.
@@ -43,8 +45,8 @@ jobs:
   lock:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
       # Fails if uv.lock is out of date with pyproject.toml. Without this the
       # committed lockfile silently drifts, since no other job reads it.
       - run: uv lock --check
@@ -52,7 +54,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
       - run: uv build
       - run: uvx twine check dist/*

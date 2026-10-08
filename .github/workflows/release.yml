@@ -18,10 +18,11 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
           python-version: "3.12"
+          activate-environment: true
 
       # A tag that disagrees with pyproject would publish a version nobody
       # can reproduce from the repository, and PyPI versions cannot be
@@ -36,7 +37,7 @@ jobs:
 
       - run: uv build
       - run: uvx twine check dist/*
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
@@ -52,7 +53,7 @@ jobs:
       # The OIDC token Trusted Publishing exchanges for an upload grant.
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist/
