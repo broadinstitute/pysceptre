@@ -26,6 +26,8 @@ flatten once and reuse the result via `compute_null_full_statistics_flat`.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import numpy as np
 from scipy import sparse
 
@@ -298,18 +300,23 @@ class WeightedListDraws(StagedDraws):
     A stage is a pair of `(B, n_cells)` CSR matrices over the same placements, one holding
     the weights and one their squares. A cell placed twice in one resample is stored twice,
     as in the 0/1 draws, so it contributes `2 t` and `2 t^2`.
+
+    `draw_weights(flat_idxs, lo, hi)` returns one weight per placement of resamples
+    `[lo, hi)`, given their cells concatenated in order. It is called once per stage
+    reached, so its result must depend on `(lo, hi)` and not on call order.
     """
 
-    __slots__ = ("_idxs", "_weights")
+    __slots__ = ("_idxs", "_draw_weights")
 
     def __init__(
-        self, synthetic_idxs: list[np.ndarray], synthetic_weights: list[np.ndarray], n_cells: int
+        self,
+        synthetic_idxs: list[np.ndarray],
+        n_cells: int,
+        draw_weights: Callable[[np.ndarray, int, int], np.ndarray],
     ):
-        if len(synthetic_idxs) != len(synthetic_weights):
-            raise ValueError("one weight array is needed per resample")
         super().__init__(n_cells, len(synthetic_idxs))
         self._idxs = synthetic_idxs
-        self._weights = synthetic_weights
+        self._draw_weights = draw_weights
 
     def slice(self, lo: int, hi: int):
         lo, hi = max(0, int(lo)), min(int(hi), self.n_draws)
@@ -320,16 +327,12 @@ class WeightedListDraws(StagedDraws):
         hit = self._cache.get(key)
         if hit is None:
             t = draws_to_matrix(self._idxs[lo:hi], self.n_cells)
-            values = (
-                np.concatenate(self._weights[lo:hi]).astype(np.float64)
-                if t.nnz
-                else np.empty(0, dtype=np.float64)
-            )
-            if values.size != t.nnz:
+            values = np.asarray(self._draw_weights(t.indices, lo, hi), dtype=np.float64)
+            if values.shape != (t.nnz,):
                 raise ValueError("each resample needs one weight per placed cell")
             t.data = values
-            t2 = t.copy()
-            t2.data = values * values
+            # Same index arrays, no copy: neither matrix is modified in place.
+            t2 = sparse.csr_matrix((values * values, t.indices, t.indptr), shape=t.shape)
             hit = (t, t2)
             self._cache[key] = hit
         return hit
@@ -408,7 +411,7 @@ def compute_null_statistics_from_draws(stacked: np.ndarray, draws: sparse.csr_ma
         if t.nnz == 0:
             return np.full(t.shape[0], np.nan)
         sums = t @ stacked
-        sums[:, 1] = (t2 @ stacked)[:, 1]
+        sums[:, 1] = t2 @ np.ascontiguousarray(stacked[:, 1])
         return statistics_from_segment_sums(sums)
     if draws.shape[0] == 0:
         return np.empty(0)

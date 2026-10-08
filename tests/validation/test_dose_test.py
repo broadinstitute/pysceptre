@@ -5,7 +5,7 @@ constant weight gives sceptre's statistic and p-values (the scale cancels) and a
 effect is scaled by the inverse weight; the weighted statistic matches its dense formula, a cell
 placed twice included; the settings it does not support are refused; and on null data whose weights
 follow a covariate its p-values are uniform. Targets on both sides of the CRT sampler's 0.2%
-threshold are covered.
+threshold are covered. Also: per-stage weight draws do not depend on call order or on `n_jobs`.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ import pytest
 from scipy import sparse, stats
 
 from pysceptre import run_discovery_analysis
+from pysceptre.pipeline.discovery import _StratifiedWeights
 from pysceptre.precompute.pieces import compute_precomputation_pieces
 from pysceptre.test_statistic.score_stat import (
     WeightedListDraws,
@@ -40,7 +41,10 @@ def _data(seed=0, n_genes=3):
     small = np.sort(rng.choice(rest, 30, replace=False))  # below: fast sampler
     cells = {"big": big, "small": small}
     pairs = pd.DataFrame(
-        {"response_id": genes * 2, "grna_target": ["big"] * n_genes + ["small"] * n_genes}
+        {
+            "response_id": genes * 2,
+            "grna_target": ["big"] * n_genes + ["small"] * n_genes,
+        }
     )
     return Y, genes, X, cells, pairs, lib
 
@@ -96,7 +100,10 @@ def test_weighted_statistic_matches_its_dense_formula():
     draws = [np.array([5, 9, 9, 40]), np.array([1, 2, 3])]
     weights = [np.array([0.2, 0.7, 0.7, 1.0]), np.array([0.5, 0.25, 1.0])]
     got = compute_null_statistics_from_draws(
-        stack_pieces(a, w, D), WeightedListDraws(draws, weights, N_CELLS).slice(0, 2)
+        stack_pieces(a, w, D),
+        WeightedListDraws(
+            draws, N_CELLS, lambda flat, lo, hi: np.concatenate(weights[lo:hi])
+        ).slice(0, 2),
     )
     for b, (i, tw) in enumerate(zip(draws, weights, strict=True)):
         top = np.sum(tw * a[i])
@@ -129,7 +136,15 @@ def test_unsupported_settings_and_bad_weights_are_refused(kwargs):
         )
     with pytest.raises(ValueError):
         run_discovery_analysis(
-            Y, genes, X, cells, pairs, seed=1, grna_target_weights=weights, **kwargs, **extra
+            Y,
+            genes,
+            X,
+            cells,
+            pairs,
+            seed=1,
+            grna_target_weights=weights,
+            **kwargs,
+            **extra,
         )
 
 
@@ -141,8 +156,47 @@ def test_dose_test_is_calibrated_on_null_data_with_covariate_dependent_weights()
     weights = {"big": 0.1 + 0.9 * rank, "small": np.full(cells["small"].size, 1.0)}
     big_pairs = pairs[pairs.grna_target == "big"].reset_index(drop=True)
     res = run_discovery_analysis(
-        Y, genes, X, {"big": idx}, big_pairs, seed=2, grna_target_weights={"big": weights["big"]}
+        Y,
+        genes,
+        X,
+        {"big": idx},
+        big_pairs,
+        seed=2,
+        grna_target_weights={"big": weights["big"]},
     )
     p = res["p_value"].dropna().to_numpy()
     assert p.size == 120
     assert stats.kstest(p, "uniform").pvalue > 0.01
+
+
+def test_stratified_weights_depend_on_the_stage_not_on_call_order():
+    rng = np.random.default_rng(0)
+    probabilities = rng.uniform(0, 0.01, 5000)
+    trt = np.sort(rng.choice(5000, 200, replace=False))
+    weights = rng.uniform(0.05, 1.0, trt.size)
+    flat = rng.integers(0, 5000, 3000)
+    first = _StratifiedWeights(weights, probabilities[trt], probabilities, 7)
+    second = _StratifiedWeights(weights, probabilities[trt], probabilities, 7)
+    a1, a2 = first(flat, 0, 10), first(flat, 10, 60)
+    b2, b1 = second(flat, 10, 60), second(flat, 0, 10)
+    np.testing.assert_array_equal(a1, b1)
+    np.testing.assert_array_equal(a2, b2)
+    assert not np.array_equal(a1, a2)
+    # Every drawn weight comes from the observed weights of the placed cell's stratum.
+    edges = np.quantile(probabilities[trt], [0.25, 0.5, 0.75])
+    observed = np.searchsorted(edges, probabilities[trt], side="right")
+    placed = np.searchsorted(edges, probabilities[flat], side="right")
+    for b in range(4):
+        assert np.isin(a1[placed == b], weights[observed == b]).all()
+
+
+def test_a_dose_result_does_not_depend_on_n_jobs():
+    """Resampled weights are drawn per stage from a seed fixed by the target and the stage, so
+    workers sharing a target's draws cannot change them."""
+    Y, genes, X, cells, pairs, lib = _data(seed=5, n_genes=6)
+    rng = np.random.default_rng(4)
+    weights = {t: rng.uniform(0.05, 1.0, c.size) for t, c in cells.items()}
+    kw = dict(seed=1, grna_target_weights=weights)
+    one = run_discovery_analysis(Y, genes, X, cells, pairs, n_jobs=1, **kw)
+    two = run_discovery_analysis(Y, genes, X, cells, pairs, n_jobs=2, **kw)
+    pd.testing.assert_frame_equal(one, two)
