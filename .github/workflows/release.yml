@@ -23,6 +23,8 @@ jobs:
         with:
           python-version: "3.12"
           activate-environment: true
+          # What goes to PyPI is built without any cache.
+          enable-cache: false
 
       # A tag that disagrees with pyproject would publish a version nobody
       # can reproduce from the repository, and PyPI versions cannot be

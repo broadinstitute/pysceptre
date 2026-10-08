@@ -30,6 +30,8 @@ jobs:
           # refuses to install into it.
           python-version: "3.12"
           activate-environment: true
+          # Its own cache key: ci.yml's 3.12 test job installs other extras.
+          cache-suffix: docs
       # griffe reads src/ statically, so the package is never imported and
       # the heavy extras (numba, io) are not installed here.
       - run: uv pip install -e ".[docs]"
