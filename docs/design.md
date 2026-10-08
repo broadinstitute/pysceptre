@@ -1278,7 +1278,12 @@ upper tail loops over elements in Python. `hypergeom.py` therefore ports
   is not a goal; agreement is to 1e-12 relative to max(1, |log p|).
 
 The numba kernel and the numpy fallback perform the same operations per
-element and agree bit for bit on the fixture's grid.
+element, but not with the same `log`, `exp` and `log1p`: numba compiles calls
+into the platform's math library, while numpy uses its own vectorized loops on
+CPUs that support them. On the fixture's grid the two agree bit for bit on
+arm64 macOS and differ by up to 9 ULP on the x86-64 Linux runners of CI (GitHub
+`ubuntu-latest`). `test_numba_and_numpy_agree` allows 64 ULP; each kernel is
+also compared with R on its own, to the tolerance above.
 
 ### Masked counts are imputed by a rank-one Poisson fit
 

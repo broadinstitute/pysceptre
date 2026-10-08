@@ -60,7 +60,8 @@ def test_numba_and_numpy_agree(grid, monkeypatch):
         np.testing.assert_array_equal(np.isnan(a), np.isnan(b))
         np.testing.assert_array_equal(np.isinf(a), np.isinf(b))
         fin = np.isfinite(a)
-        np.testing.assert_array_max_ulp(a[fin], b[fin], maxulp=4)
+        # Not bit for bit on every platform: docs/design.md, "The hypergeometric tail is R's phyper".
+        np.testing.assert_array_max_ulp(a[fin], b[fin], maxulp=64)
 
 
 def _stirlerr_bin(n: np.ndarray) -> list[str]:
