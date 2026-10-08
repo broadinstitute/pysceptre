@@ -57,6 +57,7 @@ from ..test_statistic.score_stat import (
     PermutationPrefixSums,
     PermutationSliceDraws,
     StagedDraws,
+    WeightedListDraws,
     prefix_scan_pays,
     stack_pieces,
 )
@@ -193,6 +194,8 @@ class TargetPrecomputation:
     # used to be redone once per *pair*: 2,451 rebuilds of a target-fixed
     # structure in one profiled run.
     draws: StagedDraws
+    # The dose test's weight for each of `trt_idxs`; None for sceptre's 0/1 test.
+    trt_weights: np.ndarray | None = None
 
 
 # 97.5th percentile of the standard normal, for two-sided 95% intervals.
@@ -556,10 +559,25 @@ def _target_draw_job(job: tuple[int, int, str]) -> tuple[str, TargetPrecomputati
     perms = st["permutations"]
     fitted_probabilities = None if fitted_values is None else fitted_values[k]
     trt_idxs = st["grna_target_cells"][target_id]
+    weights = (st.get("grna_target_weights") or {}).get(target_id)
+    if weights is not None and np.all(weights == 1.0):
+        weights = None
     if perms is None:
         rng = np.random.default_rng(target_seed_sequence(st["seed"], target_id))
         synthetic_idxs = crt_index_sampler(fitted_probabilities, st["B_total"], rng, len(trt_idxs))
-        draws = ListDraws(synthetic_idxs, st["n_cells"])
+        if weights is None:
+            draws = ListDraws(synthetic_idxs, st["n_cells"])
+        else:
+            # The dose test: each placed cell takes a weight drawn from the target's own
+            # weights, after the index draws so those match sceptre's; a constant weight
+            # draws nothing. `docs/design.md`, "The dose test".
+            if np.ptp(weights) == 0:
+                synthetic_w = [np.full(len(i), weights[0]) for i in synthetic_idxs]
+            else:
+                synthetic_w = [
+                    rng.choice(weights, size=len(i), replace=True) for i in synthetic_idxs
+                ]
+            draws = WeightedListDraws(synthetic_idxs, synthetic_w, st["n_cells"])
     else:
         # Permutations: every target reads the same draws, taking a prefix
         # the size of its own treated set. Held by reference rather than
@@ -571,6 +589,7 @@ def _target_draw_job(job: tuple[int, int, str]) -> tuple[str, TargetPrecomputati
         trt_idxs=trt_idxs,
         fitted_probabilities=fitted_probabilities,
         draws=draws,
+        trt_weights=weights,
     )
 
 
@@ -585,6 +604,7 @@ def fit_all_targets(
     n_jobs: int = 1,
     permutations: np.ndarray | None = None,
     x_outer_flat_shared: np.ndarray | None = None,
+    grna_target_weights: dict[str, np.ndarray] | None = None,
 ) -> dict[str, TargetPrecomputation]:
     """Per-target resamples, plus the logistic fit the CRT draws them from.
 
@@ -643,6 +663,7 @@ def fit_all_targets(
         permutations=permutations,
         fitted_values=fitted_values,
         grna_target_cells=grna_target_cells,
+        grna_target_weights=grna_target_weights,
         seed=seed,
         B_total=B1 + B2 + B3,
         n_cells=n_cells,
@@ -886,6 +907,7 @@ def _gene_job(job: tuple[str, list[str]]) -> dict[tuple[str, str], dict]:
             fit_parametric_curve=st["fit_parametric_curve"],
             side_code=st["side_code"],
             null_statistics_fn=null_fn,
+            trt_weights=target.trt_weights,
         )
         out[(gene_id, target_id)] = _result_row(gene_id, target_id, result)
     return out
@@ -1081,6 +1103,7 @@ def run_discovery_ntcells_complement(
     resampling_mechanism: str = "crt",
     permutations: np.ndarray | None = None,
     permutation_width: int | None = None,
+    grna_target_weights: dict[str, np.ndarray] | None = None,
 ) -> pd.DataFrame:
     """pairs: DataFrame with columns 'response_id', 'grna_target' -- the
     QC-passed pairs to test. Returns a DataFrame with one row per pair:
@@ -1167,6 +1190,10 @@ def run_discovery_ntcells_complement(
     # target set makes M independent of the *pair list*, so adding pairs for
     # targets already present cannot move a result. Only adding a larger
     # target to the dataset can.
+    if grna_target_weights is not None and resampling_mechanism != "crt":
+        raise ValueError(
+            "the dose test (grna_target_weights) runs with resampling_mechanism='crt' only"
+        )
     if resampling_mechanism != "permutations":
         if permutations is not None or permutation_width is not None:
             raise ValueError("permutations and permutation_width apply only to permutations")
@@ -1260,6 +1287,9 @@ def run_discovery_ntcells_complement(
         return fit_all_targets(
             {t: grna_target_cells[t] for t in ids},
             covariate_matrix,
+            grna_target_weights=None
+            if grna_target_weights is None
+            else {t: grna_target_weights[t] for t in ids},
             B1=B1,
             B2=B2,
             B3=B3,

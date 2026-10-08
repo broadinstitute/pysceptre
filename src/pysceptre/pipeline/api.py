@@ -163,6 +163,23 @@ def _restrict_cells(response_matrix, cells: np.ndarray):
     return np.asarray(response_matrix)[:, cells]
 
 
+def _check_dose_weights(
+    grna_target_weights: dict[str, np.ndarray], grna_target_cells: dict[str, np.ndarray]
+) -> dict[str, np.ndarray]:
+    """The dose test's weights as float64 arrays, one finite positive weight per listed cell."""
+    out = {}
+    for t, cells in grna_target_cells.items():
+        if t not in grna_target_weights:
+            raise ValueError(f"grna_target_weights has no weights for target {t!r}")
+        wts = np.asarray(grna_target_weights[t], dtype=np.float64)
+        if wts.shape != cells.shape:
+            raise ValueError(f"target {t!r}: {wts.size} weights for {cells.size} cells")
+        if wts.size and (not np.all(np.isfinite(wts)) or wts.min() <= 0):
+            raise ValueError(f"target {t!r}: weights must be finite and positive")
+        out[t] = wts
+    return out
+
+
 def run_discovery_analysis(
     response_matrix,
     gene_ids: list[str],
@@ -184,6 +201,7 @@ def run_discovery_analysis(
     chunk_memory_gb: float = _DEFAULT_CHUNK_MEMORY_GB,
     n_jobs: int = 1,
     resampling_mechanism: str | None = None,
+    grna_target_weights: dict[str, np.ndarray] | None = None,
 ) -> pd.DataFrame:
     """response_matrix: (n_genes, n_cells) dense ndarray or scipy.sparse matrix.
     gene_ids: row labels for response_matrix, in order.
@@ -267,6 +285,7 @@ def run_discovery_analysis(
         chunk_memory_gb=chunk_memory_gb,
         n_jobs=n_jobs,
         resampling_mechanism=resampling_mechanism,
+        grna_target_weights=grna_target_weights,
     )
 
 
@@ -290,6 +309,7 @@ def _run_discovery(
     n_jobs: int,
     resampling_mechanism: str,
     permutation_width: int | None = None,
+    grna_target_weights: dict[str, np.ndarray] | None = None,
 ) -> pd.DataFrame:
     """`run_discovery_analysis` once the settings are resolved.
 
@@ -305,6 +325,8 @@ def _run_discovery(
     _validate_covariate_matrix(covariate_matrix, n_cells=response_matrix.shape[1])
     covariate_matrix = np.asarray(covariate_matrix, dtype=float)
     grna_target_cells = {t: np.asarray(c, dtype=np.int64) for t, c in grna_target_cells.items()}
+    if grna_target_weights is not None:
+        grna_target_weights = _check_dose_weights(grna_target_weights, grna_target_cells)
     if resampling_approximation not in _RESAMPLING_APPROXIMATIONS:
         raise ValueError(
             f"resampling_approximation must be one of "
@@ -391,9 +413,18 @@ def _run_discovery(
         n_jobs=n_jobs,
         resampling_mechanism=resampling_mechanism,
     )
+    if grna_target_weights is not None and (
+        nt_cells is not None or per_guide or resampling_mechanism != "crt"
+    ):
+        raise ValueError(
+            "the dose test (grna_target_weights) runs with the complement control group, the CRT "
+            "and grna_integration_strategy='union' only"
+        )
     if nt_cells is None:
         result = run_discovery_ntcells_complement(
-            **engine_args, permutation_width=permutation_width
+            **engine_args,
+            permutation_width=permutation_width,
+            grna_target_weights=grna_target_weights,
         )
     else:
         result = run_discovery_nt_cells(**engine_args, nt_cells=nt_cells)

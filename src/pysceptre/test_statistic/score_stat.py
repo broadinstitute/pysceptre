@@ -33,11 +33,27 @@ from ..crt.permutations import draws_for_target
 
 
 def compute_observed_full_statistic(
-    a: np.ndarray, w: np.ndarray, D: np.ndarray, trt_idxs: np.ndarray
+    a: np.ndarray,
+    w: np.ndarray,
+    D: np.ndarray,
+    trt_idxs: np.ndarray,
+    trt_weights: np.ndarray | None = None,
 ) -> float:
-    top = a[trt_idxs].sum()
-    lower_left = w[trt_idxs].sum()
-    lower_right = np.square(D[:, trt_idxs].sum(axis=1)).sum()
+    """The score statistic of the treated cells, or of the dose test's weighted cells.
+
+    With `trt_weights` (one per treated cell; the dose test), the sums become
+    `sum t a`, `sum t^2 w` and `sum_k (sum t D[k])^2`; weights all equal to 1
+    give the unweighted statistic exactly. `docs/design.md`, "The dose test".
+    """
+    if trt_weights is None or np.all(trt_weights == 1.0):
+        top = a[trt_idxs].sum()
+        lower_left = w[trt_idxs].sum()
+        lower_right = np.square(D[:, trt_idxs].sum(axis=1)).sum()
+        return float(top / np.sqrt(lower_left - lower_right))
+    t = np.asarray(trt_weights, dtype=np.float64)
+    top = (a[trt_idxs] * t).sum()
+    lower_left = (w[trt_idxs] * (t * t)).sum()
+    lower_right = np.square((D[:, trt_idxs] * t).sum(axis=1)).sum()
     return float(top / np.sqrt(lower_left - lower_right))
 
 
@@ -276,6 +292,49 @@ class FirstStagePermutationDraws(PermutationSliceDraws):
         return hit
 
 
+class WeightedListDraws(StagedDraws):
+    """CRT draws for the dose test: each resample's cells and the weight drawn for each.
+
+    A stage is a pair of `(B, n_cells)` CSR matrices over the same placements, one holding
+    the weights and one their squares. A cell placed twice in one resample is stored twice,
+    as in the 0/1 draws, so it contributes `2 t` and `2 t^2`.
+    """
+
+    __slots__ = ("_idxs", "_weights")
+
+    def __init__(
+        self, synthetic_idxs: list[np.ndarray], synthetic_weights: list[np.ndarray], n_cells: int
+    ):
+        if len(synthetic_idxs) != len(synthetic_weights):
+            raise ValueError("one weight array is needed per resample")
+        super().__init__(n_cells, len(synthetic_idxs))
+        self._idxs = synthetic_idxs
+        self._weights = synthetic_weights
+
+    def slice(self, lo: int, hi: int):
+        lo, hi = max(0, int(lo)), min(int(hi), self.n_draws)
+        if hi <= lo:
+            empty = sparse.csr_matrix((0, self.n_cells))
+            return empty, empty
+        key = (lo, hi)
+        hit = self._cache.get(key)
+        if hit is None:
+            t = draws_to_matrix(self._idxs[lo:hi], self.n_cells)
+            values = (
+                np.concatenate(self._weights[lo:hi]).astype(np.float64)
+                if t.nnz
+                else np.empty(0, dtype=np.float64)
+            )
+            if values.size != t.nnz:
+                raise ValueError("each resample needs one weight per placed cell")
+            t.data = values
+            t2 = t.copy()
+            t2.data = values * values
+            hit = (t, t2)
+            self._cache[key] = hit
+        return hit
+
+
 def as_staged_draws(draws, n_cells: int) -> StagedDraws:
     """Accept a `StagedDraws`, a CSR matrix, or a list of index arrays.
 
@@ -341,6 +400,16 @@ def compute_null_statistics_from_draws(stacked: np.ndarray, draws: sparse.csr_ma
     different order, so results differ by ~1e-13 absolute on the statistic.
     That is far below the Monte Carlo noise the p-values already carry.
     """
+    if isinstance(draws, tuple):
+        # The dose test: weights and squared weights over the same placements.
+        t, t2 = draws
+        if t.shape[0] == 0:
+            return np.empty(0)
+        if t.nnz == 0:
+            return np.full(t.shape[0], np.nan)
+        sums = t @ stacked
+        sums[:, 1] = (t2 @ stacked)[:, 1]
+        return statistics_from_segment_sums(sums)
     if draws.shape[0] == 0:
         return np.empty(0)
     if draws.nnz == 0:
