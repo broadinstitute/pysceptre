@@ -2,6 +2,29 @@
 
 Notable changes per release. Dates are the release date.
 
+## Unreleased
+
+### Added
+
+- **The dose test**, not from sceptre: `run_discovery_analysis` and
+  `run_power_check` take `grna_target_weights`, and `run_calibration_check`
+  takes `ntc_grna_weights`, per-cell weights that replace the 0/1 treatment in
+  sceptre's score statistic, so a cell carries a target with a weight set by
+  its gRNA UMI count rather than being called. Resampled cells take weights
+  drawn within their propensity quartile. Without weights, or with weights all
+  1, every result is sceptre's exactly. Complement control group, CRT and the
+  union strategy only.
+- **`dose_weights`** builds the dose test's cells and weights from raw gRNA
+  UMI counts: a cell's largest count over a target's gRNAs, weighted linearly
+  in its log between `floor` and `ceiling` (`dose_ramp`). The floor is
+  estimated from the counts by default (`floor="auto"`,
+  `estimate_dose_floor`): the largest count whose entries are still mostly
+  spread over gRNAs like single-UMI noise.
+- **gRNA UMI counts in the dataset export.** `scripts/export_sceptre_dataset.R`
+  writes every gRNA's counts and `make_h5mu.py` stores them as an optional
+  third assay, `grna_counts`; `load_h5mu` returns them as
+  `SceptreExport.grna_counts`, with their ids in `grna_count_ids`.
+
 ## 0.4.0
 
 ### Added

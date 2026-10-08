@@ -138,6 +138,7 @@ run_discovery_analysis(
     seed: int | None = None,
     target_chunk_size: int = 200,
     chunk_memory_gb: float = 1.0,
+    grna_target_weights: dict[str, np.ndarray] | None = None,
 ) -> pd.DataFrame
 ```
 
@@ -158,6 +159,7 @@ run_discovery_analysis(
 | `target_chunk_size` | `int` | How many gRNA targets to fit and CRT-draw at once. An **upper bound, not a mandate** -- it is reduced automatically to respect `chunk_memory_gb`, so no value here can exhaust memory. Default `200`. |
 | `n_jobs` | `int` | Workers for the per-pair tests, which are ~80% of the runtime. `1` (default) runs serially; a negative value uses every core. **Results do not depend on it** -- only the genes inside an already-drawn target chunk are distributed, so the resampling draws are made in the same order at any worker count, and output is bit-identical. Processes on Linux, threads elsewhere (`fork` after macOS's Accelerate BLAS can deadlock), so the ceiling is lower off Linux; against the NT cells, where every pair is a GLM fit, threads are capped at four because more contend for the GIL. Memory grows by about one gene's working arrays per worker, not by `chunk_memory_gb` per worker. |
 | `chunk_memory_gb` | `float` | Budget for the arrays a *chunk* holds, which sizes how many genes or targets are processed together. **Not** a cap on the process's memory -- the input, retained state and allocator overhead sit outside it. **You should not normally need to change this.** The default is both the fastest and the leanest setting measured: a larger budget produces chunks past the point where batching still pays, costing memory for no throughput (4 GB gave 8.42 GB peak against 3.78 GB at 1 GB, for the same runtime). Default `1.0`. |
+| `grna_target_weights` | `dict[str, np.ndarray] \| None` | Runs the **dose test** instead of sceptre's: each target's cells enter the test with these weights, aligned with `grna_target_cells`, in place of 1. Not from sceptre -- see [`dose_weights`](#pysceptredose_weights), which builds both dicts from gRNA counts. Weights must be finite and positive; all-ones weights give sceptre's result exactly. Complement control group, CRT and the union strategy only. |
 
 **Returns** a `pd.DataFrame`, one row per input pair, with columns:
 
@@ -210,6 +212,7 @@ column -- see below for why there isn't one.
 | `pass_qc_rate` | R's `p_hat`, the fraction of discovery pairs clearing QC, which sizes how many synthetic groups get built. Only matters when the group count is above its floor of 100 -- but there it is decisive. |
 | `negative_control_pairs` | Test exactly these pairs instead of constructing any, with `grna_target` entries being `&`-joined NTC gRNA ids. This is how you compare against an R result pair-by-pair. |
 | `moi`, `control_group`, `resampling_mechanism` | As for `run_discovery_analysis`, with the same defaults. With `control_group="nt_cells"` the whole check runs on the NT cells alone, as in R: a synthetic target is tested against the rest of them, so at least two NT gRNAs are needed. |
+| `ntc_grna_weights` | Checks the **dose test** instead of sceptre's: each NTC gRNA's weights, aligned with `ntc_grna_cells` (`dose_weights(...).ntc_grna_weights`). A synthetic target's cell takes its largest weight over the group's gRNAs. Complement control group and CRT only. |
 
 **QC works differently here, deliberately.** A discovery result reports QC
 failures in-band (`pass_qc = False`, NaN p-value). A calibration check
@@ -248,7 +251,7 @@ power = run_power_check(
 |---|---|
 | `positive_control_pairs` | The pairs to test. **Supply these**: which target perturbs which gene is a claim only the experiment can make. Omitted, sceptre's name-matching rule is used -- a target that is itself a gene id pairs with that gene -- which works when targets are named after genes and finds *nothing* when they are named after genomic intervals. On a real screen of the latter kind it matched 0 of 3,071 targets, so that case raises rather than quietly returning an empty result. |
 | `n_nonzero_trt_thresh`, `n_nonzero_cntrl_thresh` | Pairwise QC thresholds. Against the NT cells the control count is the gene's nonzero NT cells, as in R. |
-| `moi`, `control_group`, `ntc_grna_cells`, `resampling_mechanism` | As for `run_discovery_analysis`, with the same defaults. |
+| `moi`, `control_group`, `ntc_grna_cells`, `resampling_mechanism`, `grna_target_weights` | As for `run_discovery_analysis`, with the same defaults. |
 
 **QC is reported, not filtered** -- the opposite of the calibration check.
 The result has one row per supplied pair, with `pass_qc`, `n_nonzero_trt` and
@@ -579,6 +582,45 @@ Read
 for what each method normalizes for, the edge cases of the thresholding and
 maximum ports, and what the validation against R does and does not establish.
 
+### `pysceptre.dose_weights`
+
+Not sceptre's. Builds the cells and weights of the **dose test** from raw gRNA
+UMI counts, so a screen can be analysed without calling any cell. A cell's
+count for a target is its largest count over the target's gRNAs; cells above
+`floor` are kept, weighted `clip(log(c / floor) / log(ceiling / floor), 0, 1)`.
+The floor comes from the counts by default: `estimate_dose_floor` finds the
+largest count whose entries are still mostly single-UMI-like noise.
+Non-targeting gRNAs keep their own cells and weights, for the calibration
+check.
+
+```python
+from pysceptre import dose_weights, run_calibration_check, run_discovery_analysis
+
+d = dose_weights(grna_counts, grna_ids, grna_target_data_frame)   # floor="auto", ceiling=500
+d.floor                                                            # the floor it estimated
+result = run_discovery_analysis(
+    response_matrix, gene_ids, covariate_matrix, d.grna_target_cells, pairs,
+    grna_target_weights=d.grna_target_weights,
+)
+calibration = run_calibration_check(
+    response_matrix, gene_ids, covariate_matrix, d.ntc_grna_cells,
+    n_calibration_pairs=5000, calibration_group_size=15,
+    ntc_grna_weights=d.ntc_grna_weights,
+)
+```
+
+| Argument | Notes |
+|---|---|
+| `grna_matrix` | Integer UMI counts, gRNAs as rows; non-integer values are refused. |
+| `grna_target_data_frame` | Columns `grna_id` and `grna_target`; a target of `"non-targeting"` marks an NTC gRNA. |
+| `floor` | Counts at or below it get no weight. `"auto"` (default) estimates it from `grna_matrix` with `pysceptre.assignment.estimate_dose_floor`: for each count, the share of its (gRNA, cell) entries spread over gRNAs like the single-UMI entries rather than like entries of 50 UMIs or more; the floor is the largest count where that share is at least half. A number fixes it. |
+| `ceiling` | Counts at or above it get weight 1. Default `500`. |
+
+Read
+[Design decisions](https://broadinstitute.github.io/pysceptre/design/#the-dose-test)
+for the statistic, how resampled cells get their weights, and what was
+measured on two screens.
+
 ### Lower-level building blocks
 
 `run_discovery_analysis` is a thin wrapper around
@@ -748,9 +790,16 @@ adjustment over the union each time.
   `pass_qc == TRUE`).
 - **`assign_grnas_fishash` is not sceptre's.** It ports fishash 0.99.5, the
   version after the preprint's 0.3.0; the two differ only where 0.3.0 would
-  divide 0 by 0. All four assignment methods take raw integer counts, and the
-  `.h5mu` exports this repository builds carry 0/1 assignments rather than gRNA
-  UMI counts, so they cannot feed them.
+  divide 0 by 0. All four assignment methods take raw integer counts, which
+  the `.h5mu` exports this repository builds carry as the optional
+  `grna_counts` assay.
+- **The dose test is not sceptre's.** With per-cell weights
+  (`grna_target_weights`, built by `dose_weights` from gRNA counts) the three
+  analyses run a score test in which each cell carries a target with a weight
+  rather than yes or no. It runs with the complement control group, the CRT
+  and the union strategy only; without weights, or with weights all 1, every
+  result is sceptre's. See
+  [Design decisions](https://broadinstitute.github.io/pysceptre/design/#the-dose-test).
 - **No formula DSL.** `covariate_matrix` must already be a plain numeric
   design matrix; there's no `model.matrix()`-equivalent formula parser here.
 - **RNG is not bit-for-bit reproducible against R.** sceptre seeds

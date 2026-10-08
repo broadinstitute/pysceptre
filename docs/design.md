@@ -1443,5 +1443,166 @@ Agreement with R says the ports compute what fishash and sceptre compute, not
 that any of them assigns gRNAs well. fishash and the mixture are evaluated on
 simulated screens by the runners in `scripts/fishash_eval/`; the results
 belong with the manuscript, not here. No port reads anything but a count
-matrix: the `.h5mu` exports this repository builds hold 0/1 assignments, not
-gRNA UMI counts.
+matrix; the `.h5mu` exports this repository builds carry one, as the optional
+`grna_counts` assay, next to the 0/1 assignments.
+
+## The dose test
+
+`run_discovery_analysis`, `run_power_check` and `run_calibration_check` run a
+second test next to sceptre's when given per-cell weights
+(`grna_target_weights`; `ntc_grna_weights` for the calibration check). It is
+not from sceptre. sceptre's test asks whether a cell carries a target; the dose
+test lets a cell carry it with a weight set by its gRNA UMI count, so no cell
+has to be called, and the weakly expressed guides an assignment cut drops
+still count, in proportion to the effect expected of them. It sits beside
+sceptre's test rather than replacing it, the way edgeR offers a likelihood
+ratio test and a quasi-likelihood test on one fit. Without weights, or with
+weights all 1, every entry point returns sceptre's result exactly.
+
+It runs with the complement control group, the CRT and the union strategy
+only, the settings it was built and checked on; the others are refused rather
+than given 0/1 behaviour silently.
+
+### The statistic
+
+sceptre's score statistic over the treated cells `T` is built from per-cell
+pieces `a`, `w` and `D` fitted once per gene under the null:
+`z = sum_T a / sqrt(sum_T w - sum_k (sum_T D_k)^2)`. The dose test replaces
+membership with a weight `t`:
+
+    z = sum t a / sqrt( sum t^2 w - sum_k (sum t D_k)^2 )
+
+which is the score test of the same negative binomial model with the 0/1
+treatment column replaced by `t`, an effect on the log scale proportional to
+the weight. Two consequences are tested in `test_dose_test.py`: weights of 1
+give sceptre's statistic, and a constant weight cancels, so only relative
+weights matter. The fold change is reported at full weight, with the effect
+linear in `t`: `1 + sum t (y - mu) / sum t^2 mu`, which is sceptre's
+`sum y / sum mu` when every weight is 1.
+
+### Weights from gRNA counts
+
+`dose_weights` builds the cells and weights from a raw count matrix. A cell's
+count for a target is its largest count over the target's gRNAs, as the union
+strategy counts a cell carrying two of a target's gRNAs as one treated cell.
+The cell is kept when that count is above `floor`, and weighted
+
+    t = clip( log(c / floor) / log(ceiling / floor), 0, 1 )
+
+so the weight rises linearly in `log c` from 0 at the floor to 1 at the
+ceiling. The log scale follows the dose response measured on positive
+controls, where knockdown deepens steadily with the guide's count from a few
+UMIs to several hundred:
+
+| guide UMIs | 1 to 3 | 4 to 10 | 11 to 20 | 21 to 50 | 51 to 100 | 101 to 200 | 201 to 500 | 501+ |
+|---|---|---|---|---|---|---|---|---|
+| day0 | 0.98 | 0.84 to 0.92 | 0.82 to 0.86 | 0.77 | 0.72 | 0.68 | 0.60 | 0.53 |
+| day2 | 0.96 to 0.99 | 0.84 to 0.89 | 0.74 to 0.79 | 0.65 to 0.72 | 0.60 | 0.55 | 0.48 | 0.39 |
+
+Expression of the TSS gene relative to cells with no gRNA of the target,
+median over 266 TSS positive-control pairs, in cells with no other gRNA of the
+same target; a range covers the finer bins inside a column.
+
+### The floor comes from the counts
+
+`dose_weights` estimates the floor by default (`floor="auto"`) with
+`estimate_dose_floor`, which reads nothing but the count matrix. Entries of a
+single UMI behave like chimeras: in Cell Ranger's `molecule_info.h5` for three
+channels of these screens, about 40% of their molecules carried one read,
+against 10 to 20% for entries of 50 UMIs or more, and their spread over gRNAs
+followed the ambient profile of empty droplets (Spearman 0.81 to 0.91) where
+the 4 to 19 UMI entries did not (0.05 to 0.07). So for each count `k` the
+estimator fits the entries with exactly `k` UMIs as a mixture of the
+single-UMI entries' spread over gRNAs and the spread of entries with at least
+50 UMIs, by maximum likelihood, and calls the noise share the weight of the
+first. The floor is the largest `k` whose noise share is at least one half.
+
+| count | 1 | 2 | 3 | 4 | 5 | 6 | 8 | 10 |
+|---|---|---|---|---|---|---|---|---|
+| day0 noise share | 1.00 | 1.00 | 0.39 | 0.20 | 0.12 | 0.08 | 0.05 | 0.03 |
+| day2 noise share | 1.00 | 1.00 | 0.77 | 0.50 | 0.36 | 0.26 | 0.14 | 0.08 |
+
+On the cells that passed QC, that puts the floor at 2 on day0, in all of 100
+bootstrap resamples of gRNAs, and at 4 on day2, where the share at 4 sits on
+the half (0.501) and the resamples split 53 to 47 between 3 and 4. Over every
+cell, QC removed ones included, day2's share at 4 is 0.491 and the floor 3. It
+takes under a second on either screen's whole count matrix.
+
+The positive controls cannot do this. Fitting the ramp's floor and ceiling to
+their knockdown gave a floor of 1.64 on day0 with a bootstrap interval of 0.50
+to 8.31, and the two halves of the controls disagreed (3.00 against 1.21): the
+cells at 2 to 5 UMIs are too few and their effect too small, and a log ramp
+lets the fitted floor trade against the slope. The floor matters little within
+that range, which is why a counts-only estimate is enough:
+
+| floor, ceiling | day0 PC median z | day0 calibration KS | day0 cis down links | day2 PC median z | day2 calibration KS | day2 cis down links |
+|---|---|---|---|---|---|---|
+| fitted to the positive controls (day0 1.64, 5000; day2 1.83, 990) | -7.91 | 0.020 | 215 | -8.80 | 0.014 | 315 |
+| 3, 500 | -7.79 | 0.021 | 214 | -8.78 | 0.017 | 314 |
+| 5, 500 | -7.80 | 0.021 | 222 | -8.77 | 0.014 | 307 |
+
+Same pairs, cutoff rule and calibration pairs as the table under "Measured on
+day0 and day2", but run before weights were drawn per stage, so the resampled
+weights, not the observed ones, differ from the shipped code's. Moving the floor from about 2 to 5 moves the down links by up to
+8, in different directions on the two screens; the positive-control medians
+move by at most 0.12 and the calibration KS distance by at most 0.003.
+
+Non-targeting gRNAs keep their own cells and weights. The calibration check
+regroups them, and a synthetic target's cell takes its largest weight over the
+group's gRNAs, the same rule as a target's largest count over its gRNAs.
+
+### Resampled weights follow the propensity
+
+The CRT places cells in each resample from the fitted propensities exactly as
+sceptre does, with the same index draws. A placed cell then needs a weight,
+and it takes one drawn from the observed weights of the treated cells in its
+own propensity quartile. The dose depends on the covariates the propensity
+depends on (a deeper cell has more guide UMIs), so a weight drawn without
+regard to the propensity would give a resampled deep cell a typical cell's
+dose. Quartiles are a choice, not a tuned value.
+
+Weights are drawn per stage, only for the resamples a pair reaches, from a
+generator seeded by the stage's bounds and by one number taken from the
+target's own stream after its index draws. A result therefore does not depend
+on which pairs escalated first, on `n_jobs`, or on the process, and the index
+draws stay sceptre's because nothing is taken from the stream before them.
+
+### Measured on day0 and day2
+
+Two screens, the lab's threshold-20 assignment against the dose test with
+`dose_weights` defaults (floor estimated from the counts, ceiling 500),
+pysceptre on the full cis pair sets, BH at 10%; calibration on the same 5,000
+negative-control pairs for both tests on a screen; specificity against the
+same 100,000 randomly chosen trans pairs. Runtimes are the cis run, 8 jobs, on
+an Apple M4 Max (14 cores, 36 GB, macOS, so threads), the two tests back to
+back with nothing else running. "Down links above background" sums, over
+`run_specificity_check`'s distance bins, each bin's links times its `above`
+share, so it counts down-regulated links only.
+
+| | day0, 0/1 | day0, dose | day2, 0/1 | day2, dose |
+|---|---|---|---|---|
+| floor | | 2 | | 4 |
+| calibration KS distance | 0.032 | 0.024 | 0.019 | 0.014 |
+| calibration p < 0.05 | 6.1% | 5.9% | 5.5% | 5.3% |
+| positive controls, median z | -7.39 | -7.74 | -8.28 | -8.77 |
+| positive controls with larger \|z\| than 0/1 | | 86% | | 77% |
+| cis links (down / up) | 261 (219 / 42) | 257 (218 / 39) | 384 (321 / 63) | 385 (320 / 65) |
+| down links within 100 kb | 188 | 189 | 194 | 202 |
+| trans background rate | 0.00084 | 0.00080 | 0.00131 | 0.00132 |
+| down links above background | 194 | 193 | 236 | 240 |
+| cis runtime | 136 s | 184 s | 133 s | 159 s |
+
+The dose test is calibrated and stronger on positive controls, finds about as
+many cis links, and its links stand above the trans background as well as the
+0/1 test's do, with a background no higher. Positive controls sit far past any
+cutoff, so a larger `|z|` there adds no pair. It costs 1.2 to 1.35 times the
+0/1 test's runtime; drawing every resample's weights up front, before they were
+drawn per stage, cost 1.7 to 2.7 times.
+
+### What the dose test does not establish
+
+There is no external ground truth. The checks are the reductions to sceptre,
+the statistic against its dense formula, uniform p-values on synthetic null
+data whose weights follow a covariate, and the negative controls of two
+screens. The ramp's shape is a modelling choice backed by the dose response
+above, not a fitted model of it.

@@ -1,7 +1,7 @@
 # API reference
 
-Generated from the source. Ten functions make up the public API, and all
-ten are importable from the top level (`from pysceptre import
+Generated from the source. Eleven functions make up the public API, and all
+eleven are importable from the top level (`from pysceptre import
 run_discovery_analysis`) as well as from their defining module.
 
 !!! note "Reading these signatures"
@@ -127,6 +127,23 @@ methods; `assign_grnas_fishash` is not sceptre's (a port of fishash). See
 ::: pysceptre.assignment.cells.cells_by_target
 
 ::: pysceptre.assignment.cells.cells_w_zero_or_twoplus_grnas
+
+## The dose test
+
+Not from sceptre. Each cell carries a target with a weight set by its gRNA UMI
+count instead of being called; the three analyses take the weights through
+`grna_target_weights` (`ntc_grna_weights` for the calibration check). See
+[Design decisions](design.md#the-dose-test).
+
+::: pysceptre.assignment.dose.dose_weights
+
+::: pysceptre.assignment.dose.DoseWeights
+
+::: pysceptre.assignment.dose.dose_ramp
+
+::: pysceptre.assignment.dose.estimate_dose_floor
+
+::: pysceptre.assignment.dose.DoseFloor
 
 ## Lower-level building blocks
 

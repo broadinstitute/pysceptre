@@ -4,9 +4,9 @@ Standalone Python port of the statistical engine behind
 [`sceptre`](https://github.com/Katsevich-Lab/sceptre)'s discovery analysis for
 single-cell CRISPR screens.
 
-**Scope: sceptre's three analyses and its gRNA assignment, plus three
-things that are not sceptre's (an estimator, a check and fishash's gRNA
-assignment), not a general sceptre reimplementation.** The three analyses are
+**Scope: sceptre's three analyses and its gRNA assignment, plus four
+things that are not sceptre's (an estimator, a check, fishash's gRNA
+assignment and the dose test), not a general sceptre reimplementation.** The three analyses are
 discovery analysis, the calibration check and the power check, for high- and
 low-MOI screens: the complement and NT-cells control groups, with CRT
 (conditional randomization test) or permutation resampling. The assignment is
@@ -68,6 +68,18 @@ motivated this (fishash against the mixture, Gaussian
 mixtures and the lab's CMO procedure, on the fishash preprint's simulations)
 lives in `scripts/fishash_eval/`; its results belong to the manuscript.
 
+The **dose test** is a **seventh**, and it is not sceptre's either. With
+per-cell weights (`grna_target_weights`; `ntc_grna_weights` for the
+calibration check) the three analyses replace the 0/1 treatment in sceptre's
+score statistic by a weight, so a cell carries a target with a weight set by
+its gRNA UMI count instead of being called. `assignment/dose.py`
+(`dose_weights`, `dose_ramp`) builds the weights from counts, with the floor
+estimated from the counts by default (`estimate_dose_floor`). It is a route
+next to sceptre's test, never a replacement: without weights, or with weights
+all 1, every result must stay sceptre's exactly, and `test_dose_test.py`
+checks that. It has no external ground truth; `docs/design.md`, "The dose
+test", has the statistic, the resampled weights and what was measured.
+
 **One carve-out from "no `run_qc()`".** The calibration and power checks
 *construct or receive* their own pairs, so both must decide which are testable
 at all. Pairwise nonzero-count filtering therefore lives in
@@ -114,7 +126,9 @@ src-layout -- the importable package lives under `src/`, so it is only on
                            sceptre, fishash (`fishash.py`, with R's `phyper`
                            in `hypergeom.py`), all behind `assign_grnas` in
                            `api.py`; `cells.py` turns an assignment into cell
-                           sets. gRNAs x cells, sparse throughout.
+                           sets, and `dose.py` turns counts into the dose
+                           test's cells and weights. gRNAs x cells, sparse
+                           throughout.
 - `tests/validation/`   -- the whole suite, in one place. **Most** files
                            compare against R ground truth rather than only
                            internal consistency, but not all:
@@ -325,6 +339,16 @@ Python 3.10+ (`requires-python`). Verified passing on 3.10, 3.11, 3.12, 3.13.
   `boost::mt19937`; this uses `numpy.random.Generator`. Validation matches
   *distributions*, not draws. Don't chase exact agreement.
 
+- **The dose test's resampled weights are drawn per stage, not up front.**
+  `_StratifiedWeights` in `pipeline/discovery.py` draws a stage's weights
+  only when a pair reaches it, from a generator seeded by the stage bounds
+  and one number taken from the target's stream *after* its index draws. Two
+  things depend on that: the index draws stay sceptre's, and a result does
+  not depend on which pairs escalated first or on `n_jobs`. Drawing all
+  `B1 + B2 + B3` weights eagerly was the dominant extra cost of the dose path.
+  The test refuses the NT-cells control group, permutations and the per-guide
+  strategies; lifting one is a design change, not a missing branch.
+
 - **`B1`/`B2`/`B3` are derived in `api.py::_resampling_budget`, porting R's
   own sizing** (`s4_analysis_functs_1.R`: set in `run_discovery_analysis`,
   then B3 recomputed in `run_qc_pt_2`). `B1=499` always; `skew_normal` gives
@@ -405,7 +429,11 @@ Python 3.10+ (`requires-python`). Verified passing on 3.10, 3.11, 3.12, 3.13.
   screen), so
   a target-keyed export silently drops every NTC and makes the calibration
   check impossible. Both kinds are stored as rows of one annotated `var` with a
-  `unit_kind` of `target` or `ntc_grna`. Don't collapse them back.
+  `unit_kind` of `target` or `ntc_grna`. Don't collapse them back. Raw gRNA
+  UMI counts, which the dose test needs, are an optional third assay,
+  `grna_counts`, indexed by position with the gRNA ids in `var["grna_id"]`:
+  MuData needs `var` names unique across assays, and the `grna` assay already
+  uses those ids.
 
 - **Calibration QC is a filter on construction, not a reported column.**
   A discovery result reports failures in-band (`pass_qc = False`, NaN p-value:
