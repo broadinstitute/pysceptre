@@ -547,6 +547,40 @@ _TARGET_STATE: dict[int, dict] = {}
 _TARGET_STATE_SEQ = itertools.count()
 
 
+_DOSE_STRATA = 4
+
+
+def _stratified_weight_draws(
+    weights: np.ndarray,
+    observed_probabilities: np.ndarray,
+    probabilities: np.ndarray,
+    synthetic_idxs: list[np.ndarray],
+    rng: np.random.Generator,
+) -> list[np.ndarray]:
+    """A weight for every placed cell, drawn from the observed weights of its propensity stratum.
+
+    Strata are the quartiles of the propensity over the cells that carry the target; a placed
+    cell falls in the stratum of its own propensity, and a stratum without observed cells draws
+    from all of them.
+    """
+    edges = np.quantile(observed_probabilities, np.linspace(0, 1, _DOSE_STRATA + 1)[1:-1])
+    observed_bin = np.searchsorted(edges, observed_probabilities, side="right")
+    pools = [weights[observed_bin == b] for b in range(_DOSE_STRATA)]
+    pools = [p if p.size else weights for p in pools]
+    lengths = np.fromiter(
+        (len(i) for i in synthetic_idxs), dtype=np.int64, count=len(synthetic_idxs)
+    )
+    if lengths.sum() == 0:
+        return [np.empty(0) for _ in synthetic_idxs]
+    placed_bin = np.searchsorted(edges, probabilities[np.concatenate(synthetic_idxs)], side="right")
+    drawn = np.empty(placed_bin.size)
+    for b in range(_DOSE_STRATA):
+        m = placed_bin == b
+        if m.any():
+            drawn[m] = rng.choice(pools[b], size=int(m.sum()), replace=True)
+    return np.split(drawn, np.cumsum(lengths)[:-1])
+
+
 def _target_draw_job(job: tuple[int, int, str]) -> tuple[str, TargetPrecomputation]:
     """One target's resamples.
 
@@ -569,14 +603,18 @@ def _target_draw_job(job: tuple[int, int, str]) -> tuple[str, TargetPrecomputati
             draws = ListDraws(synthetic_idxs, st["n_cells"])
         else:
             # The dose test: each placed cell takes a weight drawn from the target's own
-            # weights, after the index draws so those match sceptre's; a constant weight
-            # draws nothing. `docs/design.md`, "The dose test".
+            # weights within its propensity quartile, after the index draws so those match
+            # sceptre's; a constant weight draws nothing. `docs/design.md`, "The dose test".
             if np.ptp(weights) == 0:
                 synthetic_w = [np.full(len(i), weights[0]) for i in synthetic_idxs]
             else:
-                synthetic_w = [
-                    rng.choice(weights, size=len(i), replace=True) for i in synthetic_idxs
-                ]
+                synthetic_w = _stratified_weight_draws(
+                    weights,
+                    fitted_probabilities[trt_idxs],
+                    fitted_probabilities,
+                    synthetic_idxs,
+                    rng,
+                )
             draws = WeightedListDraws(synthetic_idxs, synthetic_w, st["n_cells"])
     else:
         # Permutations: every target reads the same draws, taking a prefix
