@@ -237,6 +237,26 @@ def group_cells(
     return union.astype(np.int64, copy=False)
 
 
+def group_weights(
+    member_ids: list[str],
+    ntc_grna_cells: dict[str, np.ndarray],
+    ntc_grna_weights: dict[str, np.ndarray],
+) -> np.ndarray:
+    """Dose weights of a synthetic target, aligned with `group_cells`: a cell's largest weight
+    over the members that carry it, as a target's cell takes its largest count over its gRNAs.
+    """
+    if not member_ids:
+        return np.empty(0)
+    cells = np.concatenate([ntc_grna_cells[g] for g in member_ids])
+    weights = np.concatenate([ntc_grna_weights[g] for g in member_ids])
+    if cells.size == 0:
+        return weights
+    order = np.argsort(cells, kind="stable")
+    cells, weights = cells[order], weights[order]
+    first = np.flatnonzero(np.r_[True, cells[1:] != cells[:-1]])
+    return np.maximum.reduceat(weights, first)
+
+
 def build_negative_control_pairs(
     response_matrix,
     gene_ids: list[str],

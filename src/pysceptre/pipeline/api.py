@@ -19,7 +19,9 @@ from scipy import sparse
 from ..glm.design import redundant_columns
 from ..glm.design import validate_design_matrix as _validate_covariate_matrix
 from .calibration import (
+    GROUP_NAME_SEPARATOR,
     build_negative_control_pairs,
+    group_weights,
     negative_control_pairs_from_names,
 )
 from .discovery import (
@@ -164,18 +166,20 @@ def _restrict_cells(response_matrix, cells: np.ndarray):
 
 
 def _check_dose_weights(
-    grna_target_weights: dict[str, np.ndarray], grna_target_cells: dict[str, np.ndarray]
+    weights: dict[str, np.ndarray],
+    cells_of: dict[str, np.ndarray],
+    name: str = "grna_target_weights",
 ) -> dict[str, np.ndarray]:
     """The dose test's weights as float64 arrays, one finite positive weight per listed cell."""
     out = {}
-    for t, cells in grna_target_cells.items():
-        if t not in grna_target_weights:
-            raise ValueError(f"grna_target_weights has no weights for target {t!r}")
-        wts = np.asarray(grna_target_weights[t], dtype=np.float64)
+    for t, cells in cells_of.items():
+        if t not in weights:
+            raise ValueError(f"{name} has no weights for {t!r}")
+        wts = np.asarray(weights[t], dtype=np.float64)
         if wts.shape != cells.shape:
-            raise ValueError(f"target {t!r}: {wts.size} weights for {cells.size} cells")
+            raise ValueError(f"{name}[{t!r}]: {wts.size} weights for {cells.size} cells")
         if wts.size and (not np.all(np.isfinite(wts)) or wts.min() <= 0):
-            raise ValueError(f"target {t!r}: weights must be finite and positive")
+            raise ValueError(f"{name}[{t!r}]: weights must be finite and positive")
         out[t] = wts
     return out
 
@@ -262,6 +266,12 @@ def run_discovery_analysis(
         it. You should not normally need to change this; the default is the
         fastest and leanest setting measured. Reductions to
         `target_chunk_size` are warned about and do not change results.
+    grna_target_weights: `{target: weights}`, aligned with `grna_target_cells`, runs the dose
+        test instead of sceptre's: each treated cell enters the score statistic with its weight
+        in place of 1 (`dose_weights` builds both dicts from gRNA counts). Weights must be
+        finite and positive; all-ones weights give sceptre's result exactly. Complement control
+        group, CRT and `grna_integration_strategy="union"` only. Not from sceptre:
+        `docs/design.md`, "The dose test".
     """
     control_group, resampling_mechanism = resolve_analysis_settings(
         moi, control_group, resampling_mechanism
@@ -465,6 +475,7 @@ def run_calibration_check(
     chunk_memory_gb: float = _DEFAULT_CHUNK_MEMORY_GB,
     n_jobs: int = 1,
     resampling_mechanism: str | None = None,
+    ntc_grna_weights: dict[str, np.ndarray] | None = None,
 ) -> pd.DataFrame:
     """Run sceptre's calibration check: the discovery test over negative controls.
 
@@ -499,18 +510,28 @@ def run_calibration_check(
         the validation path -- R's own pair selection is unseeded and varies
         run to run, so a pair-by-pair comparison is only meaningful when both
         sides are given the same pairs.
+    ntc_grna_weights: `{NTC gRNA id: dose weights}`, aligned with `ntc_grna_cells`, to check the
+        dose test instead of sceptre's: a synthetic target's cell takes its largest weight over
+        the group's gRNAs (`DoseWeights.ntc_grna_weights`). Complement control group and CRT only,
+        as in `run_discovery_analysis`.
 
     Returns the same columns as `run_discovery_analysis`.
     """
     control_group, resampling_mechanism = resolve_analysis_settings(
         moi, control_group, resampling_mechanism
     )
+    if ntc_grna_weights is not None and control_group == "nt_cells":
+        raise ValueError(
+            "the dose test (ntc_grna_weights) runs with the complement control group only"
+        )
     # Checked here, before the NT-cells restriction below gives both matrices the
     # same width and hides a mismatch.
     _validate_covariate_matrix(covariate_matrix, n_cells=response_matrix.shape[1])
     covariate_matrix = np.asarray(covariate_matrix, dtype=float)
     n_cells = covariate_matrix.shape[0]
     ntc_grna_cells = {g: np.asarray(c, dtype=np.int64) for g, c in ntc_grna_cells.items()}
+    if ntc_grna_weights is not None:
+        ntc_grna_weights = _check_dose_weights(ntc_grna_weights, ntc_grna_cells, "ntc_grna_weights")
     # R drops the NT gRNAs QC left without cells before it builds any group; a
     # supplied pair may still name one, and it then contributes no cells.
     with_cells = {g: c for g, c in ntc_grna_cells.items() if len(c)}
@@ -566,6 +587,13 @@ def run_calibration_check(
                     "which leaves no control cells against the NT cells"
                 )
 
+    synthetic_target_weights = None
+    if ntc_grna_weights is not None:
+        synthetic_target_weights = {
+            t: group_weights(t.split(GROUP_NAME_SEPARATOR), ntc_grna_cells, ntc_grna_weights)
+            for t in synthetic_target_cells
+        }
+
     permutation_width = None
     engine_seed = seed
     if resampling_mechanism == "permutations":
@@ -597,6 +625,7 @@ def run_calibration_check(
         n_jobs=n_jobs,
         resampling_mechanism=resampling_mechanism,
         permutation_width=permutation_width,
+        grna_target_weights=synthetic_target_weights,
     )
 
 
@@ -620,6 +649,7 @@ def run_power_check(
     chunk_memory_gb: float = _DEFAULT_CHUNK_MEMORY_GB,
     n_jobs: int = 1,
     resampling_mechanism: str | None = None,
+    grna_target_weights: dict[str, np.ndarray] | None = None,
 ) -> pd.DataFrame:
     """Run sceptre's power check: the discovery test over positive controls.
 
@@ -644,7 +674,7 @@ def run_power_check(
         overstate power by hiding the controls the screen had too few cells
         to test. With `control_group="nt_cells"` the control count is the
         gene's nonzero NT cells, as in R.
-    moi, control_group, ntc_grna_cells, resampling_mechanism: as in
+    moi, control_group, ntc_grna_cells, resampling_mechanism, grna_target_weights: as in
         `run_discovery_analysis`, with the same MOI-dependent defaults.
 
     Returns one row per supplied pair, with `pass_qc`, `n_nonzero_trt` and
@@ -705,6 +735,7 @@ def run_power_check(
         chunk_memory_gb=chunk_memory_gb,
         n_jobs=n_jobs,
         resampling_mechanism=resampling_mechanism,
+        grna_target_weights=grna_target_weights,
     )
     return merge_qc_failures(tested, annotated)
 

@@ -5,9 +5,9 @@ constant weight gives sceptre's statistic and p-values (the scale cancels) and a
 effect is scaled by the inverse weight; the weighted statistic matches its dense formula, a cell
 placed twice included; the settings it does not support are refused; and on null data whose weights
 follow a covariate its p-values are uniform. Targets on both sides of the CRT sampler's 0.2%
-threshold are covered. Also: `dose_weights` builds cells and weights from counts, `estimate_dose_floor`
-finds where single-UMI-like noise ends on synthetic counts, and per-stage weight draws do not depend
-on call order or on `n_jobs`.
+threshold are covered. Also: `dose_weights` builds cells and weights from counts, `estimate_dose_floor` finds where
+single-UMI-like noise ends on synthetic counts, per-stage weight draws do not depend on call order, and the calibration and power checks reduce to sceptre's
+with unit weights.
 """
 
 from __future__ import annotations
@@ -17,8 +17,9 @@ import pandas as pd
 import pytest
 from scipy import sparse, stats
 
-from pysceptre import dose_weights, run_discovery_analysis
+from pysceptre import dose_weights, run_calibration_check, run_discovery_analysis, run_power_check
 from pysceptre.assignment import dose_ramp, estimate_dose_floor
+from pysceptre.pipeline.calibration import group_cells, group_weights
 from pysceptre.pipeline.discovery import _StratifiedWeights
 from pysceptre.precompute.pieces import compute_precomputation_pieces
 from pysceptre.test_statistic.score_stat import (
@@ -44,10 +45,7 @@ def _data(seed=0, n_genes=3):
     small = np.sort(rng.choice(rest, 30, replace=False))  # below: fast sampler
     cells = {"big": big, "small": small}
     pairs = pd.DataFrame(
-        {
-            "response_id": genes * 2,
-            "grna_target": ["big"] * n_genes + ["small"] * n_genes,
-        }
+        {"response_id": genes * 2, "grna_target": ["big"] * n_genes + ["small"] * n_genes}
     )
     return Y, genes, X, cells, pairs, lib
 
@@ -139,15 +137,7 @@ def test_unsupported_settings_and_bad_weights_are_refused(kwargs):
         )
     with pytest.raises(ValueError):
         run_discovery_analysis(
-            Y,
-            genes,
-            X,
-            cells,
-            pairs,
-            seed=1,
-            grna_target_weights=weights,
-            **kwargs,
-            **extra,
+            Y, genes, X, cells, pairs, seed=1, grna_target_weights=weights, **kwargs, **extra
         )
 
 
@@ -159,13 +149,7 @@ def test_dose_test_is_calibrated_on_null_data_with_covariate_dependent_weights()
     weights = {"big": 0.1 + 0.9 * rank, "small": np.full(cells["small"].size, 1.0)}
     big_pairs = pairs[pairs.grna_target == "big"].reset_index(drop=True)
     res = run_discovery_analysis(
-        Y,
-        genes,
-        X,
-        {"big": idx},
-        big_pairs,
-        seed=2,
-        grna_target_weights={"big": weights["big"]},
+        Y, genes, X, {"big": idx}, big_pairs, seed=2, grna_target_weights={"big": weights["big"]}
     )
     p = res["p_value"].dropna().to_numpy()
     assert p.size == 120
@@ -223,6 +207,76 @@ def test_stratified_weights_depend_on_the_stage_not_on_call_order():
     placed = np.searchsorted(edges, probabilities[flat], side="right")
     for b in range(4):
         assert np.isin(a1[placed == b], weights[observed == b]).all()
+
+
+def _ntc(seed=0, n_ntc=6, per=400):
+    rng = np.random.default_rng(seed)
+    cells = {f"n{i}": np.sort(rng.choice(N_CELLS, per, replace=False)) for i in range(n_ntc)}
+    weights = {g: rng.uniform(0.05, 1.0, c.size) for g, c in cells.items()}
+    return cells, weights
+
+
+def test_group_weights_take_the_largest_weight_over_the_groups_grnas():
+    cells = {"a": np.array([1, 5, 9]), "b": np.array([5, 7])}
+    weights = {"a": np.array([0.2, 0.3, 0.9]), "b": np.array([0.8, 0.1])}
+    np.testing.assert_array_equal(group_cells(["a", "b"], cells, 10), [1, 5, 7, 9])
+    np.testing.assert_allclose(group_weights(["a", "b"], cells, weights), [0.2, 0.8, 0.1, 0.9])
+
+
+def test_calibration_check_with_unit_or_constant_weights_gives_sceptres_result():
+    Y, genes, X, _, _, _ = _data()
+    ntc_cells, _ = _ntc()
+    kw = dict(n_calibration_pairs=6, calibration_group_size=2, seed=3)
+    plain = run_calibration_check(Y, genes, X, ntc_cells, **kw)
+    ones = run_calibration_check(
+        Y,
+        genes,
+        X,
+        ntc_cells,
+        ntc_grna_weights={g: np.ones(c.size) for g, c in ntc_cells.items()},
+        **kw,
+    )
+    pd.testing.assert_frame_equal(plain, ones)
+    half = run_calibration_check(
+        Y,
+        genes,
+        X,
+        ntc_cells,
+        ntc_grna_weights={g: np.full(c.size, 0.5) for g, c in ntc_cells.items()},
+        **kw,
+    )
+    np.testing.assert_allclose(half["z_orig"], plain["z_orig"], rtol=1e-10)
+    np.testing.assert_allclose(half["p_value"], plain["p_value"], rtol=1e-10)
+
+
+def test_calibration_check_with_dose_weights_runs_and_refuses_the_nt_cells():
+    Y, genes, X, _, _, _ = _data()
+    ntc_cells, ntc_weights = _ntc()
+    kw = dict(n_calibration_pairs=6, calibration_group_size=2, seed=3)
+    res = run_calibration_check(Y, genes, X, ntc_cells, ntc_grna_weights=ntc_weights, **kw)
+    assert len(res) == 6 and res["p_value"].notna().all()
+    with pytest.raises(ValueError):
+        run_calibration_check(
+            Y, genes, X, ntc_cells, ntc_grna_weights=ntc_weights, control_group="nt_cells", **kw
+        )
+    with pytest.raises(ValueError):
+        short = dict(ntc_weights, n0=ntc_weights["n0"][:-1])
+        run_calibration_check(Y, genes, X, ntc_cells, ntc_grna_weights=short, **kw)
+
+
+def test_power_check_with_unit_weights_gives_sceptres_result():
+    Y, genes, X, cells, pairs, _ = _data()
+    plain = run_power_check(Y, genes, X, cells, positive_control_pairs=pairs, seed=1)
+    ones = run_power_check(
+        Y,
+        genes,
+        X,
+        cells,
+        positive_control_pairs=pairs,
+        seed=1,
+        grna_target_weights={t: np.ones(c.size) for t, c in cells.items()},
+    )
+    pd.testing.assert_frame_equal(plain, ones)
 
 
 def _noise_and_real_counts(seed=0, n_grnas=300, n_cells=20_000):
