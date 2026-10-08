@@ -5,7 +5,9 @@ constant weight gives sceptre's statistic and p-values (the scale cancels) and a
 effect is scaled by the inverse weight; the weighted statistic matches its dense formula, a cell
 placed twice included; the settings it does not support are refused; and on null data whose weights
 follow a covariate its p-values are uniform. Targets on both sides of the CRT sampler's 0.2%
-threshold are covered. Also: per-stage weight draws do not depend on call order or on `n_jobs`.
+threshold are covered. Also: `dose_weights` builds cells and weights from counts, `estimate_dose_floor`
+finds where single-UMI-like noise ends on synthetic counts, and per-stage weight draws do not depend
+on call order or on `n_jobs`.
 """
 
 from __future__ import annotations
@@ -15,7 +17,8 @@ import pandas as pd
 import pytest
 from scipy import sparse, stats
 
-from pysceptre import run_discovery_analysis
+from pysceptre import dose_weights, run_discovery_analysis
+from pysceptre.assignment import dose_ramp, estimate_dose_floor
 from pysceptre.pipeline.discovery import _StratifiedWeights
 from pysceptre.precompute.pieces import compute_precomputation_pieces
 from pysceptre.test_statistic.score_stat import (
@@ -169,6 +172,38 @@ def test_dose_test_is_calibrated_on_null_data_with_covariate_dependent_weights()
     assert stats.kstest(p, "uniform").pvalue > 0.01
 
 
+def test_dose_weights_take_each_cells_largest_count_over_the_targets_grnas():
+    #          cell:  0   1    2  3  4
+    counts = np.array(
+        [
+            [2, 3, 0, 0, 0],  # g1 -> T
+            [10, 0, 600, 0, 0],  # g2 -> T
+            [0, 0, 0, 4, 1],  # n1 -> non-targeting
+        ]
+    )
+    design = pd.DataFrame(
+        {"grna_id": ["g1", "g2", "n1"], "grna_target": ["T", "T", "non-targeting"]}
+    )
+    d = dose_weights(sparse.csr_matrix(counts), ["g1", "g2", "n1"], design, floor=3, ceiling=500)
+    np.testing.assert_array_equal(d.grna_target_cells["T"], [0, 2])  # cell 1's 3 is not above 3
+    np.testing.assert_allclose(d.grna_target_weights["T"], [np.log(10 / 3) / np.log(500 / 3), 1.0])
+    np.testing.assert_array_equal(d.ntc_grna_cells["n1"], [3])
+    np.testing.assert_allclose(d.ntc_grna_weights["n1"], [np.log(4 / 3) / np.log(500 / 3)])
+    assert list(d.grna_target_cells) == ["T"]
+    np.testing.assert_allclose(
+        dose_ramp([1, 3, 30, 500, 900], floor=3, ceiling=300), [0, 0, 0.5, 1, 1]
+    )
+
+
+@pytest.mark.parametrize("bad", ["non_integer", "floor"])
+def test_dose_weights_refuse_bad_input(bad):
+    design = pd.DataFrame({"grna_id": ["g1"], "grna_target": ["T"]})
+    counts = np.array([[1.5, 4.0]]) if bad == "non_integer" else np.array([[1, 4]])
+    kwargs = {"floor": 500, "ceiling": 3} if bad == "floor" else {}
+    with pytest.raises(ValueError):
+        dose_weights(counts, ["g1"], design, **kwargs)
+
+
 def test_stratified_weights_depend_on_the_stage_not_on_call_order():
     rng = np.random.default_rng(0)
     probabilities = rng.uniform(0, 0.01, 5000)
@@ -188,6 +223,47 @@ def test_stratified_weights_depend_on_the_stage_not_on_call_order():
     placed = np.searchsorted(edges, probabilities[flat], side="right")
     for b in range(4):
         assert np.isin(a1[placed == b], weights[observed == b]).all()
+
+
+def _noise_and_real_counts(seed=0, n_grnas=300, n_cells=20_000):
+    """Noise entries of 1 to 3 UMIs spread over gRNAs by one profile, real ones of 4 to 2,000 by
+    another, at distinct (gRNA, cell) positions."""
+    rng = np.random.default_rng(seed)
+    noise_profile = rng.dirichlet(np.ones(n_grnas))
+    real_profile = rng.dirichlet(np.ones(n_grnas))
+    n_noise = {1: 60_000, 2: 6_000, 3: 1_500}
+    n_real = 8_000
+    rows = [rng.choice(n_grnas, size=n, p=noise_profile) for n in n_noise.values()]
+    rows.append(rng.choice(n_grnas, size=n_real, p=real_profile))
+    values = [np.full(n, k) for k, n in n_noise.items()]
+    values.append(np.clip(np.round(np.exp(rng.uniform(np.log(4), np.log(2000), n_real))), 4, None))
+    rows, values = np.concatenate(rows), np.concatenate(values)
+    cells = rng.permutation(n_grnas * n_cells)[: rows.size] % n_cells  # one cell per entry, mostly
+    m = sparse.coo_matrix((values, (rows, cells)), shape=(n_grnas, n_cells)).tocsr()
+    m.sum_duplicates()
+    return m
+
+
+def test_estimate_dose_floor_finds_where_single_umi_like_noise_ends():
+    f = estimate_dose_floor(_noise_and_real_counts())
+    assert f.floor == 3
+    assert f.noise_share.loc[1:3].min() > 0.9
+    assert f.noise_share.loc[5:10].max() < 0.1
+    assert f.n_entries.loc[1] > f.n_entries.loc[2] > f.n_entries.loc[3]
+
+
+def test_dose_weights_auto_floor_uses_the_estimate():
+    m = _noise_and_real_counts()
+    design = pd.DataFrame({"grna_id": [f"g{i}" for i in range(m.shape[0])], "grna_target": "T"})
+    ids = list(design.grna_id)
+    auto = dose_weights(m, ids, design)
+    assert auto.floor == 3.0
+    fixed = dose_weights(m, ids, design, floor=3.0)
+    np.testing.assert_array_equal(auto.grna_target_cells["T"], fixed.grna_target_cells["T"])
+    with pytest.raises(ValueError):
+        dose_weights(m, ids, design, floor="median")
+    with pytest.raises(ValueError):
+        estimate_dose_floor(sparse.csr_matrix(np.array([[1, 2, 3]])))  # nothing with >= 50 UMIs
 
 
 def test_a_dose_result_does_not_depend_on_n_jobs():

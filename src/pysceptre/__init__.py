@@ -22,6 +22,7 @@ from .assignment import (
     assign_grnas_maximum,
     assign_grnas_mixture,
     assign_grnas_thresholding,
+    dose_weights,
 )
 from .pipeline.api import (
     run_calibration_check,
@@ -42,6 +43,7 @@ __all__ = [
     "assign_grnas_mixture",
     "assign_grnas_thresholding",
     "compute_power",
+    "dose_weights",
     "run_discovery_analysis",
     "run_calibration_check",
     "run_power_check",
