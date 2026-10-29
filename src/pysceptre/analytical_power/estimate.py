@@ -6,8 +6,8 @@ has already been run: complement control group, explicit cutoff.
 
 Given a screen that has already been analysed, it answers per pair: if this
 element really did reduce this gene by X%, would this screen have detected it?
-No simulation and no fitted parameters. On the default inputs none is a
-property of the *pair* -- expression and dispersion belong to the gene, cell
+The default method uses no simulation or new parameter fits. On its inputs
+none is a property of the *pair* -- expression and dispersion belong to the gene, cell
 counts to the element -- so it answers that question for pairs the screen
 never tested too. Per-pair expression, from `inputs.matched_expression_stats`,
 is accepted as well.
@@ -19,10 +19,17 @@ per-pair power", says which and why.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import TYPE_CHECKING
+
 import numpy as np
 import pandas as pd
 
 from .closed_form import SIDES, qc_failure_prob, rejection_prob, test_stat_distribution
+from .covariates import _compute_power_covariates
+
+if TYPE_CHECKING:
+    from .inputs import GeneFit
 
 _NON_TARGETING = "non-targeting"
 
@@ -57,8 +64,8 @@ def target_cell_counts(cells_per_grna: pd.DataFrame) -> pd.DataFrame:
 
 def compute_power(
     discovery_pairs: pd.DataFrame,
-    cells_per_grna: pd.DataFrame,
-    baseline_expression_stats: pd.DataFrame,
+    cells_per_grna: pd.DataFrame | None = None,
+    baseline_expression_stats: pd.DataFrame | None = None,
     *,
     fold_change_mean: float,
     fold_change_sd: float,
@@ -67,6 +74,10 @@ def compute_power(
     side: str = "left",
     n_nonzero_trt_thresh: int = 0,
     n_nonzero_cntrl_thresh: int = 0,
+    method: str = "homogeneous",
+    covariate_matrix: np.ndarray | None = None,
+    gene_fits: Mapping[str, GeneFit] | None = None,
+    grna_target_cells: Mapping[str, np.ndarray] | None = None,
 ) -> pd.DataFrame:
     """Analytical power for each pair in `discovery_pairs`.
 
@@ -74,12 +85,14 @@ def compute_power(
         discovery_pairs: columns `grna_target` and `response_id`, the pairs to
             score. They need not be pairs the screen tested.
         cells_per_grna: one row per individual gRNA, columns `grna_target` and
-            `num_cells` (and conventionally `grna_id`). Per-gRNA granularity
-            is required, not optional: the across-gRNA variance term needs the
+            `num_cells` (and conventionally `grna_id`). Used only by the default
+            homogeneous method. Per-gRNA granularity is required: the
+            across-gRNA variance term needs the
             sum of squared counts, which no target-level total can supply.
         baseline_expression_stats: one row per gene, columns `response_id`,
             `expression_mean` and `expression_size`. `expression_size` is the
-            NB size -- theta, i.e. `1 / dispersion`.
+            NB size -- theta, i.e. `1 / dispersion`. Used only by the default
+            homogeneous method.
 
             With a `grna_target` column it is instead one row per pair, each
             matched to its pair by `(grna_target, response_id)`. That is the
@@ -116,6 +129,28 @@ def compute_power(
             correct for pairs that already passed QC. Raise it to score pairs
             that were never tested.
         n_nonzero_cntrl_thresh: the same, for the complement group.
+        method: `"homogeneous"` preserves the PerturbPlan calculation.
+            `"covariate"` uses cell-level NB score moments with the full
+            nuisance projection and an expected restricted-null fit. It
+            requires `fold_change_sd=0` and both QC thresholds at zero.
+            Omit the two legacy input tables for this method.
+        covariate_matrix: for `method="covariate"`, the finite design matrix
+            `(num_total_cells, p)` including an intercept, in the same cell
+            and column order used for the gene fits.
+        gene_fits: for `method="covariate"`, gene -> an object exposing
+            `fitted_coefs` and finite positive NB size `theta`. The means
+            `exp(covariate_matrix @ fitted_coefs)` define the reference
+            baseline for the hypothetical fold change. Existing null fits
+            may be used as plug-in inputs, assuming their means and size
+            adequately represent that baseline.
+        grna_target_cells: for `method="covariate"`, target -> integer cell
+            indices into the design rows. These describe each target's union
+            of perturbed cells; all other design rows are controls.
+
+    The covariate method is a frozen-fit normal approximation for an NB
+    likelihood score. It does not reproduce the discovery pipeline's Poisson
+    nuisance fitting or resampling calibration. See `docs/design.md`,
+    "Covariate-aware score moments".
 
     Returns:
         `discovery_pairs` with `power` appended, in the order supplied, plus
@@ -123,6 +158,9 @@ def compute_power(
         `num_trt_cells_sq`, `num_cntrl_cells`, `expression_mean`,
         `expression_size`, `mean_test_stat`, `sd_test_stat`, `qc_failure_prob`)
         so a surprising number can be traced without recomputing it.
+        The covariate method reports union counts and the real baseline
+        fitted mean. It omits `num_trt_cells_sq`, which requires per-guide
+        assignments and is unused for a common fixed effect.
 
     Raises:
         KeyError: a pair names a target with no gRNA counts, or a gene (or,
@@ -145,6 +183,38 @@ def compute_power(
         raise ValueError(f"fold_change_sd must be finite and non-negative, got {fold_change_sd!r}")
     if n_nonzero_trt_thresh < 0 or n_nonzero_cntrl_thresh < 0:
         raise ValueError("nonzero-count thresholds must be non-negative")
+
+    if method not in ("homogeneous", "covariate"):
+        raise ValueError("method must be 'homogeneous' or 'covariate'")
+    if method == "covariate":
+        if cells_per_grna is not None or baseline_expression_stats is not None:
+            raise ValueError(
+                "omit cells_per_grna and baseline_expression_stats for method='covariate'"
+            )
+        if fold_change_sd != 0 or n_nonzero_trt_thresh != 0 or n_nonzero_cntrl_thresh != 0:
+            raise ValueError(
+                "method='covariate' requires fold_change_sd=0 and both nonzero-count thresholds=0"
+            )
+        if covariate_matrix is None or gene_fits is None or grna_target_cells is None:
+            raise ValueError(
+                "method='covariate' requires covariate_matrix, gene_fits and grna_target_cells"
+            )
+        return _compute_power_covariates(
+            discovery_pairs,
+            covariate_matrix,
+            gene_fits,
+            grna_target_cells,
+            fold_change_mean=fold_change_mean,
+            cutoff=cutoff,
+            num_total_cells=num_total_cells,
+            side=side,
+        )
+    if any(value is not None for value in (covariate_matrix, gene_fits, grna_target_cells)):
+        raise ValueError("cell-level inputs require method='covariate'")
+    if cells_per_grna is None or baseline_expression_stats is None:
+        raise ValueError(
+            "method='homogeneous' requires cells_per_grna and baseline_expression_stats"
+        )
 
     for frame, name, cols in (
         (discovery_pairs, "discovery_pairs", ("grna_target", "response_id")),

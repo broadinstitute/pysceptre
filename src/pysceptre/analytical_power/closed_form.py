@@ -1,13 +1,13 @@
-"""The closed-form per-pair power estimate, as arithmetic over arrays.
+"""Analytical power helpers for homogeneous and covariate-adjusted designs.
 
-Port of PerturbPlan's `compute_distribution_teststat`, `compute_zero_prob`,
+The homogeneous helpers port PerturbPlan's `compute_distribution_teststat`, `compute_zero_prob`,
 `compute_QC` and `rejection_computation` (`Katsevich-Lab/perturbplan`, MIT --
 see `THIRD_PARTY_LICENSES`). Those are plain R-level functions, not the
 package's `*_cpp` kernels, which serve its design/planning path; so this is a
 direct port of visible source rather than a reconstruction, the same category
 as `precompute/pieces.py`.
 
-Everything here is vectorised over pairs and holds no state. Why this
+The homogeneous helpers are vectorised over pairs and hold no state. Why this
 estimator, and the places where an obvious-looking simplification produces a
 different one, are in `docs/design.md`, "Analytical per-pair power".
 """
@@ -86,6 +86,68 @@ def test_stat_distribution(
     sd = np.sqrt((cntrl_var + trt_var_within + trt_var_across) / denominator_sq)
     mean = cntrl_expression_mean * (fold_change_mean - 1.0) / np.sqrt(denominator_sq)
     return mean, sd
+
+
+def test_stat_distribution_covariates(
+    *,
+    treatment: np.ndarray,
+    covariate_matrix: np.ndarray,
+    null_mean: np.ndarray,
+    alternative_mean: np.ndarray,
+    expression_size: float,
+) -> tuple[float, float]:
+    """Mean and sd for one cell-level NB score comparison, with fixed effects.
+
+    `treatment` is binary; `covariate_matrix` includes an intercept. All inputs
+    refer to the same cells. Means are positive vectors or scalars broadcast
+    over cells. `null_mean` is the restricted-null fit appropriate to the
+    alternative, not automatically the unperturbed baseline. NB size may be
+    positive infinity for the Poisson limit.
+
+    The caller supplies both mean vectors. No nuisance fitting, shared-guide
+    variance or resampling calibration is performed. See `docs/design.md`,
+    "Covariate-aware score moments", for the frozen-fit approximation.
+    """
+    x = np.asarray(treatment, dtype=float)
+    Z = np.asarray(covariate_matrix, dtype=float)
+    if x.ndim != 1 or x.size == 0 or Z.ndim != 2 or Z.shape[0] != x.size or Z.shape[1] == 0:
+        raise ValueError("treatment and covariate_matrix must describe the same nonempty cells")
+    if not np.all((x == 0) | (x == 1)) or x.min() == x.max():
+        raise ValueError("treatment must be binary with both treated and control cells")
+    mu0 = np.broadcast_to(np.asarray(null_mean, dtype=float), x.shape)
+    mu1 = np.broadcast_to(np.asarray(alternative_mean, dtype=float), x.shape)
+    theta = float(expression_size)
+    if (
+        not np.all(np.isfinite(Z))
+        or not np.all(np.isfinite(mu0))
+        or not np.all(np.isfinite(mu1))
+        or np.any(mu0 <= 0)
+        or np.any(mu1 <= 0)
+        or np.isnan(theta)
+        or theta <= 0
+    ):
+        raise ValueError(
+            "means must be finite and positive, covariates finite, and NB size positive"
+        )
+
+    d = 1.0 + mu0 / theta
+    sqrt_w = np.sqrt(mu0 / d)
+    design = sqrt_w[:, None] * Z
+    scales = np.linalg.norm(design, axis=0)
+    design = design[:, scales > 0] / scales[scales > 0]
+    targets = np.column_stack((sqrt_w * x, sqrt_w))
+    coefficients = np.linalg.lstsq(design, targets, rcond=None)[0]
+    residuals = targets - design @ coefficients
+    if np.linalg.norm(residuals[:, 1]) > 1e-10 * np.linalg.norm(sqrt_w):
+        raise ValueError("covariate_matrix must include an intercept in its column span")
+    weighted_r = residuals[:, 0]
+    if np.linalg.norm(weighted_r) <= 1e-12 * np.linalg.norm(sqrt_w * x):
+        raise ValueError("treatment is fully explained by the covariates")
+    information = float(weighted_r @ weighted_r)
+    r = weighted_r / sqrt_w
+    mean = np.sum(r * (mu1 - mu0) / d) / np.sqrt(information)
+    sd = np.sqrt(np.sum((r / d) ** 2 * var_nb(mu1, theta)) / information)
+    return float(mean), float(sd)
 
 
 def qc_failure_prob(

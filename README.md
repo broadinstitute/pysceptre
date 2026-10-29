@@ -320,6 +320,43 @@ before using it on a single pair: the estimate is good enough to plan a screen
 and to triage its negatives, not to close a question about one element-gene
 pair.
 
+For a fixed common effect on pairs that already passed QC, an optional
+covariate method uses the full nuisance projection and cell-level NB means:
+
+```python
+power = compute_power(
+    discovery_pairs,
+    method="covariate",
+    covariate_matrix=Z,           # same rows and columns as the gene fits
+    gene_fits=gene_fits,          # fitted null reference coefficients and theta
+    grna_target_cells=target_cells,  # target -> union of integer cell indices
+    fold_change_mean=0.85,
+    fold_change_sd=0.0,
+    cutoff=alpha / 2,
+    num_total_cells=Z.shape[0],
+    side="left",
+)
+```
+
+Omit the two scalar-input tables for this method. It fits the expected
+restricted-null NB means under the specified alternative, then computes
+normal score moments with the full covariate-adjusted information. It
+requires finite positive theta, a design containing an intercept, and QC
+thresholds of zero. The supplied fitted means define the reference baseline
+for the hypothetical fold change. Existing null fits may be used as plug-in
+inputs, assuming their means and dispersion adequately represent that
+baseline. No additional baseline estimator is required. The synthetic
+validation uses known parameters and does not quantify input-estimation
+error.
+
+It is an NB score approximation; it does not reproduce the discovery
+pipeline's Poisson nuisance fits or resampling calibration. In a synthetic
+strong-confounding check, its power was 46.31% versus 44.69% observed
+(95% interval 43.52 to 45.86%) and 84.34% from the original calculation.
+The default homogeneous method is unchanged. See
+[Covariate-aware score moments](https://broadinstitute.github.io/pysceptre/design/#covariate-aware-score-moments)
+for the equations and limits.
+
 <!-- --8<-- [start:tutorial-power] -->
 
 #### Reporting power alongside a discovery result

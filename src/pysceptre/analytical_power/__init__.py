@@ -8,6 +8,7 @@ from .closed_form import (
     qc_failure_prob,
     rejection_prob,
     test_stat_distribution,
+    test_stat_distribution_covariates,
     var_nb,
     zero_prob,
 )
@@ -33,6 +34,7 @@ __all__ = [
     "rejection_prob",
     "target_cell_counts",
     "test_stat_distribution",
+    "test_stat_distribution_covariates",
     "var_nb",
     "zero_prob",
 ]

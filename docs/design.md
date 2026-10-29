@@ -956,6 +956,123 @@ the perturbed and control cells carry, not how much of the treatment
 indicator the covariates explain. For an element whose perturbed cells sit
 mostly in one batch that term matters, and the matched mean does not see it.
 
+### Covariate-aware score moments
+
+`test_stat_distribution_covariates` evaluates one fixed-effect comparison from
+the observed treatment and covariates, NB size and supplied cell-level null
+and alternative means. With `d = 1 + mu0/theta`, `W = diag(mu0/d)` and
+`r = x - Z (Z'WZ)^(-1) Z'W x`, it uses the full information `I = r'W r`.
+Its normal mean is `sum(r*(mu1-mu0)/d)/sqrt(I)` and its variance is
+`sum((r/d)^2 * var_nb(mu1, theta))/I`.
+
+This freezes the supplied null fit and denominator. The caller must provide
+the restricted-null fit appropriate to the alternative. These moments omit
+finite-effect refitting terms and random shared-guide covariance; they do
+not reproduce CRT calibration. Zero information raises an identifiability
+error. The helper itself does not fit means.
+
+`compute_power(method="covariate")` supplies those means from the actual cell
+design. It constructs `mu_base = exp(Z @ fitted_coefs)` and
+`mu1 = mu_base * fold_change_mean**x`, then fits a restricted-null NB model
+`mu0 = exp(Z @ lambda)` by solving
+`Z' ((mu1 - mu0) / (1 + mu0/theta)) = 0`.
+The convex expected NB objective is minimized in a rank-reduced basis of Z;
+its Hessian uses `mu0*(1 + mu1/theta)/(1 + mu0/theta)^2`, which differs from
+the null Fisher weights under an alternative. These cell means are passed
+directly to the score-moment helper and the existing `rejection_prob`.
+`expression_mean` in the result is the real average baseline mean, never an
+artificial information-matched mean.
+
+The supplied fitted means define a reference baseline. Existing covariate-only
+null fits may serve as plug-in inputs when their means and theta adequately
+represent that baseline. This reference is distinct from the expected
+restricted-null fit computed under the hypothetical alternative. A separate
+treatment-adjusted baseline estimator is not required for the information
+correction.
+
+This optional method currently requires `fold_change_sd=0`, QC thresholds of
+zero, finite positive theta and complement controls. Target indices identify
+the union of perturbed cells; other design rows are controls. Its counts
+therefore differ from the default's per-guide sums when guides overlap.
+The result omits `num_trt_cells_sq`, which is unavailable from union inputs
+and unused for a common fixed effect. The design and fits must use identical
+cells and covariate columns; row-count validation cannot detect reordered
+cells. This remains an NB likelihood-score normal approximation: pysceptre's
+discovery pipeline fits Poisson nuisance coefficients and uses resampling,
+so this is not a claim of exact pipeline power or CRT calibration.
+
+The default `method="homogeneous"` and its existing inputs remain unchanged.
+An intercept-only design with constant baseline means recovers that formula
+when `fold_change_sd=0`. Tests cover that reduction, an independent
+confounded-batch calculation, nuisance-score equations for continuous
+covariates, and identifiability. These are analytic checks on synthetic data,
+not validation against real-screen detection rates.
+
+#### Synthetic validation against discovery
+
+`scripts/validate_covariate_power.py` compares both estimates with the public
+`run_discovery_analysis` using complement controls, CRT, `side="left"` and
+its default skew-normal resampling approximation (499 initial draws and a
+4,999-draw second stage). It generates independent NB count replicates on
+1,000 cells, with theta 2, a fixed fold change of 0.85 or 1, and no QC
+filtering or multiple-testing selection. Replicates are represented as
+independent synthetic genes for efficiency. Each of 20 independent blocks
+redraws assignments, counts and the CRT seed; within a block 100 count
+replicates share CRT draws. Approximate 95% Student-t intervals across block
+rates account for that shared randomness.
+
+For the batch cases, baseline means are 1 and 4 and treatment fractions
+within the two equal batches are `(0.5, 0.5)`, `(0.25, 0.75)` and
+`(0.1, 0.9)`. For the continuous case, `z = linspace(-2, 2, 1000)`, the
+baseline mean is `exp(log(2) + 0.6*z)` and treatment probability is
+`expit(1.5*z)`. Both the expression heterogeneity and nuisance projection
+therefore distinguish the two formulas. The continuous case also exercises
+the difference between NB and Poisson nuisance fitting.
+
+At a nominal one-sided cutoff of 0.05 and fold change 0.85:
+
+| setting | original power | covariate power | observed CRT rejection | 95% interval | replicates |
+|---|---:|---:|---:|---:|---:|
+| randomized batches | 84.34% | 80.86% | 80.05% | 77.88 to 82.22% | 2,000 |
+| moderate confounding | 84.34% | 70.92% | 70.50% | 68.42 to 72.58% | 2,000 |
+| strong confounding | 84.34% | 46.31% | 44.69% | 43.52 to 45.86% | 10,000 |
+| continuous confounding | 84.43% | 62.80% | 61.50% | 59.82 to 63.18% | 2,000 |
+
+The strong-confounding row uses a second, independent seed with 20 blocks
+of 500 replicates. Its residual overprediction is 1.62 percentage points
+(95% interval 0.46 to 2.79 points). At cutoff 0.005 it predicts 16.40%, versus
+14.82% observed (13.97 to 15.67%) and 53.16% from the original formula.
+The observed statistic's normal-cutoff rejection rate there is 16.25%, so
+CRT calibration explains much of that stricter-cutoff discrepancy. The
+finite-effect normal approximation remains imperfect.
+
+A separate 6,000-test run uses constant baseline mean 2 in both batches to
+isolate the projection correction. With randomized treatment both formulas
+agree exactly (80.71%). Under strong confounding the adjusted estimate is
+44.69%, observed rejection is 43.95% (41.56 to 46.34%), and the original remains
+80.71%. In the primary no-effect runs, all four empirical intervals contain
+the nominal rejection rate at both 0.05 and 0.005.
+
+**Input interpretation matters.** These experiments supply known baseline
+coefficients and theta. In practice, an existing null nuisance fit can define
+the reference baseline for a hypothetical power calculation. If the observed
+screen contains effects, this reference may differ from the true untreated
+mean; its adequacy is an input assumption. Validation here supports the
+information correction and this approximation under known inputs. It does
+not quantify error from estimating those inputs, random guide effects, QC
+prediction, or exact CRT power.
+
+The three commands below reproduce 32,000 synthetic tests in total. Output
+directories contain per-replicate results, block rates, summaries, seeds,
+package versions and snapshots/hashes of the tested analytical source.
+Only synthetic outputs are produced; they live under the ignored `build/`.
+
+```bash
+.venv/bin/python scripts/validate_covariate_power.py
+.venv/bin/python scripts/validate_covariate_power.py --output build/covariate_power_projection_only --blocks 20 --replicates-per-block 100 --jobs 3 --batch-baseline-means 2 2 --fold-changes 0.85 --scenarios randomized_batches moderate_confounding strong_confounding
+.venv/bin/python scripts/validate_covariate_power.py --output build/covariate_power_strong_precision --seed 20261030 --blocks 20 --replicates-per-block 500 --jobs 1 --fold-changes 0.85 --scenarios strong_confounding
+```
+
 ### Building the estimator's inputs
 
 `analytical_power/inputs.py` derives the three things `compute_power`
