@@ -357,3 +357,68 @@ def test_fit_genes_takes_the_reference_genes_backed_or_not(dataset, in_use_file)
     # The backed read lists every gene in the file, the compact one only the pairs'.
     assert backed.gene_ids == eager.gene_ids and compact.gene_ids == want != eager.gene_ids
     assert _reference_genes(backed) == _reference_genes(compact) == want
+
+
+# --- run_trans_background.py combine: its checks gate the table, finished shards or not --
+
+
+@pytest.mark.parametrize("repeated", [False, True])
+def test_combine_writes_the_table_only_when_its_checks_pass(tmp_path, repeated):
+    pytest.importorskip("pyarrow", reason="the io extra is not installed")
+    import argparse
+    import json
+
+    from run_trans_background import cmd_combine
+
+    pairs_dir, shard = tmp_path / "pairs", tmp_path / "shards" / "shard_0000"
+    pairs_dir.mkdir()
+    shard.mkdir(parents=True)
+    (pairs_dir / "layout.json").write_text(
+        json.dumps({"n_elements": 2, "fit_chunk_width": 1, "n_fit_chunks": 2, "layout_hash": "h"})
+    )
+    (pairs_dir / "shard_manifest.json").write_text(
+        json.dumps({"layout_hash": "h", "shards": [[0], [1]]})
+    )
+    pd.DataFrame(
+        {"target_code": [0, 1], "fit_chunk": [0, 1], "grna_target": ["e0", "e1"]}
+    ).to_parquet(pairs_dir / "elements.parquet")
+    pd.DataFrame(
+        {
+            "gene_code": np.repeat([0, 1, 2], 2).astype(np.int32),
+            "target_code": np.tile([0, 1], 3).astype(np.int32),
+            "pass_qc": True,
+        }
+    ).to_parquet(pairs_dir / "trans_pairs.parquet")
+    genes = [0, 1, 2, 1] if repeated else [0, 1, 2]  # gene 1 twice: a rerun with another part size
+    pd.DataFrame(
+        {
+            "gene_code": np.int32(genes),
+            "target_code": np.int32(0),
+            "p_value": 0.5,
+            "fold_change": 0.9,
+            "se_fold_change": 0.1,
+            "z_orig": -0.3,
+            "stage": 1.0,
+            "p_value_floor": np.nan,
+            "screen": np.int8(0),
+            "n_null_evaluated": np.int32(499),
+        }
+    ).to_parquet(shard / "part_00000.parquet", index=False)
+    (shard / "DONE.json").write_text(json.dumps({"host": "x", "reference_checked": 0}))
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "trans_result.parquet").write_bytes(b"an earlier run's table")
+    a = argparse.Namespace(
+        pairs_dir=str(pairs_dir),
+        shards=str(tmp_path / "shards"),
+        out=str(out),
+        manifest=None,
+        allow_missing=True,  # shard 1 never ran
+    )
+    if repeated:
+        with pytest.raises(SystemExit, match="checks failed"):
+            cmd_combine(a)
+    else:
+        cmd_combine(a)
+    assert (out / "summary.json").exists()
+    assert (out / "trans_result.parquet").exists() is not repeated

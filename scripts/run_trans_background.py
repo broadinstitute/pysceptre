@@ -486,7 +486,6 @@ def cmd_combine(a: argparse.Namespace) -> None:
             for i in done
         ),
     }
-    _write_parquet(table, out / "trans_result.parquet")
     _write_json(summary, out / "summary.json")
     print(json.dumps(summary, indent=1, default=str))
     bad = (
@@ -501,8 +500,13 @@ def cmd_combine(a: argparse.Namespace) -> None:
             )
         )
     )
-    if bad and not a.allow_missing:
-        raise SystemExit("combine checks failed; see summary.json")
+    if bad:
+        # An earlier run's table must not outlive the summary that now says it fails.
+        (out / "trans_result.parquet").unlink(missing_ok=True)
+        raise SystemExit(
+            "combine checks failed, trans_result.parquet not written; see summary.json"
+        )
+    _write_parquet(table, out / "trans_result.parquet")
 
 
 def cmd_specificity(a: argparse.Namespace) -> None:
