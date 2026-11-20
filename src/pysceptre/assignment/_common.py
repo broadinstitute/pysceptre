@@ -21,7 +21,7 @@ def as_count_matrix(m, *, name: str = "grna_matrix") -> sparse.csc_matrix:
     if sparse.issparse(m):
         if m.ndim != 2:
             raise ValueError(f"{name} must be 2-D, got {m.ndim} dimensions")
-        c = sparse.csc_matrix(m, dtype=np.float64, copy=True)
+        c = sparse.csc_matrix(m.astype(np.float64))  # cast first: summing duplicates in uint8 wraps
     else:
         a = np.asarray(m)
         if a.ndim != 2:

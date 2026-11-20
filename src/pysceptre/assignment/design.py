@@ -36,7 +36,11 @@ def cell_count_covariates(matrix: sparse.spmatrix | np.ndarray) -> tuple[np.ndar
     As sceptre's `compute_cell_covariates`: `n_nonzero` counts the entries above 0.5 and
     `n_umis` is the column sum.
     """
-    c = sparse.csc_matrix(matrix, dtype=np.float64)
+    c = sparse.csc_matrix(
+        matrix.astype(np.float64)
+        if sparse.issparse(matrix)
+        else np.asarray(matrix, dtype=np.float64)
+    )  # cast first: summing duplicates in uint8 wraps
     c.sum_duplicates()
     c.sort_indices()
     n_cells = c.shape[1]

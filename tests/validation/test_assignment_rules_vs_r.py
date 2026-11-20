@@ -21,8 +21,10 @@ from pysceptre.assignment import (
     assign_grnas,
     assign_grnas_fishash,
     assign_grnas_maximum,
+    cell_count_covariates,
     cells_w_zero_or_twoplus_grnas,
 )
+from pysceptre.assignment._common import as_count_matrix
 
 DUMPER = Path(__file__).resolve().parents[2] / "scripts" / "dump_assignment_rules_ground_truth.R"
 RUNS = (
@@ -141,3 +143,14 @@ def test_assign_grnas_routes_and_refuses():
             assign_grnas(counts, ids, **kwargs)
     with pytest.raises(TypeError):
         assign_grnas(counts, ids, method="maximum", threshold=5)
+
+
+def test_narrow_integer_counts_do_not_wrap():
+    # One triplet per UMI in uint8: gRNA a has 300 UMIs in cell 0, gRNA b 100.
+    g = np.r_[np.zeros(300, int), np.ones(100, int)]
+    coo = sparse.coo_matrix((np.ones(400, dtype=np.uint8), (g, np.zeros(400, int))), shape=(2, 2))
+    assert as_count_matrix(coo).toarray()[:, 0].tolist() == [300, 100]
+    assert cell_count_covariates(coo)[1][0] == 400
+    r = assign_grnas_maximum(coo, ["a", "b"])
+    assert r.max_grna[0] == 0 and r.grna_n_umis[0] == 400
+    assert coo.dtype == np.uint8 and coo.nnz == 400  # the caller's matrix is untouched
