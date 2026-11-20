@@ -2,6 +2,42 @@
 
 Notable changes per release. Dates are the release date.
 
+## Unreleased
+
+### Fixed
+
+- **A target the covariates explain got an arbitrary p-value.** When a
+  target's indicator is a combination of the covariate columns (exactly one
+  batch level, say), the score statistic's denominator is roundoff, and with
+  the complement control group the p-value was whatever that roundoff gave: as
+  small as 1e-250, at a fold change of exactly 1, on a three-level batch. Such
+  targets are now found once per run from a QR of the covariate matrix, and
+  their pairs report NaN in every result column, with a warning, as the
+  NT-cells control group already did for its own; every other pair is
+  bit-identical. In all three analyses and `run_trans_analysis`. A departure
+  from sceptre, which computes the same quotient; docs/design.md, "A target
+  the covariates explain is not tested".
+- **Inputs that were counted silently are refused.** `run_discovery_analysis`
+  and `run_power_check` raise `ValueError` on a repeated pair (it was tested
+  twice, under the `bonferroni` strategy its p-value doubled, and the power
+  check returned k squared rows for k copies), on a tested gene id that names
+  two rows of the response matrix (the last row was used), and on a target's
+  cells that repeat or fall outside the cells (a repeated cell was counted
+  twice, a negative index counted from the end). `run_calibration_check`
+  raises on the first two when its pairs include them; its synthetic targets
+  were already deduplicated and range-checked.
+- **gRNA assignment wrapped narrow integer counts.** A sparse matrix of uint8
+  (or another narrow integer type) with duplicate entries summed them in that
+  type, so 300 UMIs became 44. The counts are now cast to float before
+  duplicates are summed; the caller's matrix is not changed. A `background`
+  passed to `assign_grnas_fishash` is still summed in its own type.
+- **`scripts/run_trans_background.py combine` wrote its table before its
+  checks, and `--allow-missing` switched the checks off.** The checks now run
+  on the finished shards whatever the flag, and `trans_result.parquet` is
+  written only when they pass; `summary.json` is written either way. When they
+  fail, an earlier run's `trans_result.parquet` in `--out` is removed, so
+  `specificity --trans` cannot read a table the summary rejects.
+
 ## 0.6.0
 
 ### Added
