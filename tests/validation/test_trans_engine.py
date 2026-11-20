@@ -433,3 +433,21 @@ def test_gene_fits_of_another_solver_are_refused(screen):
     outer = fit_gene_cache(s["counts"], s["genes"], s["X"], genes=s["genes"][:4])
     with pytest.raises(ValueError, match="glm_solver='outer', not 'structured'"):
         _trans(s, s["trans"], s["cis"], gene_fits=outer, glm_solver="structured")
+
+
+def test_a_target_the_covariates_explain_is_nan_in_both(screen):
+    # A covariate column equal to t03's indicator; the reference run reports t03 NaN, so must trans.
+    cells = screen["targets"]["t03"]
+    s = {**screen, "X": np.column_stack([screen["X"], np.isin(np.arange(N_CELLS), cells)])}
+    pairs = screen["pairs"][screen["pairs"]["response_id"].isin(screen["genes"][:3])]
+    pairs = pairs.reset_index(drop=True)
+    reference = _discovery(s, pairs)
+    spanned = reference["grna_target"] == "t03"
+    assert reference.loc[spanned, RESULT_COLUMNS].isna().all().all()
+    assert reference.loc[~spanned, "p_value"].notna().all()
+    _assert_same_results(_trans(s, pairs, pairs, mode="full"), reference)
+    for mode in ("screened", "audit"):
+        got = _trans(s, pairs, pairs, mode=mode)
+        rows = got["grna_target"] == "t03"
+        assert got.loc[rows, ["p_value", "z_orig"]].isna().all().all()
+        assert (got.loc[rows, "screen"] == "none").all()

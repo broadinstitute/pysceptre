@@ -40,6 +40,33 @@ def redundant_columns(X: np.ndarray) -> tuple[int, list[int]]:
     return rank, [j for j in range(p) if j not in kept]
 
 
+def targets_in_span(
+    X: np.ndarray,
+    cells_of: dict[str, np.ndarray],
+    weights_of: dict[str, np.ndarray] | None = None,
+) -> set[str]:
+    """The targets whose treated indicator (or dose weights) the columns of `X` span.
+
+    A target is flagged when the share of its indicator outside the span,
+    `1 - |Q_T' t|^2 / |t|^2` with `Q` from a thin QR of `X`, is under `sqrt(eps)`.
+    `Q` is orthonormal, so the test does not depend on how `X` is scaled. Targets
+    with no cells are never flagged. docs/design.md, "A target the covariates explain
+    is not tested".
+    """
+    cells_of = {t: c for t, c in cells_of.items() if len(c)}
+    if not cells_of:
+        return set()
+    q = np.linalg.qr(np.asarray(X, dtype=float), mode="reduced")[0]
+    tol = np.sqrt(np.finfo(float).eps)
+    out = set()
+    for t, cells in cells_of.items():
+        w = np.ones(len(cells)) if weights_of is None else np.asarray(weights_of[t], dtype=float)
+        s = q[cells].T @ w
+        if 1.0 - (s @ s) / (w @ w) < tol:
+            out.add(t)
+    return out
+
+
 def validate_design_matrix(covariate_matrix: np.ndarray, n_cells: int | None = None) -> None:
     """Refuse a design matrix the GLM cannot fit, and say which columns are at fault.
 

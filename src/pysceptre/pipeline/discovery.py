@@ -43,7 +43,12 @@ from scipy import sparse
 
 from ..crt.permutations import nested_permutation_draws, permutation_draws
 from ..crt.sampler import crt_index_sampler
-from ..glm.design import StructuredDesign, redundant_columns, structured_design
+from ..glm.design import (
+    StructuredDesign,
+    redundant_columns,
+    structured_design,
+    targets_in_span,
+)
 from ..glm.irls import (
     fit_binomial_glm_batch,
     fit_binomial_glm_structured,
@@ -1415,6 +1420,21 @@ def run_discovery_ntcells_complement(
         target_id: group for target_id, group in pairs.groupby("grna_target", observed=True)
     }
     target_ids_needed = [t for t in grna_target_cells if t in pairs_by_target]
+    # Reported NaN, but kept in their chunks: a chunk-mate's "outer" fit depends on them.
+    spanned = targets_in_span(
+        covariate_matrix,
+        {t: grna_target_cells[t] for t in target_ids_needed},
+        None
+        if grna_target_weights is None
+        else {t: grna_target_weights[t] for t in target_ids_needed},
+    )
+    if spanned:
+        warnings.warn(
+            f"{len(spanned)} target(s) are reported NaN, e.g. {sorted(spanned)[:5]}: the "
+            "covariates predict which cells are treated exactly, for example a target made of "
+            "one batch, so there is nothing left to test.",
+            stacklevel=3,
+        )
 
     # Permutation draws are generated **once for the whole analysis**, not
     # per chunk, matching R and keeping results independent of the chunking.
@@ -1565,8 +1585,11 @@ def run_discovery_ntcells_complement(
     )
     # Emit in the original target-major order, so inverting the loops above is
     # not observable in the output.
+    untested = PairResult(np.nan, np.nan, np.nan, np.nan, np.nan, None)
     ordered = [
-        rows[(row.response_id, target_id)]
+        _result_row(row.response_id, target_id, untested)
+        if target_id in spanned
+        else rows[(row.response_id, target_id)]
         for target_id in target_ids_needed
         for row in pairs_by_target[target_id].itertuples(index=False)
     ]

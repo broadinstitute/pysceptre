@@ -331,6 +331,48 @@ values, so it squares the condition number. A design whose columns span
 fourteen orders of magnitude, raw UMI counts beside a small covariate say, is
 full rank and the Gram route rejected it.
 
+## A target the covariates explain is not tested
+
+The score statistic divides by `sqrt(lower_left - lower_right)`: the variance
+of the treated cells' sum that the covariates leave unexplained. When a
+target's indicator (or its dose weights) is a combination of the covariate
+columns -- every cell of one batch level, or of the reference level beside an
+intercept -- nothing is left, and the difference is roundoff of either sign.
+Negative roundoff gave a NaN statistic; positive roundoff gave an arbitrary
+one, and on a three-level batch a target made of one level got p-values as
+small as 1e-250 with a fold change of exactly 1. R computes the same quotient
+and was not run on such a target.
+
+**The statistic cannot flag these itself.** Its residual share,
+`(lower_left - lower_right) / lower_left`, carries the roundoff of `D`, which
+`compute_D_matrix` takes from an eigendecomposition of `Zt_wZ`, a Gram matrix
+that squares the design's condition number (the rank check above). For a
+target equal to a level, the share measured at most 8e-15 in magnitude on
+6,000 cells with an intercept, a normal covariate and a three-level batch
+(three seeds), but 1.3e-8 to 1.5e-6 on 30,000 and 60,000 cells with raw UMI
+counts beside 29 and 59 batch columns. A target holding 99% of a level's cells
+measured about 0.01 on both. A cutoff on that share would miss the second
+design, or have to know its conditioning.
+
+**So the covariates are asked, once per target, before any gene is tested.**
+`glm.design.targets_in_span` takes one thin QR of the covariate matrix and
+flags a target when `1 - |Q_T' t|^2 / |t|^2`, the share of its indicator `t`
+outside the columns' span, is under `sqrt(eps)`. `Q` is orthonormal, so the
+share does not depend on how the columns are scaled: on the same designs it
+measured at most 1.6e-15 in magnitude for a level, the reference level, two
+levels together and a level with constant weights, and 3e-4 to 1e-3 for a
+level less one cell -- eleven orders of magnitude apart.
+
+A flagged target's pairs are reported the way the NT-cells control group
+reports its own such targets (`check_nt_cells_targets`): every result column
+NaN, and a warning naming the targets. The target stays in its fit chunk and
+its draws are still made, because under `glm_solver="outer"` a target's fit
+depends on its chunk-mates, and dropping it would move other targets' bits.
+`run_trans_analysis` applies the same test, so its full-mode pairs keep
+matching the reference run. The NT-cells control group needs none of this: it
+already asks the same question, on each target's cells together with the NT
+cells.
+
 ## Resampling budgets, and why `B3` is zero
 
 `B1`, `B2` and `B3` are derived in `api.py::_resampling_budget`, porting R's

@@ -30,7 +30,7 @@ import numpy as np
 import pandas as pd
 
 from ..crt import sampler as _sampler
-from ..glm.design import validate_design_matrix
+from ..glm.design import targets_in_span, validate_design_matrix
 from ..glm.irls import x_outer_flat
 from ..precompute.pieces import compute_precomputation_pieces
 from ..test_statistic.resampling import run_low_level_test_full, run_low_level_test_screened
@@ -347,7 +347,10 @@ def _trans_gene_job(job: tuple[int, str, np.ndarray, np.ndarray, np.ndarray]) ->
     B2, B3 = st["B2"], st["B3"]
     cols = _new_columns(len(rows))
     for j in range(len(rows)):
-        target = st["targets"][st["target_ids"][target_codes[j]]]
+        target_id = st["target_ids"][target_codes[j]]
+        if target_id in st["spanned"]:
+            continue  # NaN, as the reference run reports it
+        target = st["targets"][target_id]
         common = dict(
             y=y,
             mu=pieces.mu,
@@ -504,6 +507,10 @@ def iter_trans_analysis(
     chosen = _selected_chunks(chunks, pairs, fit_chunk_ids)
     target_ids = [t for chunk in chosen for t in chunk]
     target_code = {t: i for i, t in enumerate(target_ids)}
+    # As the reference run: such a target's pairs are NaN, and it stays in its chunk.
+    spanned = targets_in_span(
+        covariate_matrix, {t: grna_target_cells[t] for t in pd.unique(pairs["grna_target"])}
+    )
 
     gene_order = {g: i for i, g in enumerate(gene_ids)}
     pair_genes = pairs["response_id"].to_numpy()
@@ -570,6 +577,7 @@ def iter_trans_analysis(
             gene_row_index={g: gene_order[g] for g in genes},
             targets=targets,
             target_ids=target_ids,
+            spanned=spanned,
             side_code=side_code,
             B2=B2,
             B3=B3,

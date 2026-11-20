@@ -166,6 +166,30 @@ def _restrict_cells(response_matrix, cells: np.ndarray):
     return np.asarray(response_matrix)[:, cells]
 
 
+def _check_inputs(
+    pairs: pd.DataFrame, gene_ids, grna_target_cells: dict[str, np.ndarray], n_cells: int
+) -> None:
+    """Refuse a repeated pair, a tested gene id naming two rows, and target cells that repeat or
+    fall outside `[0, n_cells)`: each would be counted silently otherwise."""
+    repeated = pairs.duplicated(["response_id", "grna_target"])
+    if repeated.any():
+        first = tuple(pairs.loc[repeated, ["response_id", "grna_target"]].iloc[0])
+        raise ValueError(f"pairs lists {int(repeated.sum())} pair(s) more than once, e.g. {first}")
+    ids = pd.Index(gene_ids)
+    tested = set(pairs["response_id"])
+    twice = [g for g in pd.unique(ids[ids.duplicated()]) if g in tested]
+    if twice:
+        raise ValueError(
+            f"{len(twice)} tested gene id(s) name more than one row of the response matrix, "
+            f"e.g. {twice[:5]}"
+        )
+    for t, cells in grna_target_cells.items():
+        if cells.size and (cells.min() < 0 or cells.max() >= n_cells):
+            raise ValueError(f"grna_target_cells[{t!r}] has indices outside [0, {n_cells})")
+        if np.unique(cells).size != cells.size:
+            raise ValueError(f"grna_target_cells[{t!r}] lists a cell more than once")
+
+
 def _check_dose_weights(
     weights: dict[str, np.ndarray],
     cells_of: dict[str, np.ndarray],
@@ -360,6 +384,7 @@ def _run_discovery(
     _validate_covariate_matrix(covariate_matrix, n_cells=response_matrix.shape[1])
     covariate_matrix = np.asarray(covariate_matrix, dtype=float)
     grna_target_cells = {t: np.asarray(c, dtype=np.int64) for t, c in grna_target_cells.items()}
+    _check_inputs(pairs, gene_ids, grna_target_cells, response_matrix.shape[1])
     if grna_target_weights is not None:
         grna_target_weights = _check_dose_weights(grna_target_weights, grna_target_cells)
     if resampling_approximation not in _RESAMPLING_APPROXIMATIONS:
@@ -729,6 +754,7 @@ def run_power_check(
     )
     covariate_matrix = np.asarray(covariate_matrix, dtype=float)
     grna_target_cells = {t: np.asarray(c, dtype=np.int64) for t, c in grna_target_cells.items()}
+    _check_inputs(positive_control_pairs, gene_ids, grna_target_cells, covariate_matrix.shape[0])
     nt_cells = _nt_pool_for(control_group, ntc_grna_cells, covariate_matrix.shape[0])
     annotated = annotate_pairwise_qc(
         positive_control_pairs[["response_id", "grna_target"]],
